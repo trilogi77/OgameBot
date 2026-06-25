@@ -1349,6 +1349,7 @@ class Brain:
         POLL = 45  # segundos entre sondeos
         # No extendemos más allá del intervalo de ciclo mínimo configurado
         deadline = time.time() + self.cfg.cycle_interval_min_s
+        last_attack_check = time.time()  # ya se comprobó justo antes del ciclo
 
         while time.time() < deadline:
             still_busy = [p for p in planets
@@ -1364,6 +1365,16 @@ class Brain:
             self.log.info("Construcciones activas (%d planeta/s). Sondeo en %.0fs.",
                           len(still_busy), wait)
             time.sleep(wait)
+
+            # Comprobar ataques hostiles también mientras esperamos construcciones:
+            # reduce la latencia de detección en el hueco largo entre ciclos.
+            if getattr(self.cfg, "enable_attack_escape", True) and \
+               time.time() - last_attack_check >= getattr(self.cfg, "attack_check_interval_s", 300):
+                last_attack_check = time.time()
+                try:
+                    self._check_and_escape_attacks()
+                except Exception as e:
+                    self.log.debug("Error comprobando ataques en _continue_until_idle: %s", e)
 
             for p in planets:
                 try:
@@ -1542,67 +1553,78 @@ class Brain:
             if p.has_moon and p.moon:
                 all_locations.append(p.moon)
 
-        our_locations_map = {}
+        # Mapa por COORDENADAS (g:s:p) -> ubicaciones propias (planeta y/o luna).
+        # Matcheamos por coordenadas, no por tipo, para no fallar si la lectura de
+        # luna/planeta del evento es errónea: ante la duda, evacuamos lo que haya ahí.
+        our_by_coords = {}
         for loc in all_locations:
-            k = f"{loc.coords.galaxy}:{loc.coords.system}:{loc.coords.position}:{loc.coords.type}"
-            our_locations_map[k] = loc
+            ck = f"{loc.coords.galaxy}:{loc.coords.system}:{loc.coords.position}"
+            our_by_coords.setdefault(ck, []).append(loc)
 
-        # 1. Encontrar planetas/lunas actualmente bajo ataque con su tiempo de llegada mínimo
+        # Etiquetas reales de misión hostil (9 = destrucción de luna, no espionaje)
+        mission_labels = {"1": "Ataque", "2": "Ataque (ACS)", "9": "Destrucción de luna"}
+
+        # 1. Encontrar planetas/lunas bajo ataque con su tiempo de llegada mínimo
         under_attack = {}
         for mv in mvs:
-            if (mv.get("is_hostile") or mv.get("mission") in ("1", "2", "9")) and not mv.get("is_return", False):
-                dest_coords = mv.get("destination")
-                dest_type = mv.get("dest_type", "planet")
-                dest_key = f"{dest_coords}:{dest_type}"
-                if dest_key in our_locations_map:
-                    arr_text = mv.get("arrival_text", "")
-                    arr_sec = parse_time_to_seconds(arr_text)
-                    if arr_sec is None:
-                        arr_sec = 999999  # valor por defecto si no es parseable
-                    if dest_key not in under_attack or arr_sec < under_attack[dest_key]:
-                        under_attack[dest_key] = arr_sec
-                    
-                    # Registrar ataque hostil recibido o actualizarlo
-                    origin_coords_str = mv.get("origin", "Desconocido")
-                    mission_str = "Ataque" if mv.get("mission") in ("1", "2") else "Espionaje"
-                    self.record_session_action("hostile_attacks", f"{mission_str} desde {origin_coords_str}", arr_sec, dest_coords)
+            if not ((mv.get("is_hostile") or mv.get("mission") in ("1", "2", "9")) and not mv.get("is_return", False)):
+                continue
+            dest_coords = mv.get("destination", "")
+            targets = our_by_coords.get(dest_coords, [])
+            if not targets:
+                continue
 
-                    # Enviar notificación de Telegram si está configurado
-                    if getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""):
-                        now = time.time()
-                        arr_epoch = now + arr_sec
-                        # Redondear el tiempo de llegada estimado a 60 segundos
-                        arr_epoch_rounded = int(arr_epoch / 60) * 60
-                        attack_key = f"{origin_coords_str}->{dest_coords}:{dest_type}:{mission_str}:{arr_epoch_rounded}"
-                        
-                        if attack_key not in self.telegram_notified_attacks:
-                            self.telegram_notified_attacks[attack_key] = arr_epoch
-                            self._save_state()
-                            
-                            # Formatear y enviar mensaje
-                            msg = (
-                                f"⚠️ <b>¡ALERTA DE ATAQUE EN OGAME!</b>\n\n"
-                                f"• <b>Misión:</b> {mission_str}\n"
-                                f"• <b>Origen:</b> [{origin_coords_str}]\n"
-                                f"• <b>Destino:</b> [{dest_coords}] ({dest_type})\n"
-                                f"• <b>Tiempo de llegada estimado:</b> {arr_text}\n"
-                            )
-                            loc = our_locations_map[dest_key]
-                            flyable_ships = {k: v for k, v in getattr(loc, 'ships', {}).items() if k != "solar_satellite" and v > 0}
-                            if flyable_ships:
-                                msg += f"• <b>Flota en origen:</b> " + ", ".join(f"{k}: {v}" for k, v in flyable_ships.items()) + "\n"
-                            else:
-                                msg += f"• <b>Flota en origen:</b> Ninguna nave voladora en hangar.\n"
-                            
-                            msg += f"\n<i>Acción del bot: El bot intentará esquivar el ataque o realizar compras de pánico según tu configuración.</i>"
-                            
-                            self.log.info("Disparando alerta de Telegram para ataque: %s", attack_key)
-                            utils.send_telegram_message(
-                                self.cfg.telegram_token,
-                                self.cfg.telegram_chat_id,
-                                msg,
-                                logger=self.log
-                            )
+            arr_text = mv.get("arrival_text", "")
+            arr_sec = parse_time_to_seconds(arr_text)
+            if arr_sec is None:
+                arr_sec = 999999  # valor por defecto si no es parseable
+
+            # Marcar bajo ataque TODAS las ubicaciones propias en esas coordenadas
+            for loc in targets:
+                dest_key = f"{loc.coords.galaxy}:{loc.coords.system}:{loc.coords.position}:{loc.coords.type}"
+                if dest_key not in under_attack or arr_sec < under_attack[dest_key]:
+                    under_attack[dest_key] = arr_sec
+
+            # Registrar / notificar una vez por movimiento hostil
+            origin_coords_str = mv.get("origin", "Desconocido")
+            dest_type = mv.get("dest_type", "planet")
+            mission_str = mission_labels.get(str(mv.get("mission", "")), "Ataque")
+            self.record_session_action("hostile_attacks", f"{mission_str} desde {origin_coords_str}", arr_sec, dest_coords)
+
+            # Enviar notificación de Telegram si está configurado
+            if getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""):
+                now = time.time()
+                arr_epoch = now + arr_sec
+                arr_epoch_rounded = int(arr_epoch / 60) * 60  # redondear a 60s
+                attack_key = f"{origin_coords_str}->{dest_coords}:{mission_str}:{arr_epoch_rounded}"
+
+                if attack_key not in self.telegram_notified_attacks:
+                    self.telegram_notified_attacks[attack_key] = arr_epoch
+                    self._save_state()
+
+                    disp = next((l for l in targets if l.coords.type == dest_type), targets[0])
+                    msg = (
+                        f"⚠️ <b>¡ALERTA DE ATAQUE EN OGAME!</b>\n\n"
+                        f"• <b>Misión:</b> {mission_str}\n"
+                        f"• <b>Origen:</b> [{origin_coords_str}]\n"
+                        f"• <b>Destino:</b> [{dest_coords}] ({dest_type})\n"
+                        f"• <b>Tiempo de llegada estimado:</b> {arr_text}\n"
+                    )
+                    flyable_ships = {k: v for k, v in getattr(disp, 'ships', {}).items() if k != "solar_satellite" and v > 0}
+                    if flyable_ships:
+                        msg += "• <b>Flota en origen:</b> " + ", ".join(f"{k}: {v}" for k, v in flyable_ships.items()) + "\n"
+                    else:
+                        msg += "• <b>Flota en origen:</b> Ninguna nave voladora en hangar.\n"
+
+                    msg += "\n<i>Acción del bot: El bot intentará esquivar el ataque o realizar compras de pánico según tu configuración.</i>"
+
+                    self.log.info("Disparando alerta de Telegram para ataque: %s", attack_key)
+                    utils.send_telegram_message(
+                        self.cfg.telegram_token,
+                        self.cfg.telegram_chat_id,
+                        msg,
+                        logger=self.log
+                    )
                     
         # 2. Iniciar evasión para planetas o lunas bajo ataque que no hayamos evadido todavía
         for dest_key, arrival_seconds in under_attack.items():

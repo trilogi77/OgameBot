@@ -1369,7 +1369,8 @@ class GameClient:
     def send_fleet(self, origin: Coords, destination: Coords, ships: Dict[str, int],
                    mission: str, resources = None,
                    speed_percent: float = 1.0, hold_hours: float = 0.0,
-                   target_duration_s: Optional[float] = None) -> bool:
+                   target_duration_s: Optional[float] = None,
+                   max_round_trip_s: Optional[float] = None) -> bool:
         desc = (f"Flota {ships} {origin}->{destination} mision={mission} "
                 f"vel={int(speed_percent * 100)}%")
         if self._act(desc):
@@ -1732,7 +1733,7 @@ class GameClient:
 
         time.sleep(0.5)
 
-        # Leer la duración real de vuelo (un sentido) para calibrar estimaciones futuras
+        # Leer la duración REAL de vuelo (un sentido) directamente de la página de envío
         try:
             dur_txt = self.page.evaluate("""() => {
                 const el = document.getElementById('duration') || document.querySelector('#duration .value') || document.querySelector('.duration') || document.querySelector('.flightTime');
@@ -1743,6 +1744,16 @@ class GameClient:
                 self.last_flight_seconds = secs
         except Exception:
             pass
+
+        # Decidir con el tiempo REAL (no estimado): si no vuelve antes del límite
+        # (p.ej. el descanso nocturno), cancelar el envío en vez de adivinar.
+        if max_round_trip_s is not None and self.last_flight_seconds:
+            hold_s = hold_hours * 3600 if mission == "expedition" else 0
+            real_round = 2 * self.last_flight_seconds + hold_s
+            if real_round > max_round_trip_s:
+                self.log.info("Envío %s->%s cancelado: vuelo real %.1f min (ida+vuelta+permanencia) > %.1f min disponibles antes del descanso.",
+                              origin, destination, real_round / 60.0, max_round_trip_s / 60.0)
+                return False
 
         # Recursos (transporte/deploy)
         if resources_to_carry and mission in ("transport", "deploy"):

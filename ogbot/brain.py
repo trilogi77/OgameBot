@@ -1122,21 +1122,17 @@ class Brain:
                                     for ship in plan["ships"] if plan["ships"][ship] > 0), default=1))
         ftime = gd.flight_time(dist, slowest_speed, 1.0, self.cfg.fleet_speed)
         cal = getattr(self, "expedition_flight_cal", 1.0) or 1.0
-        est_oneway = ftime * cal
-        total_duration = 2 * est_oneway + plan["hold_hours"] * 3600
+        est_oneway = ftime * cal  # solo respaldo por si falla la lectura real
 
-        # Segundos restantes del horario activo
+        # Tiempo restante hasta el descanso. La decisión real (si vuelve a tiempo) la
+        # toma send_fleet leyendo la DURACIÓN EXACTA en la propia página de envío.
         seconds_left = utils.seconds_until_inactive(self.cfg.active_hours)
-
-        if total_duration > seconds_left:
-            self.log.info("Expedición: omitido desde %s por horario de descanso inminente (tardaría %.1f min y quedan %.1f min activos).",
-                          home, total_duration / 60.0, seconds_left / 60.0)
-            return False
 
         if self._guard():
             self.client.last_flight_seconds = None
             ok = self.client.send_fleet(home, plan["destination"], plan["ships"],
-                                   mission="expedition", hold_hours=plan["hold_hours"])
+                                   mission="expedition", hold_hours=plan["hold_hours"],
+                                   max_round_trip_s=seconds_left)
             if ok:
                 self.active_slots += 1
                 self.active_expe_slots += 1

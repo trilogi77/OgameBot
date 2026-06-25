@@ -447,7 +447,7 @@ class GameClient:
             headless=self.cfg.headless,
             args=[
                 "--disable-blink-features=AutomationControlled",
-                "--remote-debugging-port=9222"
+                f"--remote-debugging-port={getattr(self.cfg, 'cdp_port', 9222)}"
             ],
         )
         state = "ogame_session.json"

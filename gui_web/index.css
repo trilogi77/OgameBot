@@ -1618,4 +1618,73 @@ body {
 .exp-live .exp-metric b { color: var(--accent-primary, #4da3ff); }
 .exp-live .exp-eta { color: #6fe09a; font-weight: 600; }
 
+/* -------------------------------------------------------------------------- */
+/* Multicuenta                                                                 */
+/* -------------------------------------------------------------------------- */
+.account-switcher {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-right: 16px;
+}
+.account-switch-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+#accountSelect {
+    padding: 6px 10px;
+    font-size: 13px;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    color: #fff;
+    min-width: 150px;
+}
+.accounts-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+.account-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+}
+.account-row.active {
+    border-color: var(--accent-primary, #4da3ff);
+    background: rgba(77, 163, 255, 0.08);
+}
+.account-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    flex-shrink: 0;
+}
+.account-dot.on { background: #45d483; box-shadow: 0 0 6px #45d483; }
+.account-dot.off { background: #6b7280; }
+.account-name { font-weight: 600; flex: 1; }
+.account-port { font-size: 11px; color: var(--text-muted, #8a93a6); }
+.account-actions { display: flex; align-items: center; gap: 8px; }
+.account-actions .btn { padding: 5px 12px; font-size: 12px; }
+.account-add {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.account-add input {
+    padding: 8px 12px;
+    font-size: 13px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    color: #fff;
+    flex: 1;
+    max-width: 280px;
+}
+
 

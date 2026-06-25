@@ -1,10 +1,13 @@
 import os
 import sys
+import re
 import json
 import yaml
+import shutil
 import subprocess
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
 import socket
 import threading
 import queue
@@ -24,106 +27,111 @@ try:
 except ImportError:
     sync_playwright = None
 
-# Cola de tareas e indicadores para transmisión y control en directo
+# ==========================================================================
+# Multicuenta: cada cuenta vive en accounts/<id>/ con su propio config.yaml y
+# todos sus ficheros de estado. El bot se lanza con cwd = ese directorio, así
+# que todos los ficheros relativos (state.json, *_cache.json, ogbot.log, etc.)
+# se aíslan solos. Cada cuenta usa un puerto CDP distinto para su navegador.
+# ==========================================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ACCOUNTS_DIR = os.path.join(BASE_DIR, "accounts")
+BASE_CDP_PORT = 9222
+
+PORT = 5000
+bot_processes = {}  # account_id -> Popen
+
+# --- Visor en vivo (de la cuenta seleccionada) ---
 live_queue = queue.Queue()
 latest_screenshot = None
 live_status = {"available": False}
+live_target = {"port": None}  # puerto CDP de la cuenta que se está viendo ahora
 
-def get_game_page(browser):
-    if not browser or not browser.contexts:
-        return None
-    context = browser.contexts[0]
-    for page in context.pages:
-        if "index.php" in page.url or "/game/" in page.url:
-            return page
-    if context.pages:
-        return context.pages[-1]
-    return None
 
-def live_worker():
-    global latest_screenshot
-    if sync_playwright is None:
-        print("Playwright no está instalado, deshabilitando transmisión en vivo.")
-        return
+# ---------------------------------------------------------------- cuentas ---
+def safe_account_id(raw: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]", "", (raw or "").strip())[:40]
 
-    while True:
+def account_dir(account: str) -> str:
+    return os.path.join(ACCOUNTS_DIR, account)
+
+def acc_path(account: str, name: str) -> str:
+    return os.path.join(account_dir(account), name)
+
+def list_account_ids():
+    if not os.path.isdir(ACCOUNTS_DIR):
+        return []
+    return sorted([d for d in os.listdir(ACCOUNTS_DIR)
+                   if os.path.isfile(os.path.join(ACCOUNTS_DIR, d, "config.yaml"))])
+
+def read_account_config(account: str) -> dict:
+    p = acc_path(account, "config.yaml")
+    if os.path.exists(p):
         try:
-            with sync_playwright() as p:
-                browser = None
-                while True:
-                    if browser is None:
-                        try:
-                            # Conectarse al Chromium del bot por el puerto 9222
-                            browser = p.chromium.connect_over_cdp("http://localhost:9222")
-                            live_status["available"] = True
-                        except Exception:
-                            live_status["available"] = False
-                            # Resolver tareas pendientes con error si no hay conexión
-                            try:
-                                while not live_queue.empty():
-                                    task = live_queue.get_nowait()
-                                    if "resp_queue" in task:
-                                        task["resp_queue"].put({"error": "El navegador del bot no está activo"})
-                            except queue.Empty:
-                                pass
-                            time.sleep(1.0)
-                            continue
-
-                    try:
-                        # Comprobar si hay alguna acción en cola
-                        try:
-                            task = live_queue.get(timeout=1.0)
-                        except queue.Empty:
-                            # Si no hay peticiones, tomar una captura periódica del juego
-                            page = get_game_page(browser)
-                            if page:
-                                try:
-                                    latest_screenshot = page.screenshot(type="jpeg", quality=60)
-                                except Exception:
-                                    browser = None
-                                    live_status["available"] = False
-                            continue
-
-                        action = task.get("action")
-                        page = get_game_page(browser)
-                        
-                        if not page:
-                            if "resp_queue" in task:
-                                task["resp_queue"].put({"error": "No hay páginas de juego abiertas en el navegador"})
-                            continue
-
-                        try:
-                            if action == "click":
-                                page.mouse.click(task["x"], task["y"])
-                                latest_screenshot = page.screenshot(type="jpeg", quality=60)
-                                if "resp_queue" in task:
-                                    task["resp_queue"].put({"success": True})
-                            elif action == "type":
-                                page.keyboard.type(task["text"])
-                                latest_screenshot = page.screenshot(type="jpeg", quality=60)
-                                if "resp_queue" in task:
-                                    task["resp_queue"].put({"success": True})
-                            elif action == "press":
-                                page.keyboard.press(task["key"])
-                                latest_screenshot = page.screenshot(type="jpeg", quality=60)
-                                if "resp_queue" in task:
-                                    task["resp_queue"].put({"success": True})
-                        except Exception as e:
-                            if "resp_queue" in task:
-                                task["resp_queue"].put({"error": str(e)})
-                    except Exception:
-                        browser = None
-                        live_status["available"] = False
+            with open(p, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
         except Exception:
-            time.sleep(2.0)
+            return {}
+    return {}
 
-# Lanzar worker de directo en segundo plano
-threading.Thread(target=live_worker, daemon=True).start()
+def write_account_config(account: str, cfg: dict):
+    os.makedirs(account_dir(account), exist_ok=True)
+    with open(acc_path(account, "config.yaml"), "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
+
+def ensure_account_cdp_port(account: str) -> int:
+    """Asigna (y persiste) un puerto CDP único a la cuenta si no tiene."""
+    cfg = read_account_config(account)
+    if cfg.get("cdp_port"):
+        return int(cfg["cdp_port"])
+    used = set()
+    for a in list_account_ids():
+        c = read_account_config(a)
+        if c.get("cdp_port"):
+            used.add(int(c["cdp_port"]))
+    port = BASE_CDP_PORT
+    while port in used:
+        port += 1
+    cfg["cdp_port"] = port
+    write_account_config(account, cfg)
+    return port
+
+def account_cdp_port(account: str) -> int:
+    cfg = read_account_config(account)
+    return int(cfg["cdp_port"]) if cfg.get("cdp_port") else ensure_account_cdp_port(account)
+
+def default_config() -> dict:
+    """Plantilla de config para una cuenta nueva (desde el ejemplo o los defaults)."""
+    example = os.path.join(BASE_DIR, "config.example.yaml")
+    if os.path.exists(example):
+        try:
+            with open(example, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            data["username"] = ""
+            data["password"] = ""
+            return data
+        except Exception:
+            pass
+    try:
+        from ogbot.config import Config
+        import dataclasses
+        return dataclasses.asdict(Config())
+    except Exception:
+        return {}
+
+def ensure_accounts_dir():
+    """Crea accounts/ y migra el config.yaml de la raíz a una cuenta 'principal'."""
+    os.makedirs(ACCOUNTS_DIR, exist_ok=True)
+    if not list_account_ids():
+        root_cfg = os.path.join(BASE_DIR, "config.yaml")
+        if os.path.exists(root_cfg):
+            d = account_dir("principal")
+            os.makedirs(d, exist_ok=True)
+            shutil.copy(root_cfg, os.path.join(d, "config.yaml"))
+            ensure_account_cdp_port("principal")
+            print("Migrado config.yaml de la raíz a accounts/principal/.")
 
 
-PORT = 5000
-bot_process = None
-
+# ------------------------------------------------------------------ pids ---
 def is_pid_running(pid: int) -> bool:
     try:
         out = subprocess.check_output(f'tasklist /FI "PID eq {pid}"', shell=True, text=True, stderr=subprocess.DEVNULL)
@@ -137,64 +145,186 @@ def kill_pid(pid: int):
     except Exception:
         pass
 
-class GUIRequestHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        # Desactivar logs de peticiones HTTP en consola para no ensuciar la salida del usuario
+def get_saved_pid(account: str):
+    pid_file = acc_path(account, "bot.pid")
+    if os.path.exists(pid_file):
+        try:
+            with open(pid_file, "r") as f:
+                return int(f.read().strip())
+        except Exception:
+            pass
+    return None
+
+def account_running(account: str) -> bool:
+    proc = bot_processes.get(account)
+    if proc is not None and proc.poll() is None:
+        return True
+    pid = get_saved_pid(account)
+    return bool(pid and is_pid_running(pid))
+
+
+# ------------------------------------------------------------- visor vivo ---
+def get_game_page(browser):
+    if not browser or not browser.contexts:
+        return None
+    context = browser.contexts[0]
+    for page in context.pages:
+        if "index.php" in page.url or "/game/" in page.url:
+            return page
+    if context.pages:
+        return context.pages[-1]
+    return None
+
+def _drain_queue_with_error(msg):
+    try:
+        while not live_queue.empty():
+            task = live_queue.get_nowait()
+            if "resp_queue" in task:
+                task["resp_queue"].put({"error": msg})
+    except queue.Empty:
         pass
 
+def live_worker():
+    """Conecta al navegador de la cuenta seleccionada (live_target) y la transmite.
+    Se reconecta automáticamente cuando se cambia de cuenta o se cae la conexión."""
+    global latest_screenshot
+    if sync_playwright is None:
+        print("Playwright no está instalado, deshabilitando transmisión en vivo.")
+        return
+    while True:
+        target = live_target["port"]
+        if not target:
+            live_status["available"] = False
+            _drain_queue_with_error("Selecciona una cuenta para ver el directo")
+            time.sleep(0.5)
+            continue
+        try:
+            with sync_playwright() as p:
+                try:
+                    browser = p.chromium.connect_over_cdp(f"http://localhost:{target}")
+                    live_status["available"] = True
+                except Exception:
+                    live_status["available"] = False
+                    _drain_queue_with_error("El navegador del bot no está activo")
+                    time.sleep(1.0)
+                    continue
+                # Bucle mientras no cambie la cuenta objetivo
+                while live_target["port"] == target:
+                    try:
+                        try:
+                            task = live_queue.get(timeout=1.0)
+                        except queue.Empty:
+                            page = get_game_page(browser)
+                            if page:
+                                try:
+                                    latest_screenshot = page.screenshot(type="jpeg", quality=60)
+                                except Exception:
+                                    break
+                            continue
+                        action = task.get("action")
+                        page = get_game_page(browser)
+                        if not page:
+                            if "resp_queue" in task:
+                                task["resp_queue"].put({"error": "No hay páginas de juego abiertas"})
+                            continue
+                        try:
+                            if action == "click":
+                                page.mouse.click(task["x"], task["y"])
+                            elif action == "type":
+                                page.keyboard.type(task["text"])
+                            elif action == "press":
+                                page.keyboard.press(task["key"])
+                            latest_screenshot = page.screenshot(type="jpeg", quality=60)
+                            if "resp_queue" in task:
+                                task["resp_queue"].put({"success": True})
+                        except Exception as e:
+                            if "resp_queue" in task:
+                                task["resp_queue"].put({"error": str(e)})
+                    except Exception:
+                        break
+                live_status["available"] = False
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+        except Exception:
+            live_status["available"] = False
+            time.sleep(1.0)
+
+threading.Thread(target=live_worker, daemon=True).start()
+
+
+class GUIRequestHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    # ----------------------------------------------------------- routing ---
     def do_GET(self):
-        global bot_process
-        if self.path == "/" or self.path == "/index.html":
+        parsed = urlparse(self.path)
+        path = parsed.path
+        account = parse_qs(parsed.query).get("account", [None])[0]
+
+        if path in ("/", "/index.html"):
             self.serve_static("gui_web/index.html", "text/html")
-        elif self.path == "/index.css":
+        elif path == "/index.css":
             self.serve_static("gui_web/index.css", "text/css")
-        elif self.path == "/index.js":
+        elif path == "/index.js":
             self.serve_static("gui_web/index.js", "application/javascript")
-        elif self.path == "/api/config":
-            self.get_config()
-        elif self.path == "/api/status":
-            self.get_status()
-        elif self.path == "/api/logs":
-            self.get_logs()
-        elif self.path == "/api/planets":
-            self.get_planets()
-        elif self.path == "/api/stats":
-            self.get_stats()
-        elif self.path == "/api/expedition":
-            self.get_expedition_status()
-        elif self.path == "/api/buildstatus":
-            self.get_build_status()
-        elif self.path == "/api/live/status":
+        elif path == "/api/accounts":
+            self.get_accounts()
+        elif path == "/api/config":
+            self.get_config(account)
+        elif path == "/api/status":
+            self.get_status(account)
+        elif path == "/api/logs":
+            self.get_logs(account)
+        elif path == "/api/planets":
+            self.get_planets(account)
+        elif path == "/api/stats":
+            self.get_stats(account)
+        elif path == "/api/expedition":
+            self.get_expedition_status(account)
+        elif path == "/api/buildstatus":
+            self.get_build_status(account)
+        elif path == "/api/live/status":
+            self._set_live_target(account)
             self.send_json(200, {"available": live_status["available"]})
-        elif self.path.startswith("/api/live/screenshot"):
-            self.serve_live_screenshot()
+        elif path == "/api/live/screenshot":
+            self.serve_live_screenshot(account)
         else:
             self.send_error(404, "File not found")
 
     def do_POST(self):
-        if self.path == "/api/config":
-            self.save_config()
-        elif self.path == "/api/start":
-            self.start_bot()
-        elif self.path == "/api/stop":
-            self.stop_bot()
-        elif self.path == "/api/locator":
-            self.run_locator()
-        elif self.path == "/api/live/click":
-            self.handle_live_click()
-        elif self.path == "/api/live/type":
-            self.handle_live_type()
-        elif self.path == "/api/live/press":
-            self.handle_live_press()
+        parsed = urlparse(self.path)
+        path = parsed.path
+        account = parse_qs(parsed.query).get("account", [None])[0]
+
+        if path == "/api/accounts/create":
+            self.create_account()
+        elif path == "/api/accounts/delete":
+            self.delete_account()
+        elif path == "/api/config":
+            self.save_config(account)
+        elif path == "/api/start":
+            self.start_bot(account)
+        elif path == "/api/stop":
+            self.stop_bot(account)
+        elif path == "/api/locator":
+            self.run_locator(account)
+        elif path == "/api/live/click":
+            self.handle_live_click(account)
+        elif path == "/api/live/type":
+            self.handle_live_type(account)
+        elif path == "/api/live/press":
+            self.handle_live_press(account)
         else:
             self.send_error(404, "Endpoint not found")
 
     def serve_static(self, rel_path, content_type):
-        abs_path = os.path.join(os.path.dirname(__file__), rel_path)
+        abs_path = os.path.join(BASE_DIR, rel_path)
         if os.path.exists(abs_path):
             self.send_response(200)
             self.send_header("Content-Type", content_type)
-            # Desactivar caché durante el desarrollo para que los cambios se apliquen al recargar
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
             self.end_headers()
             with open(abs_path, "rb") as f:
@@ -202,295 +332,259 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404, f"File {rel_path} not found")
 
-    def get_config(self):
-        config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
-        if os.path.exists(config_path):
+    # ---------------------------------------------------------- cuentas ----
+    def get_accounts(self):
+        out = []
+        for a in list_account_ids():
+            out.append({
+                "id": a,
+                "running": account_running(a),
+                "cdp_port": account_cdp_port(a),
+            })
+        self.send_json(200, {"accounts": out})
+
+    def create_account(self):
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b"{}")
+        except Exception:
+            body = {}
+        acc = safe_account_id(body.get("id", ""))
+        if not acc:
+            return self.send_json(400, {"error": "Nombre de cuenta inválido (usa letras, números, - o _)"})
+        if acc in list_account_ids():
+            return self.send_json(400, {"error": "Ya existe una cuenta con ese nombre"})
+        cfg = default_config()
+        write_account_config(acc, cfg)
+        ensure_account_cdp_port(acc)
+        self.send_json(200, {"status": "created", "id": acc})
+
+    def delete_account(self):
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b"{}")
+        except Exception:
+            body = {}
+        acc = safe_account_id(body.get("id", ""))
+        if acc not in list_account_ids():
+            return self.send_json(400, {"error": "La cuenta no existe"})
+        if account_running(acc):
+            self._stop_account(acc)
+        try:
+            shutil.rmtree(account_dir(acc))
+            self.send_json(200, {"status": "deleted"})
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+    # ----------------------------------------------------------- config ----
+    def get_config(self, account):
+        if not account:
+            return self.send_json(400, {"error": "Falta la cuenta"})
+        p = acc_path(account, "config.yaml")
+        if os.path.exists(p):
             try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f) or {}
-                self.send_json(200, data)
+                with open(p, "r", encoding="utf-8") as f:
+                    self.send_json(200, yaml.safe_load(f) or {})
             except Exception as e:
                 self.send_json(500, {"error": str(e)})
         else:
-            # Si config.yaml no existe, intentar cargar config.example.yaml o usar valores por defecto
-            example_path = os.path.join(os.path.dirname(__file__), "config.example.yaml")
-            if os.path.exists(example_path):
-                try:
-                    with open(example_path, "r", encoding="utf-8") as f:
-                        data = yaml.safe_load(f) or {}
-                    # Limpiar las credenciales de ejemplo para que el usuario las rellene
-                    data["username"] = ""
-                    data["password"] = ""
-                    self.send_json(200, data)
-                except Exception as e:
-                    self.send_json(500, {"error": str(e)})
-            else:
-                try:
-                    from ogbot.config import Config
-                    import dataclasses
-                    cfg = Config()
-                    data = dataclasses.asdict(cfg)
-                    self.send_json(200, data)
-                except Exception as e:
-                    self.send_json(500, {"error": str(e)})
+            self.send_json(200, default_config())
 
-    def save_config(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        post_data = self.rfile.read(content_length)
+    def save_config(self, account):
+        if not account:
+            return self.send_json(400, {"error": "Falta la cuenta"})
         try:
-            new_settings = json.loads(post_data)
-            config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
-            
-            # Cargar actual para preservar claves extras
-            current_config = {}
-            if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
-                    current_config = yaml.safe_load(f) or {}
-
-            # Actualizar campos
+            new_settings = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+            current = read_account_config(account)
             for k, v in new_settings.items():
-                current_config[k] = v
-
-            # Escribir de nuevo al YAML
-            with open(config_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(current_config, f, default_flow_style=False, allow_unicode=True)
-
+                current[k] = v
+            # Nunca perder el puerto CDP asignado a la cuenta
+            if not current.get("cdp_port"):
+                current["cdp_port"] = account_cdp_port(account)
+            write_account_config(account, current)
             self.send_json(200, {"status": "success"})
         except Exception as e:
             self.send_json(500, {"error": str(e)})
 
-    def reset_stats_file(self):
-        stats_path = os.path.join(os.path.dirname(__file__), "ogbot_stats.json")
+    def reset_stats_file(self, account):
         empty_stats = {
             "total_farming": {"metal": 0, "crystal": 0, "deut": 0},
             "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
             "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}},
             "parsed_messages": [],
             "session_actions": {
-                "buildings": {},
-                "research": [],
-                "fleet": {},
-                "defense": {},
-                "farming": {},
-                "expeditions": {},
-                "hostile_attacks": {},
-                "espionage": {}
+                "buildings": {}, "research": [], "fleet": {}, "defense": {},
+                "farming": {}, "expeditions": {}, "hostile_attacks": {}, "espionage": {}
             }
         }
         try:
-            with open(stats_path, "w", encoding="utf-8") as f:
+            with open(acc_path(account, "ogbot_stats.json"), "w", encoding="utf-8") as f:
                 json.dump(empty_stats, f, indent=2)
         except Exception:
             pass
 
-    def get_saved_pid(self):
-        pid_file = os.path.join(os.path.dirname(__file__), "bot.pid")
-        if os.path.exists(pid_file):
-            try:
-                with open(pid_file, "r") as f:
-                    return int(f.read().strip())
-            except Exception:
-                pass
-        return None
+    # --------------------------------------------------------- bot proc ----
+    def get_status(self, account):
+        if not account:
+            return self.send_json(200, {"running": False})
+        running = account_running(account)
+        if not running:
+            # limpiar referencias muertas
+            if account in bot_processes:
+                bot_processes[account] = None
+        self.send_json(200, {"running": running})
 
-    def save_pid(self, pid: int):
-        pid_file = os.path.join(os.path.dirname(__file__), "bot.pid")
+    def start_bot(self, account):
+        if not account:
+            return self.send_json(400, {"error": "Falta la cuenta"})
+        cfg_path = acc_path(account, "config.yaml")
+        if not os.path.exists(cfg_path):
+            return self.send_json(400, {"error": "Configura y guarda la cuenta antes de iniciarla"})
+        if account_running(account):
+            return self.send_json(400, {"error": "Esta cuenta ya está en ejecución"})
         try:
-            with open(pid_file, "w") as f:
-                f.write(str(pid))
-        except Exception:
-            pass
+            self.reset_stats_file(account)
+            ensure_account_cdp_port(account)
+            adir = account_dir(account)
+            main_path = os.path.join(BASE_DIR, "main.py")
+            # Las credenciales vienen del config.yaml de la cuenta; quitamos las env
+            # globales para que no contaminen entre cuentas.
+            env = dict(os.environ)
+            env.pop("OGBOT_USER", None)
+            env.pop("OGBOT_PASS", None)
+            env["OGBOT_CDP_PORT"] = str(account_cdp_port(account))
+            err_file = open(acc_path(account, "bot_stderr.log"), "w", encoding="utf-8")
+            proc = subprocess.Popen(
+                [sys.executable, main_path, "--config", "config.yaml"],
+                stdout=subprocess.DEVNULL,
+                stderr=err_file,
+                cwd=adir,
+                env=env,
+            )
+            bot_processes[account] = proc
+            with open(acc_path(account, "bot.pid"), "w") as f:
+                f.write(str(proc.pid))
+            self.send_json(200, {"status": "started", "pid": proc.pid})
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
 
-    def clear_pid(self):
-        pid_file = os.path.join(os.path.dirname(__file__), "bot.pid")
+    def _stop_account(self, account):
+        proc = bot_processes.get(account)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        bot_processes[account] = None
+        pid = get_saved_pid(account)
+        if pid:
+            kill_pid(pid)
+        pid_file = acc_path(account, "bot.pid")
         if os.path.exists(pid_file):
             try:
                 os.remove(pid_file)
             except Exception:
                 pass
 
-    def get_status(self):
-        global bot_process
-        is_running = False
-        if bot_process is not None and bot_process.poll() is None:
-            is_running = True
-        else:
-            pid = self.get_saved_pid()
-            if pid and is_pid_running(pid):
-                is_running = True
-            else:
-                bot_process = None
-                self.clear_pid()
-        self.send_json(200, {"running": is_running})
-
-    def start_bot(self):
-        global bot_process
-        config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
-        if not os.path.exists(config_path):
-            self.send_json(400, {"error": "Debes configurar y guardar la configuración antes de iniciar el bot"})
-            return
-
-        pid = self.get_saved_pid()
-        if (bot_process is not None and bot_process.poll() is None) or (pid and is_pid_running(pid)):
-            self.send_json(400, {"error": "El bot ya está en ejecución"})
-            return
-
+    def stop_bot(self, account):
+        if not account:
+            return self.send_json(400, {"error": "Falta la cuenta"})
+        if not account_running(account):
+            return self.send_json(400, {"error": "Esta cuenta no está en ejecución"})
         try:
-            self.reset_stats_file()
-            main_path = os.path.join(os.path.dirname(__file__), "main.py")
-            with open("bot_stderr.log", "w", encoding="utf-8") as err_file:
-                bot_process = subprocess.Popen(
-                    [sys.executable, main_path],
-                    stdout=subprocess.DEVNULL,
-                    stderr=err_file,
-                    cwd=os.path.dirname(__file__)
-                )
-            self.save_pid(bot_process.pid)
-            self.send_json(200, {"status": "started", "pid": bot_process.pid})
-        except Exception as e:
-            self.send_json(500, {"error": str(e)})
-
-    def stop_bot(self):
-        global bot_process
-        pid = self.get_saved_pid()
-        if (bot_process is None or bot_process.poll() is not None) and not (pid and is_pid_running(pid)):
-            self.send_json(400, {"error": "El bot no está en ejecución"})
-            return
-
-        try:
-            if bot_process is not None:
-                bot_process.terminate()
-                try:
-                    bot_process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    bot_process.kill()
-                    bot_process.wait()
-                bot_process = None
-            
-            if pid:
-                kill_pid(pid)
-                self.clear_pid()
-
+            self._stop_account(account)
             self.send_json(200, {"status": "stopped"})
         except Exception as e:
             self.send_json(500, {"error": str(e)})
 
-    def run_locator(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        post_data = self.rfile.read(content_length)
-        try:
-            params = json.loads(post_data)
-            coordinate = params.get("coordinate", "").strip()
-            server = params.get("server", "").strip()
-            
-            if not coordinate:
-                self.send_json(400, {"error": "Coordenada vacía"})
-                return
-            
-            # Si no se provee servidor, intentar obtenerlo de config.yaml
-            if not server:
-                config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
-                if os.path.exists(config_path):
-                    try:
-                        with open(config_path, "r", encoding="utf-8") as f:
-                            cfg = yaml.safe_load(f) or {}
-                        server_url = cfg.get("server_url", "")
-                        if server_url:
-                            from urllib.parse import urlparse
-                            parsed = urlparse(server_url)
-                            server = parsed.netloc or parsed.path
-                    except Exception:
-                        pass
-            
-            # Si sigue vacío, usar el valor por defecto
-            if not server:
-                server = "s273-es.ogame.gameforge.com"
-                
-            script_path = os.path.join(os.path.dirname(__file__), "Localizador de colonias.py")
-            
-            # Ejecutar el script usando el ejecutable actual de python
-            p = subprocess.Popen(
-                [sys.executable, script_path, coordinate, server],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
-                cwd=os.path.dirname(__file__)
-            )
-            stdout, stderr = p.communicate()
-            
-            self.send_json(200, {"output": stdout, "error": stderr})
-        except Exception as e:
-            self.send_json(500, {"error": str(e)})
-
-    def get_logs(self):
-        log_path = os.path.join(os.path.dirname(__file__), "ogbot.log")
-        if os.path.exists(log_path):
+    # ------------------------------------------------------ datos por API --
+    def _send_json_file(self, account, name, default):
+        if not account:
+            return self.send_json(200, default)
+        p = acc_path(account, name)
+        if os.path.exists(p):
             try:
-                # Leer las últimas 150 líneas de forma segura con encoding y ignore errors
-                with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-                    lines = f.readlines()
-                self.send_json(200, {"logs": lines[-150:]})
+                with open(p, "r", encoding="utf-8") as f:
+                    self.send_json(200, json.load(f))
             except Exception as e:
                 self.send_json(500, {"error": str(e)})
         else:
-            self.send_json(200, {"logs": ["El archivo ogbot.log no existe todavía. Inicia el bot para generarlo."]})
+            self.send_json(200, default)
 
-    def get_planets(self):
-        cache_path = os.path.join(os.path.dirname(__file__), "planets_cache.json")
-        if os.path.exists(cache_path):
+    def get_logs(self, account):
+        if not account:
+            return self.send_json(200, {"logs": ["Selecciona una cuenta."]})
+        p = acc_path(account, "ogbot.log")
+        if os.path.exists(p):
             try:
-                with open(cache_path, "r", encoding="utf-8") as f:
-                    planets = json.load(f)
-                self.send_json(200, {"planets": planets})
+                with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                    self.send_json(200, {"logs": f.readlines()[-150:]})
+            except Exception as e:
+                self.send_json(500, {"error": str(e)})
+        else:
+            self.send_json(200, {"logs": ["El log de esta cuenta no existe todavía. Inicia el bot."]})
+
+    def get_planets(self, account):
+        if not account:
+            return self.send_json(200, {"planets": []})
+        p = acc_path(account, "planets_cache.json")
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    self.send_json(200, {"planets": json.load(f)})
             except Exception as e:
                 self.send_json(500, {"error": str(e)})
         else:
             self.send_json(200, {"planets": []})
 
-    def get_stats(self):
-        stats_path = os.path.join(os.path.dirname(__file__), "ogbot_stats.json")
-        if os.path.exists(stats_path):
-            try:
-                with open(stats_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self.send_json(200, data)
-            except Exception as e:
-                self.send_json(500, {"error": str(e)})
-        else:
-            self.send_json(200, {
-                "total_farming": {"metal": 0, "crystal": 0, "deut": 0},
-                "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
-                "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}}
-            })
+    def get_stats(self, account):
+        self._send_json_file(account, "ogbot_stats.json", {
+            "total_farming": {"metal": 0, "crystal": 0, "deut": 0},
+            "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
+            "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}}
+        })
 
-    def get_expedition_status(self):
-        path = os.path.join(os.path.dirname(__file__), "expedition_status.json")
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self.send_json(200, data)
-            except Exception as e:
-                self.send_json(500, {"error": str(e)})
-        else:
-            self.send_json(200, {})
+    def get_expedition_status(self, account):
+        self._send_json_file(account, "expedition_status.json", {})
 
-    def get_build_status(self):
-        path = os.path.join(os.path.dirname(__file__), "build_status.json")
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self.send_json(200, data)
-            except Exception as e:
-                self.send_json(500, {"error": str(e)})
-        else:
-            self.send_json(200, {})
+    def get_build_status(self, account):
+        self._send_json_file(account, "build_status.json", {})
 
-    def serve_live_screenshot(self):
-        global latest_screenshot
+    def run_locator(self, account):
+        try:
+            params = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+            coordinate = params.get("coordinate", "").strip()
+            server = params.get("server", "").strip()
+            if not coordinate:
+                return self.send_json(400, {"error": "Coordenada vacía"})
+            if not server and account:
+                cfg = read_account_config(account)
+                server_url = cfg.get("server_url", "")
+                if server_url:
+                    parsed = urlparse(server_url)
+                    server = parsed.netloc or parsed.path
+            if not server:
+                server = "s273-es.ogame.gameforge.com"
+            script_path = os.path.join(BASE_DIR, "Localizador de colonias.py")
+            p = subprocess.Popen(
+                [sys.executable, script_path, coordinate, server],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="ignore", cwd=BASE_DIR
+            )
+            stdout, stderr = p.communicate()
+            self.send_json(200, {"output": stdout, "error": stderr})
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+    # --------------------------------------------------------- visor vivo --
+    def _set_live_target(self, account):
+        if account and account in list_account_ids():
+            live_target["port"] = account_cdp_port(account)
+        else:
+            live_target["port"] = None
+
+    def serve_live_screenshot(self, account):
+        self._set_live_target(account)
         if latest_screenshot is not None and live_status["available"]:
             self.send_response(200)
             self.send_header("Content-Type", "image/jpeg")
@@ -503,17 +597,12 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": "No hay captura disponible"}).encode("utf-8"))
 
-    def handle_live_click(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        post_data = self.rfile.read(content_length)
+    def _live_action(self, account, task):
+        self._set_live_target(account)
         try:
-            params = json.loads(post_data)
-            x = int(params.get("x", 0))
-            y = int(params.get("y", 0))
-            
             resp_q = queue.Queue()
-            live_queue.put({"action": "click", "x": x, "y": y, "resp_queue": resp_q})
-            
+            task["resp_queue"] = resp_q
+            live_queue.put(task)
             res = resp_q.get(timeout=5.0)
             if "error" in res:
                 self.send_json(500, {"error": res["error"]})
@@ -522,41 +611,17 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_json(500, {"error": str(e)})
 
-    def handle_live_type(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        post_data = self.rfile.read(content_length)
-        try:
-            params = json.loads(post_data)
-            text = params.get("text", "")
-            
-            resp_q = queue.Queue()
-            live_queue.put({"action": "type", "text": text, "resp_queue": resp_q})
-            
-            res = resp_q.get(timeout=5.0)
-            if "error" in res:
-                self.send_json(500, {"error": res["error"]})
-            else:
-                self.send_json(200, {"status": "success"})
-        except Exception as e:
-            self.send_json(500, {"error": str(e)})
+    def handle_live_click(self, account):
+        params = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+        self._live_action(account, {"action": "click", "x": int(params.get("x", 0)), "y": int(params.get("y", 0))})
 
-    def handle_live_press(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        post_data = self.rfile.read(content_length)
-        try:
-            params = json.loads(post_data)
-            key = params.get("key", "")
-            
-            resp_q = queue.Queue()
-            live_queue.put({"action": "press", "key": key, "resp_queue": resp_q})
-            
-            res = resp_q.get(timeout=5.0)
-            if "error" in res:
-                self.send_json(500, {"error": res["error"]})
-            else:
-                self.send_json(200, {"status": "success"})
-        except Exception as e:
-            self.send_json(500, {"error": str(e)})
+    def handle_live_type(self, account):
+        params = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+        self._live_action(account, {"action": "type", "text": params.get("text", "")})
+
+    def handle_live_press(self, account):
+        params = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+        self._live_action(account, {"action": "press", "key": params.get("key", "")})
 
     def send_json(self, status, data):
         self.send_response(status)
@@ -565,40 +630,39 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data).encode("utf-8"))
 
+
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('localhost', port)) == 0
 
 def run():
     global PORT
+    ensure_accounts_dir()
     while is_port_in_use(PORT):
         print(f"Puerto {PORT} ocupado. Probando con {PORT+1}...")
         PORT += 1
-
-    server_address = ('', PORT)
-    httpd = HTTPServerClass(server_address, GUIRequestHandler)
+    httpd = HTTPServerClass(('', PORT), GUIRequestHandler)
     url = f"http://localhost:{PORT}"
-    print(f"=========================================================")
-    print(f" Servidor Web GUI de OGBot iniciado en: {url}")
-    print(f" Abre este enlace en tu navegador para configurar el bot.")
-    print(f" Presiona Ctrl+C en esta consola para cerrar el servidor.")
-    print(f"=========================================================")
-    
-    # Abrir navegador automáticamente
+    print("=========================================================")
+    print(f" Panel multicuenta de OGBot iniciado en: {url}")
+    print(" Abre el enlace en tu navegador para gestionar tus cuentas.")
+    print(" Ctrl+C en esta consola para cerrar el panel.")
+    print("=========================================================")
     try:
         webbrowser.open(url)
     except Exception:
         pass
-
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nCerrando servidor Web GUI...")
-        global bot_process
-        if bot_process is not None and bot_process.poll() is None:
-            print("Deteniendo bot en segundo plano...")
-            bot_process.terminate()
-            bot_process.wait()
+        print("\nCerrando panel... deteniendo bots en ejecución.")
+        for acc, proc in list(bot_processes.items()):
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                except Exception:
+                    pass
         httpd.server_close()
 
 if __name__ == "__main__":

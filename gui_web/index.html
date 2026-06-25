@@ -22,6 +22,10 @@
             </div>
             
             <div class="status-panel">
+                <div class="account-switcher">
+                    <label for="accountSelect" class="account-switch-label">Cuenta</label>
+                    <select id="accountSelect"></select>
+                </div>
                 <div class="status-indicator">
                     <span class="status-dot" id="statusDot"></span>
                     <span class="status-text" id="statusText">Cargando estado...</span>
@@ -54,6 +58,7 @@
                 
                 <!-- Tab Headers -->
                 <div class="tab-headers">
+                    <button class="tab-btn" data-tab="tab-accounts">Cuentas</button>
                     <button class="tab-btn active" data-tab="tab-globals">Globales</button>
                     <button class="tab-btn" data-tab="tab-modules">Módulos</button>
                     <button class="tab-btn" data-tab="tab-expeditions">Expediciones</button>
@@ -67,6 +72,22 @@
 
                 <div class="tab-content">
                     
+                    <!-- TAB: CUENTAS -->
+                    <div class="tab-pane" id="tab-accounts">
+                        <div class="section-title">Cuentas</div>
+                        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px;">
+                            Cada cuenta corre su propio bot, con navegador y estado totalmente aislados. Selecciona una para ver/editar su configuración; arranca y detén cada una por separado.
+                        </p>
+                        <div id="accountsList" class="accounts-list"></div>
+                        <div class="account-add">
+                            <input type="text" id="newAccountId" placeholder="nombre-de-cuenta" maxlength="40">
+                            <button type="button" class="btn-secondary" onclick="createAccount()">+ Crear cuenta</button>
+                        </div>
+                        <p class="exp-help" style="margin-top:10px;">
+                            Pon el usuario y la contraseña de cada cuenta en su pestaña <b>Globales</b> (se guardan en su propio config aislado). Cada cuenta recibe un puerto de navegador único automáticamente.
+                        </p>
+                    </div>
+
                     <!-- TAB 1: GLOBALES -->
                     <div class="tab-pane active" id="tab-globals">
                         <div class="form-grid">

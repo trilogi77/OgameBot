@@ -39,3 +39,6 @@ ogbot/__pycache__/
 game_state_cache.json
 build_status.json
 expedition_status.json
+
+# Cuentas (config con credenciales + estado por cuenta)
+accounts/

@@ -109,6 +109,8 @@ class Config:
     expedition_auto_ships: bool = False
     expedition_cargo_ship: str = "large_cargo"   # tipo de carguero a dimensionar (NGC)
     expedition_use_pathfinder: bool = False      # incluir 1 Pathfinder (x2 botín) si hay
+    expedition_send_probe: bool = False          # enviar también sonda(s) de espionaje con cada expedición
+    expedition_probe_count: int = 1              # nº de sondas por expedición
     expedition_discoverer_class: bool = False    # clase Descubridor (x1.5 botín)
     expedition_top1_points: int = 0              # override puntos Top-1 (0 = leer de la API)
     expedition_find_safety: float = 1.0          # escala el botín objetivo (1.0 = tope)

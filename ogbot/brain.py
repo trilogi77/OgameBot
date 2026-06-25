@@ -1263,6 +1263,11 @@ class Brain:
         ships = {cargo_ship: n}
         if will_pf:
             ships["pathfinder"] = 1
+        # Sonda(s) de espionaje opcionales con cada expedición (si las hay en el hangar)
+        if getattr(self.cfg, "expedition_send_probe", False) and cargo_ship != "espionage_probe":
+            pc = max(1, int(getattr(self.cfg, "expedition_probe_count", 1) or 1))
+            if avail.get("espionage_probe", 0) >= pc:
+                ships["espionage_probe"] = pc
         return ships
 
     def _expedition_top1_points(self) -> int:

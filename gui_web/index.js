@@ -344,6 +344,8 @@ function mapConfigToUI(cfg) {
     setCheck("expedition_smart_schedule", cfg.expedition_smart_schedule !== false);
     setCheck("expedition_rotate_systems", cfg.expedition_rotate_systems !== false);
     setCheck("expedition_use_pathfinder", cfg.expedition_use_pathfinder);
+    setCheck("expedition_send_probe", cfg.expedition_send_probe);
+    setVal("expedition_probe_count", cfg.expedition_probe_count !== undefined ? cfg.expedition_probe_count : 1);
     setCheck("expedition_discoverer_class", cfg.expedition_discoverer_class);
     setVal("expedition_cargo_ship", cfg.expedition_cargo_ship || "large_cargo");
     setVal("expedition_top1_points", cfg.expedition_top1_points !== undefined ? cfg.expedition_top1_points : 0);
@@ -454,6 +456,8 @@ function saveChanges() {
     globalConfig.expedition_smart_schedule = getCheck("expedition_smart_schedule");
     globalConfig.expedition_rotate_systems = getCheck("expedition_rotate_systems");
     globalConfig.expedition_use_pathfinder = getCheck("expedition_use_pathfinder");
+    globalConfig.expedition_send_probe = getCheck("expedition_send_probe");
+    globalConfig.expedition_probe_count = parseInt(getVal("expedition_probe_count")) || 1;
     globalConfig.expedition_discoverer_class = getCheck("expedition_discoverer_class");
     globalConfig.expedition_cargo_ship = getVal("expedition_cargo_ship") || "large_cargo";
     globalConfig.expedition_top1_points = parseInt(getVal("expedition_top1_points")) || 0;

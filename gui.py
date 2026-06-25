@@ -167,13 +167,19 @@ def account_running(account: str) -> bool:
 def get_game_page(browser):
     if not browser or not browser.contexts:
         return None
-    context = browser.contexts[0]
-    for page in context.pages:
-        if "index.php" in page.url or "/game/" in page.url:
-            return page
-    if context.pages:
-        return context.pages[-1]
-    return None
+    all_pages = []
+    for ctx in browser.contexts:
+        try:
+            all_pages.extend(ctx.pages)
+        except Exception:
+            continue
+    for page in all_pages:
+        try:
+            if "index.php" in page.url or "/game/" in page.url:
+                return page
+        except Exception:
+            continue
+    return all_pages[-1] if all_pages else None
 
 def _drain_queue_with_error(msg):
     try:

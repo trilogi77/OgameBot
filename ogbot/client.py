@@ -498,12 +498,34 @@ class GameClient:
     def _is_game_url(self, url: str) -> bool:
         return ("index.php" in url or "/game/" in url) and "lobby" not in url
 
+    def _all_pages(self):
+        """
+        TODAS las páginas del navegador (de todos los contextos), no solo self.context.
+        Al pulsar Jugar, OGame puede abrir el juego en otra ventana/contexto; si solo
+        miramos self.context.pages no lo vemos y creemos que no entró.
+        """
+        pages = []
+        try:
+            for ctx in self.browser.contexts:
+                try:
+                    pages.extend(ctx.pages)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        if not pages:
+            try:
+                pages = list(self.context.pages)
+            except Exception:
+                pages = []
+        return pages
+
     def _dismiss_login_error(self) -> bool:
         """
         Cierra el diálogo de GameForge 'Ha ocurrido un error al iniciar sesión.
         Inténtalo de nuevo' si aparece. Devuelve True si detectó/cerró el error.
         """
-        for pg in list(self.context.pages):
+        for pg in self._all_pages():
             try:
                 if pg.is_closed():
                     continue
@@ -534,7 +556,7 @@ class GameClient:
         tolera que la de /loading se cierre, y REINTENTA si GameForge devuelve el
         error 'Ha ocurrido un error al iniciar sesión. Inténtalo de nuevo'.
         """
-        self.log.info("Entrando al juego (modo robusto v3)...")
+        self.log.info("Entrando al juego (modo robusto v4)...")
         new_pages = []
 
         def _on_page(pg):
@@ -565,7 +587,7 @@ class GameClient:
                 target = None
                 login_error = False
                 while time.time() < deadline and target is None:
-                    for pg in list(self.context.pages) + list(new_pages):
+                    for pg in self._all_pages() + list(new_pages):
                         try:
                             if pg.is_closed():
                                 continue
@@ -586,8 +608,12 @@ class GameClient:
                     except Exception:
                         pass
                     self.page = target
+                    try:
+                        self.context = target.context  # el juego puede estar en otro contexto
+                    except Exception:
+                        pass
                     self.log.info("Entrado al juego: %s", self.page.url)
-                    for pg in list(self.context.pages):
+                    for pg in self._all_pages():
                         try:
                             if pg is not self.page and not pg.is_closed():
                                 pg.close()
@@ -610,7 +636,7 @@ class GameClient:
                     play_locator = fresh
 
             urls = []
-            for pg in list(self.context.pages):
+            for pg in self._all_pages():
                 try:
                     if not pg.is_closed():
                         urls.append(pg.url)

@@ -1538,6 +1538,16 @@ class Brain:
                     self.log.info("Retornando despliegue de fleetsave: %s -> %s", origin, dest)
                     self.client.recall_fleet(origin, dest, mission="deploy")
 
+    def _last_known_ships(self, coords) -> dict:
+        """Naves conocidas (del último ciclo) en una ubicación, para las alertas de
+        ataque (sin navegación extra; cuando aún no hay datos devuelve {})."""
+        for p in self.last_planets:
+            locs = [p] + ([p.moon] if getattr(p, "moon", None) else [])
+            for loc in locs:
+                if loc.coords.tuple() == coords.tuple() and loc.coords.type == coords.type:
+                    return getattr(loc, "ships", {}) or {}
+        return {}
+
     def _check_and_escape_attacks(self):
         if not getattr(self.cfg, "enable_attack_escape", True):
             return
@@ -1610,7 +1620,8 @@ class Brain:
                         f"• <b>Destino:</b> [{dest_coords}] ({dest_type})\n"
                         f"• <b>Tiempo de llegada estimado:</b> {arr_text}\n"
                     )
-                    flyable_ships = {k: v for k, v in getattr(disp, 'ships', {}).items() if k != "solar_satellite" and v > 0}
+                    ships_now = self._last_known_ships(disp.coords)
+                    flyable_ships = {k: v for k, v in ships_now.items() if k != "solar_satellite" and v > 0}
                     if flyable_ships:
                         msg += "• <b>Flota en origen:</b> " + ", ".join(f"{k}: {v}" for k, v in flyable_ships.items()) + "\n"
                     else:

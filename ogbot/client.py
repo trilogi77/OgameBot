@@ -449,7 +449,7 @@ class GameClient:
         ]
         # En Docker (Chromium como root) hacen falta estos flags
         if os.environ.get("OGBOT_CHROMIUM_NO_SANDBOX"):
-            launch_args += ["--no-sandbox", "--disable-dev-shm-usage"]
+            launch_args += ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
         self.browser = self._pw.chromium.launch(
             headless=self.cfg.headless,
             args=launch_args,
@@ -493,35 +493,44 @@ class GameClient:
 
     def _enter_game_via_play(self, play_locator) -> bool:
         """
-        Hace clic en el botón Play, espera el redirect de la página 'loading'
-        al juego real (puede tardar hasta 90 segundos), y actualiza self.page.
+        Pulsa Jugar y entra al juego de forma robusta (headless/servidor): escucha
+        TODAS las pestañas que se abran, tolera que la pestaña de /loading se cierre,
+        y sondea hasta 90s buscando la URL del juego (pestaña nueva o la misma).
         """
-        try:
-            play_locator.first.wait_for(state="visible", timeout=10000)
+        self.log.info("Entrando al juego (modo robusto v2)...")
+        new_pages = []
 
-            # El juego puede abrirse en una pestaña NUEVA (popup) o en la MISMA pestaña
-            # (lobby -> /loading -> servidor). En headless/Docker varía, así que
-            # soportamos ambos: capturamos un posible popup y luego sondeamos TODAS
-            # las páginas hasta que alguna llegue a la URL del juego.
+        def _on_page(pg):
             try:
-                with self.context.expect_page(timeout=8000) as npi:
-                    play_locator.first.click()
-                _ = npi.value  # hubo pestaña nueva
-            except PWTimeout:
-                pass  # no hubo popup: el juego abre en la misma pestaña (ya se clicó)
+                new_pages.append(pg)
             except Exception:
-                # algún navegador headless lanza al capturar el popup; el clic igualmente salió
+                pass
+
+        try:
+            self.context.on("page", _on_page)
+        except Exception:
+            pass
+
+        try:
+            # Click normal y, si no dispara en headless, click por JS de respaldo
+            try:
+                play_locator.first.click(timeout=8000)
+            except Exception as e:
+                self.log.debug("Click en Jugar falló (%s); probando por JS.", e)
                 try:
-                    play_locator.first.click()
+                    play_locator.first.evaluate("el => el.click()")
                 except Exception:
                     pass
 
-            # Esperar (hasta 90s) a que alguna página alcance la URL del juego
+            # Esperar (hasta 90s) a que ALGUNA pestaña (nueva o existente) llegue al juego.
+            # Saltamos las pestañas cerradas (la de /loading puede cerrarse sola).
             deadline = time.time() + 90
             target = None
             while time.time() < deadline and target is None:
-                for pg in list(self.context.pages):
+                for pg in list(self.context.pages) + list(new_pages):
                     try:
+                        if pg.is_closed():
+                            continue
                         if self._is_game_url(pg.url):
                             target = pg
                             break
@@ -531,30 +540,30 @@ class GameClient:
                     time.sleep(1.0)
 
             if target is None:
-                last_urls = []
+                urls = []
                 for pg in list(self.context.pages):
                     try:
-                        last_urls.append(pg.url)
+                        if not pg.is_closed():
+                            urls.append(pg.url)
                     except Exception:
                         pass
-                self.log.warning("Play: ninguna página alcanzó el juego (páginas: %s).", last_urls)
+                self.log.warning("Play: ninguna pestaña alcanzó el juego. Pestañas abiertas: %s", urls)
                 return False
 
             try:
                 target.wait_for_load_state("domcontentloaded", timeout=20000)
             except Exception:
                 pass
-            self._delay()
             self.page = target
             self.log.info("Entrado al juego: %s", self.page.url)
 
-            # Cerrar pestañas sobrantes (lobby) para liberar memoria (importante en servidor)
+            # Cerrar pestañas sobrantes (lobby/loading) para liberar memoria
             for pg in list(self.context.pages):
-                if pg is not self.page:
-                    try:
+                try:
+                    if pg is not self.page and not pg.is_closed():
                         pg.close()
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
             # Auto-detectar y actualizar server_url si es distinto al configurado
             if "/game/" in self.page.url:
@@ -569,6 +578,11 @@ class GameClient:
         except Exception as e:
             self.log.warning("Error en _enter_game_via_play: %s", e)
             return False
+        finally:
+            try:
+                self.context.remove_listener("page", _on_page)
+            except Exception:
+                pass
 
     def _find_play_button(self):
         """

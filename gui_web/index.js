@@ -7,6 +7,134 @@ let planetsCache = [];
 let localPlanetsConfig = {};
 let researchPriorityList = [];
 let configLoaded = false;
+let currentAccount = localStorage.getItem("ogbot_account") || "";
+let accountsCache = [];
+
+// Añade ?account=<actual> a las rutas de API (multicuenta)
+function api(path) {
+    if (!currentAccount) return path;
+    const sep = path.includes("?") ? "&" : "?";
+    return path + sep + "account=" + encodeURIComponent(currentAccount);
+}
+
+// --------------------------------------------------------------------------
+// Gestión de cuentas (multicuenta)
+// --------------------------------------------------------------------------
+function loadAccounts() {
+    return fetch("/api/accounts")
+        .then(r => r.json())
+        .then(data => {
+            accountsCache = data.accounts || [];
+            if (!accountsCache.find(a => a.id === currentAccount)) {
+                currentAccount = accountsCache.length ? accountsCache[0].id : "";
+                localStorage.setItem("ogbot_account", currentAccount);
+            }
+            renderAccountSelect();
+            renderAccountsTab();
+        })
+        .catch(() => {});
+}
+
+function renderAccountSelect() {
+    const sel = document.getElementById("accountSelect");
+    if (!sel) return;
+    sel.innerHTML = "";
+    if (!accountsCache.length) {
+        const o = document.createElement("option");
+        o.value = ""; o.textContent = "(sin cuentas)";
+        sel.appendChild(o);
+        return;
+    }
+    accountsCache.forEach(a => {
+        const o = document.createElement("option");
+        o.value = a.id;
+        o.textContent = (a.running ? "🟢 " : "⚪ ") + a.id;
+        if (a.id === currentAccount) o.selected = true;
+        sel.appendChild(o);
+    });
+}
+
+function renderAccountsTab() {
+    const c = document.getElementById("accountsList");
+    if (!c) return;
+    if (!accountsCache.length) {
+        c.innerHTML = '<div class="text-muted" style="font-size:13px;">No hay cuentas todavía. Crea una abajo.</div>';
+        return;
+    }
+    c.innerHTML = accountsCache.map(a => `
+        <div class="account-row${a.id === currentAccount ? ' active' : ''}">
+            <span class="account-dot ${a.running ? 'on' : 'off'}"></span>
+            <span class="account-name">${a.id}</span>
+            <span class="account-port">CDP ${a.cdp_port}</span>
+            <div class="account-actions">
+                <button class="btn-secondary" onclick="switchAccount('${a.id}')">Seleccionar</button>
+                ${a.running
+                    ? `<button class="btn btn-danger" onclick="stopAccount('${a.id}')">Detener</button>`
+                    : `<button class="btn btn-success" onclick="startAccount('${a.id}')">Iniciar</button>`}
+                <button class="btn-exp-remove" title="Eliminar cuenta" onclick="deleteAccount('${a.id}')">🗑️</button>
+            </div>
+        </div>`).join("");
+}
+
+function switchAccount(id) {
+    if (!id) return;
+    currentAccount = id;
+    localStorage.setItem("ogbot_account", id);
+    configLoaded = false;
+    renderAccountSelect();
+    renderAccountsTab();
+    loadConfig();
+    loadPlanets();
+    loadStats();
+    loadLogs();
+    checkBotStatus();
+    loadExpeditionStatus();
+    loadBuildStatus();
+}
+
+function createAccount() {
+    const inp = document.getElementById("newAccountId");
+    const id = (inp.value || "").trim();
+    if (!id) { showToast("Escribe un nombre de cuenta", "warning"); return; }
+    fetch("/api/accounts/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) })
+        .then(r => r.json())
+        .then(d => {
+            if (d.error) { showToast(d.error, "danger"); return; }
+            inp.value = "";
+            showToast("Cuenta '" + d.id + "' creada", "success");
+            loadAccounts().then(() => switchAccount(d.id));
+        })
+        .catch(e => showToast("Error: " + e, "danger"));
+}
+
+function deleteAccount(id) {
+    if (!confirm("¿Eliminar la cuenta '" + id + "' y TODOS sus datos? Esto no se puede deshacer.")) return;
+    fetch("/api/accounts/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) })
+        .then(r => r.json())
+        .then(d => {
+            if (d.error) { showToast(d.error, "danger"); return; }
+            showToast("Cuenta eliminada", "success");
+            loadAccounts();
+        });
+}
+
+function startAccount(id) {
+    fetch("/api/start?account=" + encodeURIComponent(id), { method: "POST" })
+        .then(r => r.json())
+        .then(d => {
+            showToast(d.error ? "Error: " + d.error : "Cuenta '" + id + "' iniciada", d.error ? "danger" : "success");
+            setTimeout(loadAccounts, 600);
+        });
+}
+
+function stopAccount(id) {
+    fetch("/api/stop?account=" + encodeURIComponent(id), { method: "POST" })
+        .then(r => r.json())
+        .then(d => {
+            showToast(d.error ? "Error: " + d.error : "Cuenta '" + id + "' detenida", d.error ? "danger" : "success");
+            setTimeout(loadAccounts, 600);
+        });
+}
 
 // Elementos del DOM
 const statusDot = document.getElementById("statusDot");
@@ -27,13 +155,17 @@ window.addEventListener("DOMContentLoaded", () => {
     initExpeditionShipsSelector();
     const expAutoToggle = document.getElementById("expedition_auto_ships");
     if (expAutoToggle) expAutoToggle.addEventListener("change", toggleExpeditionMode);
-    loadExpeditionStatus();
-    loadBuildStatus();
-    loadConfig();
-    loadPlanets();
-    checkBotStatus();
-    loadLogs();
-    loadStats();
+    const accSel = document.getElementById("accountSelect");
+    if (accSel) accSel.addEventListener("change", e => switchAccount(e.target.value));
+    loadAccounts().then(() => {
+        loadConfig();
+        loadPlanets();
+        checkBotStatus();
+        loadLogs();
+        loadStats();
+        loadExpeditionStatus();
+        loadBuildStatus();
+    });
     initColonyLocator();
     
     const defSelect = document.getElementById("defense_planet_select");
@@ -72,6 +204,7 @@ window.addEventListener("DOMContentLoaded", () => {
     setInterval(loadStats, 4000);
     setInterval(loadExpeditionStatus, 2000);
     setInterval(loadBuildStatus, 2000);
+    setInterval(loadAccounts, 4000);
     
     // Refrescar el directo si la pestaña está activa
     setInterval(() => {
@@ -84,7 +217,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
 // Event Listeners para Botones de Control
 btnStart.addEventListener("click", () => {
-    fetch("/api/start", { method: "POST" })
+    fetch(api("/api/start"), { method: "POST" })
         .then(res => res.json())
         .then(data => {
             if (data.error) {
@@ -98,7 +231,7 @@ btnStart.addEventListener("click", () => {
 });
 
 btnStop.addEventListener("click", () => {
-    fetch("/api/stop", { method: "POST" })
+    fetch(api("/api/stop"), { method: "POST" })
         .then(res => res.json())
         .then(data => {
             if (data.error) {
@@ -156,7 +289,7 @@ function initTabs() {
 // Leer/Escribir Configuración
 // --------------------------------------------------------------------------
 function loadConfig() {
-    fetch("/api/config")
+    fetch(api("/api/config"))
         .then(res => res.json())
         .then(data => {
             if (data.error) {
@@ -428,7 +561,7 @@ function saveChanges() {
     globalConfig.planets_config = localPlanetsConfig;
 
     // Guardar
-    fetch("/api/config", {
+    fetch(api("/api/config"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(globalConfig)
@@ -448,7 +581,7 @@ function saveChanges() {
 // Carga y Renderizado de Planetas
 // --------------------------------------------------------------------------
 function loadPlanets() {
-    fetch("/api/planets")
+    fetch(api("/api/planets"))
         .then(res => res.json())
         .then(data => {
             if (data.planets && data.planets.length > 0) {
@@ -554,7 +687,7 @@ function renderPlanetsList() {
 // Estado del Bot (En ejecución / Detenido)
 // --------------------------------------------------------------------------
 function checkBotStatus() {
-    fetch("/api/status")
+    fetch(api("/api/status"))
         .then(res => res.json())
         .then(data => {
             if (data.running) {
@@ -582,7 +715,7 @@ let lastLogsLength = 0;
 let rawLogsCache = [];
 
 function loadLogs() {
-    fetch("/api/logs")
+    fetch(api("/api/logs"))
         .then(res => res.json())
         .then(data => {
             const logs = data.logs || [];
@@ -730,7 +863,7 @@ window.movePriority = function(index, direction) {
 // Carga y Renderizado de Estadísticas
 // --------------------------------------------------------------------------
 function loadStats() {
-    fetch("/api/stats")
+    fetch(api("/api/stats"))
         .then(res => res.json())
         .then(data => {
             const farm = data.total_farming || { metal: 0, crystal: 0, deut: 0 };
@@ -953,14 +1086,14 @@ function expFmtETA(sec) {
 }
 
 function loadExpeditionStatus() {
-    fetch("/api/expedition")
+    fetch(api("/api/expedition"))
         .then(res => res.json())
         .then(data => renderExpeditionStatus(data))
         .catch(() => {});
 }
 
 function loadBuildStatus() {
-    fetch("/api/buildstatus")
+    fetch(api("/api/buildstatus"))
         .then(res => res.json())
         .then(data => renderBuildStatus(data))
         .catch(() => {});
@@ -1347,7 +1480,7 @@ function initColonyLocator() {
             <div class="log-line text-muted">Aguardando respuesta de los servidores de OGame (esto puede tardar unos segundos)...</div>
         `;
         
-        fetch("/api/locator", {
+        fetch(api("/api/locator"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ coordinate: cleanCoords, server })
@@ -1752,7 +1885,7 @@ function initLiveTab() {
             liveImageLoading = true;
             
             // Enviar clic al backend
-            fetch("/api/live/click", {
+            fetch(api("/api/live/click"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ x, y })
@@ -1799,7 +1932,7 @@ function initLiveTab() {
             overlay.style.display = "flex";
             liveImageLoading = true;
             
-            fetch("/api/live/type", {
+            fetch(api("/api/live/type"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ text })
@@ -1838,7 +1971,7 @@ function initLiveTab() {
                 overlay.style.display = "flex";
                 liveImageLoading = true;
                 
-                fetch("/api/live/press", {
+                fetch(api("/api/live/press"), {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ key: keyName })
@@ -1878,7 +2011,7 @@ function initLiveTab() {
 function refreshLiveScreenshot() {
     const img = document.getElementById("liveScreenImage");
     if (img && !liveImageLoading) {
-        img.src = "/api/live/screenshot?t=" + Date.now();
+        img.src = api("/api/live/screenshot?t=" + Date.now());
     }
 }
 
@@ -1889,7 +2022,7 @@ function updateLiveTab() {
     const text = document.getElementById("liveStatusText");
     const img = document.getElementById("liveScreenImage");
     
-    fetch("/api/live/status")
+    fetch(api("/api/live/status"))
         .then(res => res.json())
         .then(data => {
             if (data.available) {
@@ -1906,7 +2039,7 @@ function updateLiveTab() {
                 
                 // Cargar captura en vivo si no hay carga bloqueante
                 if (img && !liveImageLoading) {
-                    img.src = "/api/live/screenshot?t=" + Date.now();
+                    img.src = api("/api/live/screenshot?t=" + Date.now());
                 }
             } else {
                 if (offlineOverlay) offlineOverlay.style.display = "flex";

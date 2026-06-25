@@ -156,6 +156,7 @@ class Config:
     active_hours: Tuple[int, int] = (8, 24)  # horas (local) en que el bot "juega"
     max_actions_per_hour: int = 40           # rate-limit para parecer humano
     headless: bool = True
+    cdp_port: int = 9222                      # puerto de depuración del navegador (único por cuenta)
     max_saving_hours_research: float = 6.0   # horas máx a ahorrar para investigación
     max_saving_hours_economy: float = 4.0    # horas máx a ahorrar para economía
 
@@ -207,4 +208,11 @@ class Config:
         # La contraseña SIEMPRE preferimos leerla del entorno
         cfg.password = os.environ.get("OGBOT_PASS", cfg.password)
         cfg.username = os.environ.get("OGBOT_USER", cfg.username)
+        # Puerto CDP por cuenta (permite varios navegadores a la vez)
+        cdp_env = os.environ.get("OGBOT_CDP_PORT")
+        if cdp_env:
+            try:
+                cfg.cdp_port = int(cdp_env)
+            except ValueError:
+                pass
         return cfg

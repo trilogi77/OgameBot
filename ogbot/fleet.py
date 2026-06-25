@@ -149,10 +149,21 @@ def fleetsave_plan(origin: Coords, all_planets: List[Coords], cfg: Config,
 
         # Buscar combinaciones que duren al menos target_t
         valid_options = [opt for opt in options if opt["flight_s"] >= target_t]
-        if valid_options:
-            # Elegir la opción más corta dentro de las válidas (que duren >= target_t)
-            # de esta forma durará lo mismo o un poco más, pero no excesivamente más.
+
+        # Preferir destinos LUNA: una luna no se puede escanear con sensor phalanx,
+        # así que esconde mejor la flota (luna->luna mejor que luna->planeta).
+        prefer_moon = getattr(cfg, "fleetsave_prefer_moon", True)
+        moons_of = lambda lst: [o for o in lst if getattr(o["destination"], "type", "planet") == "moon"]
+
+        if prefer_moon and moons_of(valid_options):
+            # Mejor luna válida (la más corta que aún dure >= target_t)
+            best = min(moons_of(valid_options), key=lambda opt: opt["flight_s"])
+        elif valid_options:
+            # Cualquier destino válido (el más corto que dure >= target_t)
             best = min(valid_options, key=lambda opt: opt["flight_s"])
+        elif prefer_moon and moons_of(options):
+            # Ninguna llega al objetivo: la luna más larga disponible
+            best = max(moons_of(options), key=lambda opt: opt["flight_s"])
         else:
             # Si ninguna opción es lo suficientemente larga, elegir la más larga de todas
             best = max(options, key=lambda opt: opt["flight_s"])

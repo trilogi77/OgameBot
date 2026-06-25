@@ -151,6 +151,7 @@ class Config:
     fleetsave_mission: str = "deploy"        # deploy/transport/expedition
     fleetsave_carry_resources: bool = True   # llevarse los recursos del planeta en el fleetsave
     fleetsave_recall_halfway: bool = False   # retornar despliegues a mitad del descanso
+    fleetsave_prefer_moon: bool = True       # preferir destino LUNA (no escaneable por phalanx)
     # Barrido nocturno: cada N horas durante el descanso, vacía (fleetsave) los planetas
     # activados para recoger la flota fabricada de noche. Activable por planeta.
     enable_night_sweep: bool = False

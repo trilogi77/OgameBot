@@ -327,6 +327,7 @@ function mapConfigToUI(cfg) {
     setVal("fleetsave_mission", cfg.fleetsave_mission || "deploy");
     setCheck("fleetsave_carry_resources", cfg.fleetsave_carry_resources !== false);
     setCheck("fleetsave_recall_halfway", !!cfg.fleetsave_recall_halfway);
+    setCheck("fleetsave_prefer_moon", cfg.fleetsave_prefer_moon !== false);
     setCheck("enable_night_sweep", cfg.enable_night_sweep);
     setVal("night_sweep_interval_hours", cfg.night_sweep_interval_hours !== undefined ? cfg.night_sweep_interval_hours : 2.0);
     setVal("telegram_token", cfg.telegram_token || "");
@@ -442,6 +443,7 @@ function saveChanges() {
     globalConfig.fleetsave_mission = getVal("fleetsave_mission");
     globalConfig.fleetsave_carry_resources = getCheck("fleetsave_carry_resources");
     globalConfig.fleetsave_recall_halfway = getCheck("fleetsave_recall_halfway");
+    globalConfig.fleetsave_prefer_moon = getCheck("fleetsave_prefer_moon");
     globalConfig.enable_night_sweep = getCheck("enable_night_sweep");
     let _nsi = parseFloat(getVal("night_sweep_interval_hours"));
     globalConfig.night_sweep_interval_hours = (isNaN(_nsi) || _nsi <= 0) ? 2.0 : _nsi;

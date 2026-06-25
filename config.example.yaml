@@ -140,6 +140,7 @@ enable_fleetsave: true
 enable_attack_escape: true
 attack_check_interval_s: 300
 fleetsave_mission: deploy
+fleetsave_prefer_moon: true    # preferir destino luna en el fleetsave (no escaneable por phalanx)
 # Barrido nocturno: cada N horas durante el descanso, despierta y vacía (fleetsave)
 # los planetas activados, para recoger la flota fabricada de noche. Actívalo por
 # planeta en la pestaña "Por Planeta" (así no haces actividad en todos).

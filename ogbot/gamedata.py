@@ -275,6 +275,41 @@ def flight_time(dist: int, ship_speed: int, speed_percent: float = 1.0,
     return ((3500 / speed_percent) * math.sqrt((10 * dist) / eff_speed) + 10)
 
 
+# Motor principal de cada nave y bonus de velocidad por nivel de tecnología.
+SHIP_DRIVES = {
+    "small_cargo": ("combustion_drive", 0.1),
+    "large_cargo": ("combustion_drive", 0.1),
+    "light_fighter": ("combustion_drive", 0.1),
+    "heavy_fighter": ("impulse_drive", 0.2),
+    "cruiser": ("impulse_drive", 0.2),
+    "battleship": ("hyperspace_drive", 0.3),
+    "colony_ship": ("impulse_drive", 0.2),
+    "recycler": ("combustion_drive", 0.1),
+    "espionage_probe": ("combustion_drive", 0.1),
+    "bomber": ("impulse_drive", 0.2),
+    "destroyer": ("hyperspace_drive", 0.3),
+    "battlecruiser": ("hyperspace_drive", 0.3),
+    "deathstar": ("hyperspace_drive", 0.3),
+    "reaper": ("hyperspace_drive", 0.3),
+    "pathfinder": ("hyperspace_drive", 0.3),
+}
+
+
+def effective_speed(ship: str, research_levels: dict = None) -> int:
+    """
+    Velocidad real de una nave incluyendo el bonus de su motor (la velocidad base
+    no lo incluye). Acerca la estimación de vuelo a la real; el resto del desfase
+    lo corrige la calibración del cerebro. ponytail: ignora los upgrades de motor
+    por umbral (p.ej. large_cargo a impulso); la calibración cubre el residuo.
+    """
+    base = SHIPS[ship].speed if ship in SHIPS else 0
+    if not research_levels:
+        return base
+    drive, factor = SHIP_DRIVES.get(ship, ("combustion_drive", 0.1))
+    lvl = research_levels.get(drive, 0)
+    return int(base * (1 + factor * max(lvl, 0)))
+
+
 def fuel_cost(units: Dict[str, int], dist: int, speed_percent: float = 1.0,
               universe_fleet_speed: float = 1.0) -> int:
     """Consumo total de deuterio del viaje (ida)."""

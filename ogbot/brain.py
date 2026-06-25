@@ -61,6 +61,7 @@ class Brain:
         self.next_expedition_event = 0.0
         self._expedition_returns: List[float] = []
         self._expedition_top1_cache: Tuple[float, int] = (0.0, 0)
+        self.expedition_flight_cal = 1.0  # factor real/estimado de vuelo (autocalibrado)
         self._load_state()
         # Memoria de estado (niveles de edificios/investigación/defensas)
         self.state_cache = {"research": {}, "planets": {}}
@@ -82,6 +83,7 @@ class Brain:
                     self.expedition_rotation_index = data.get("expedition_rotation_index", 0)
                     self.next_expedition_event = data.get("next_expedition_event", 0.0)
                     self._expedition_returns = data.get("expedition_returns", [])
+                    self.expedition_flight_cal = data.get("expedition_flight_cal", 1.0)
                     self.log.info("Historial de cooldown de ataques cargado: %d registros.", len(self.attack_history))
             except Exception as e:
                 self.log.debug("No se pudo cargar state.json: %s", e)
@@ -106,6 +108,7 @@ class Brain:
                     "expedition_rotation_index": self.expedition_rotation_index,
                     "next_expedition_event": self.next_expedition_event,
                     "expedition_returns": [e for e in self._expedition_returns if e > now],
+                    "expedition_flight_cal": self.expedition_flight_cal,
                 }, f, indent=2)
         except Exception as e:
             self.log.debug("No se pudo guardar state.json: %s", e)
@@ -1111,11 +1114,16 @@ class Brain:
             destination = Coords(home.galaxy, target_system, self.cfg.expedition_position)
         plan = fleet_mod.expedition_plan(home, self.cfg, destination=destination, ships=ships)
 
-        # Calcular duración estimada del vuelo (ida y vuelta + permanencia)
+        # Calcular duración estimada del vuelo (ida y vuelta + permanencia).
+        # Usa la velocidad real (con motor) y el factor de calibración aprendido del
+        # juego, para no rechazar expediciones por una estimación inflada.
         dist = gd.distance(home.tuple(), plan["destination"].tuple())
-        slowest_speed = min((gd.SHIPS[ship].speed for ship in plan["ships"] if plan["ships"][ship] > 0), default=1)
+        slowest_speed = max(1, min((gd.effective_speed(ship, self.research_levels)
+                                    for ship in plan["ships"] if plan["ships"][ship] > 0), default=1))
         ftime = gd.flight_time(dist, slowest_speed, 1.0, self.cfg.fleet_speed)
-        total_duration = 2 * ftime + plan["hold_hours"] * 3600
+        cal = getattr(self, "expedition_flight_cal", 1.0) or 1.0
+        est_oneway = ftime * cal
+        total_duration = 2 * est_oneway + plan["hold_hours"] * 3600
 
         # Segundos restantes del horario activo
         seconds_left = utils.seconds_until_inactive(self.cfg.active_hours)
@@ -1126,14 +1134,23 @@ class Brain:
             return False
 
         if self._guard():
+            self.client.last_flight_seconds = None
             ok = self.client.send_fleet(home, plan["destination"], plan["ships"],
                                    mission="expedition", hold_hours=plan["hold_hours"])
             if ok:
                 self.active_slots += 1
                 self.active_expe_slots += 1
-                # Feature #2: registrar la vuelta estimada para reactivarse y reenviar
-                self._expedition_returns.append(time.time() + total_duration)
-                # Registrar acción de la sesión
+                # Calibrar con el tiempo de vuelo REAL leído del juego (real/estimado)
+                real_oneway = getattr(self.client, "last_flight_seconds", None)
+                if real_oneway and ftime > 0:
+                    ratio = real_oneway / ftime
+                    if 0.02 <= ratio <= 5.0:
+                        self.expedition_flight_cal = ratio
+                        self.log.info("Calibración de vuelo de expedición: real=%.0fs estimado=%.0fs -> factor %.2f",
+                                      real_oneway, ftime, ratio)
+                # Feature #2: registrar la vuelta (real si la tenemos) para reactivarse
+                ret_oneway = real_oneway if real_oneway else est_oneway
+                self._expedition_returns.append(time.time() + 2 * ret_oneway + plan["hold_hours"] * 3600)
                 self.record_session_action("expeditions", f"{plan['destination']}", 1, str(home))
                 return True
         return False

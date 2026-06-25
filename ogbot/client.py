@@ -1375,6 +1375,7 @@ class GameClient:
         if self._act(desc):
             return True
 
+        self.last_flight_seconds = None  # tiempo de vuelo real (un sentido) leído del juego
         origin_planet = self._planet_by_coords(origin)
         self._goto("fleet", origin_planet)
         try:
@@ -1730,6 +1731,18 @@ class GameClient:
             self._set_speed(sp_val)
 
         time.sleep(0.5)
+
+        # Leer la duración real de vuelo (un sentido) para calibrar estimaciones futuras
+        try:
+            dur_txt = self.page.evaluate("""() => {
+                const el = document.getElementById('duration') || document.querySelector('#duration .value') || document.querySelector('.duration') || document.querySelector('.flightTime');
+                return el ? el.textContent.trim() : null;
+            }""")
+            secs = self._parse_duration_to_seconds(dur_txt) if dur_txt else None
+            if secs and secs > 0:
+                self.last_flight_seconds = secs
+        except Exception:
+            pass
 
         # Recursos (transporte/deploy)
         if resources_to_carry and mission in ("transport", "deploy"):

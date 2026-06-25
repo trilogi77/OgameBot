@@ -164,6 +164,7 @@ class Config:
     max_actions_per_hour: int = 40           # rate-limit para parecer humano
     headless: bool = True
     cdp_port: int = 9222                      # puerto de depuración del navegador (único por cuenta)
+    login_human_check_timeout_s: int = 300    # espera máx. para resolver el CAPTCHA desde el visor del GUI
     max_saving_hours_research: float = 6.0   # horas máx a ahorrar para investigación
     max_saving_hours_economy: float = 4.0    # horas máx a ahorrar para economía
 

@@ -1,0 +1,11 @@
+services:
+  ogbot:
+    build: .
+    container_name: ogbot
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./accounts:/app/accounts
+    environment:
+      - OGBOT_CHROMIUM_NO_SANDBOX=1
+    restart: unless-stopped

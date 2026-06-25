@@ -498,33 +498,74 @@ class GameClient:
         """
         try:
             play_locator.first.wait_for(state="visible", timeout=10000)
-            with self.context.expect_page() as npi:
-                play_locator.first.click()
-            new_page = npi.value
-            # La página de loading redirige al juego mediante JS; esperamos la URL final
-            new_page.wait_for_url(
-                lambda url: self._is_game_url(url),
-                timeout=90000
-            )
-            new_page.wait_for_load_state("domcontentloaded", timeout=20000)
+
+            # El juego puede abrirse en una pestaña NUEVA (popup) o en la MISMA pestaña
+            # (lobby -> /loading -> servidor). En headless/Docker varía, así que
+            # soportamos ambos: capturamos un posible popup y luego sondeamos TODAS
+            # las páginas hasta que alguna llegue a la URL del juego.
+            try:
+                with self.context.expect_page(timeout=8000) as npi:
+                    play_locator.first.click()
+                _ = npi.value  # hubo pestaña nueva
+            except PWTimeout:
+                pass  # no hubo popup: el juego abre en la misma pestaña (ya se clicó)
+            except Exception:
+                # algún navegador headless lanza al capturar el popup; el clic igualmente salió
+                try:
+                    play_locator.first.click()
+                except Exception:
+                    pass
+
+            # Esperar (hasta 90s) a que alguna página alcance la URL del juego
+            deadline = time.time() + 90
+            target = None
+            while time.time() < deadline and target is None:
+                for pg in list(self.context.pages):
+                    try:
+                        if self._is_game_url(pg.url):
+                            target = pg
+                            break
+                    except Exception:
+                        continue
+                if target is None:
+                    time.sleep(1.0)
+
+            if target is None:
+                last_urls = []
+                for pg in list(self.context.pages):
+                    try:
+                        last_urls.append(pg.url)
+                    except Exception:
+                        pass
+                self.log.warning("Play: ninguna página alcanzó el juego (páginas: %s).", last_urls)
+                return False
+
+            try:
+                target.wait_for_load_state("domcontentloaded", timeout=20000)
+            except Exception:
+                pass
             self._delay()
-            self.page = new_page
+            self.page = target
             self.log.info("Entrado al juego: %s", self.page.url)
 
-            # Auto-detectar y actualizar server_url de forma dinámica si es diferente al configurado
+            # Cerrar pestañas sobrantes (lobby) para liberar memoria (importante en servidor)
+            for pg in list(self.context.pages):
+                if pg is not self.page:
+                    try:
+                        pg.close()
+                    except Exception:
+                        pass
+
+            # Auto-detectar y actualizar server_url si es distinto al configurado
             if "/game/" in self.page.url:
                 actual_base = self.page.url.split("/game/")[0] + "/"
                 if self.cfg.server_url.rstrip("/") != actual_base.rstrip("/"):
                     self.log.warning(
-                        "Servidor real detectado en vivo: %s (configurado: %s). Actualizando server_url para evitar bucles de redirección.",
+                        "Servidor real detectado en vivo: %s (configurado: %s). Actualizando server_url.",
                         actual_base, self.cfg.server_url
                     )
                     self.cfg.server_url = actual_base
             return True
-        except PWTimeout:
-            self.log.warning("Timeout esperando URL de juego (URL: %s).",
-                             new_page.url if 'new_page' in dir() else "desconocida")
-            return False
         except Exception as e:
             self.log.warning("Error en _enter_game_via_play: %s", e)
             return False

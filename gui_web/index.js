@@ -1884,47 +1884,68 @@ function initLiveTab() {
     
     // 1. Manejo de Clics sobre la pantalla del directo
     if (img && container && overlay) {
-        img.addEventListener("click", (e) => {
-            if (liveImageLoading) return;
-            
+        img.setAttribute("draggable", "false");  // evitar el arrastre nativo de la imagen
+        let dragStart = null;
+
+        const scaleCoords = (clientX, clientY) => {
             const rect = img.getBoundingClientRect();
-            // Calcular coordenadas relativas (0 a 1)
-            const relX = (e.clientX - rect.left) / rect.width;
-            const relY = (e.clientY - rect.top) / rect.height;
-            // Escalar a la resolución fija del bot (1366x768)
-            const x = Math.round(relX * 1366);
-            const y = Math.round(relY * 768);
-            
-            // Dibujar indicador visual de clic (efecto ripple)
-            showClickIndicator(e.clientX - rect.left, e.clientY - rect.top);
-            
-            // Mostrar overlay de carga
+            const relX = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+            const relY = Math.min(1, Math.max(0, (clientY - rect.top) / rect.height));
+            return {
+                x: Math.round(relX * 1366),
+                y: Math.round(relY * 768),
+                localX: clientX - rect.left,
+                localY: clientY - rect.top,
+            };
+        };
+
+        const sendLive = (url, body, indicators) => {
+            (indicators || []).forEach(p => showClickIndicator(p.x, p.y));
             overlay.style.display = "flex";
             liveImageLoading = true;
-            
-            // Enviar clic al backend
-            fetch(api("/api/live/click"), {
+            fetch(api(url), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ x, y })
+                body: JSON.stringify(body)
             })
             .then(res => res.json())
             .then(data => {
                 overlay.style.display = "none";
                 liveImageLoading = false;
-                if (data.error) {
-                    showToast("Error de interacción: " + data.error, "danger");
-                } else {
-                    // Refrescar captura al instante
-                    refreshLiveScreenshot();
-                }
+                if (data.error) showToast("Error de interacción: " + data.error, "danger");
+                else refreshLiveScreenshot();
             })
             .catch(err => {
                 overlay.style.display = "none";
                 liveImageLoading = false;
                 showToast("Error de conexión: " + err, "danger");
             });
+        };
+
+        // Distinguir CLIC vs ARRASTRE (los captchas "soy humano" suelen ser de arrastrar)
+        img.addEventListener("mousedown", (e) => {
+            if (liveImageLoading) return;
+            e.preventDefault();  // sin esto el navegador inicia un arrastre fantasma de la imagen
+            dragStart = scaleCoords(e.clientX, e.clientY);
         });
+
+        img.addEventListener("mouseup", (e) => {
+            if (liveImageLoading || !dragStart) { dragStart = null; return; }
+            const end = scaleCoords(e.clientX, e.clientY);
+            const moved = Math.hypot(end.localX - dragStart.localX, end.localY - dragStart.localY);
+            const start = dragStart;
+            dragStart = null;
+            if (moved > 6) {
+                sendLive("/api/live/drag",
+                    { x: start.x, y: start.y, x2: end.x, y2: end.y },
+                    [{ x: start.localX, y: start.localY }, { x: end.localX, y: end.localY }]);
+            } else {
+                sendLive("/api/live/click", { x: end.x, y: end.y },
+                    [{ x: end.localX, y: end.localY }]);
+            }
+        });
+
+        img.addEventListener("mouseleave", () => { dragStart = null; });
     }
 
     // Generador dinámico de ripples

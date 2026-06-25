@@ -19,6 +19,10 @@ class Config:
     username: str = ""               # email de Gameforge
     password: str = ""               # mejor vía variable de entorno OGBOT_PASS
     server_url: str = ""             # ej. https://s123-es.ogame.gameforge.com
+    # Proxy del navegador (opcional; útil en VPS si GameForge bloquea el login por IP)
+    proxy_server: str = ""           # ej. http://host:puerto o socks5://host:puerto
+    proxy_username: str = ""
+    proxy_password: str = ""
 
     # --- Parámetros del universo (varían entre universos) ---
     universe_speed: float = 1.0      # economía

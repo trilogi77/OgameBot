@@ -450,10 +450,17 @@ class GameClient:
         # En Docker (Chromium como root) hacen falta estos flags
         if os.environ.get("OGBOT_CHROMIUM_NO_SANDBOX"):
             launch_args += ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-        self.browser = self._pw.chromium.launch(
-            headless=self.cfg.headless,
-            args=launch_args,
-        )
+        launch_kwargs = {"headless": self.cfg.headless, "args": launch_args}
+        # Proxy opcional (p.ej. residencial) para evitar el bloqueo de login por IP de VPS
+        proxy_server = getattr(self.cfg, "proxy_server", "") or os.environ.get("OGBOT_PROXY", "")
+        if proxy_server:
+            proxy = {"server": proxy_server}
+            if getattr(self.cfg, "proxy_username", ""):
+                proxy["username"] = self.cfg.proxy_username
+                proxy["password"] = getattr(self.cfg, "proxy_password", "")
+            launch_kwargs["proxy"] = proxy
+            self.log.info("Usando proxy para el navegador: %s", proxy_server)
+        self.browser = self._pw.chromium.launch(**launch_kwargs)
         state = "ogame_session.json"
         self.context = self.browser.new_context(
             storage_state=state if os.path.exists(state) else None,
@@ -491,13 +498,43 @@ class GameClient:
     def _is_game_url(self, url: str) -> bool:
         return ("index.php" in url or "/game/" in url) and "lobby" not in url
 
+    def _dismiss_login_error(self) -> bool:
+        """
+        Cierra el diálogo de GameForge 'Ha ocurrido un error al iniciar sesión.
+        Inténtalo de nuevo' si aparece. Devuelve True si detectó/cerró el error.
+        """
+        for pg in list(self.context.pages):
+            try:
+                if pg.is_closed():
+                    continue
+                err = pg.locator(
+                    "text=/error al iniciar sesión|error occurred while logging|"
+                    "Inténtalo de nuevo|try again/i"
+                ).first
+                if err.count() > 0 and err.is_visible():
+                    for sel in ["button:has-text('OK')", "button:has-text('Aceptar')",
+                                "a:has-text('OK')", "a:has-text('Aceptar')",
+                                "button:has-text('Cerrar')", ".btn-primary", "button.close"]:
+                        try:
+                            b = pg.locator(sel).first
+                            if b.count() > 0 and b.is_visible():
+                                b.click()
+                                self.log.info("Cerrado diálogo de error de login de GameForge.")
+                                return True
+                        except Exception:
+                            continue
+                    return True  # error detectado aunque no se pudiera pulsar OK
+            except Exception:
+                continue
+        return False
+
     def _enter_game_via_play(self, play_locator) -> bool:
         """
-        Pulsa Jugar y entra al juego de forma robusta (headless/servidor): escucha
-        TODAS las pestañas que se abran, tolera que la pestaña de /loading se cierre,
-        y sondea hasta 90s buscando la URL del juego (pestaña nueva o la misma).
+        Pulsa Jugar y entra al juego (headless/servidor). Escucha todas las pestañas,
+        tolera que la de /loading se cierre, y REINTENTA si GameForge devuelve el
+        error 'Ha ocurrido un error al iniciar sesión. Inténtalo de nuevo'.
         """
-        self.log.info("Entrando al juego (modo robusto v2)...")
+        self.log.info("Entrando al juego (modo robusto v3)...")
         new_pages = []
 
         def _on_page(pg):
@@ -512,69 +549,78 @@ class GameClient:
             pass
 
         try:
-            # Click normal y, si no dispara en headless, click por JS de respaldo
-            try:
-                play_locator.first.click(timeout=8000)
-            except Exception as e:
-                self.log.debug("Click en Jugar falló (%s); probando por JS.", e)
+            for attempt in range(1, 4):
+                # Click normal y, si no dispara en headless, click por JS de respaldo
                 try:
-                    play_locator.first.evaluate("el => el.click()")
-                except Exception:
-                    pass
-
-            # Esperar (hasta 90s) a que ALGUNA pestaña (nueva o existente) llegue al juego.
-            # Saltamos las pestañas cerradas (la de /loading puede cerrarse sola).
-            deadline = time.time() + 90
-            target = None
-            while time.time() < deadline and target is None:
-                for pg in list(self.context.pages) + list(new_pages):
+                    play_locator.first.click(timeout=8000)
+                except Exception as e:
+                    self.log.debug("Click en Jugar falló (%s); probando por JS.", e)
                     try:
-                        if pg.is_closed():
-                            continue
-                        if self._is_game_url(pg.url):
-                            target = pg
-                            break
-                    except Exception:
-                        continue
-                if target is None:
-                    time.sleep(1.0)
-
-            if target is None:
-                urls = []
-                for pg in list(self.context.pages):
-                    try:
-                        if not pg.is_closed():
-                            urls.append(pg.url)
+                        play_locator.first.evaluate("el => el.click()")
                     except Exception:
                         pass
-                self.log.warning("Play: ninguna pestaña alcanzó el juego. Pestañas abiertas: %s", urls)
-                return False
 
-            try:
-                target.wait_for_load_state("domcontentloaded", timeout=20000)
-            except Exception:
-                pass
-            self.page = target
-            self.log.info("Entrado al juego: %s", self.page.url)
+                # Esperar (hasta 45s) a que alguna pestaña llegue al juego, o detectar el error
+                deadline = time.time() + 45
+                target = None
+                login_error = False
+                while time.time() < deadline and target is None:
+                    for pg in list(self.context.pages) + list(new_pages):
+                        try:
+                            if pg.is_closed():
+                                continue
+                            if self._is_game_url(pg.url):
+                                target = pg
+                                break
+                        except Exception:
+                            continue
+                    if target is None:
+                        if self._dismiss_login_error():
+                            login_error = True
+                            break  # GameForge falló: salir a reintentar
+                        time.sleep(1.0)
 
-            # Cerrar pestañas sobrantes (lobby/loading) para liberar memoria
+                if target is not None:
+                    try:
+                        target.wait_for_load_state("domcontentloaded", timeout=20000)
+                    except Exception:
+                        pass
+                    self.page = target
+                    self.log.info("Entrado al juego: %s", self.page.url)
+                    for pg in list(self.context.pages):
+                        try:
+                            if pg is not self.page and not pg.is_closed():
+                                pg.close()
+                        except Exception:
+                            pass
+                    if "/game/" in self.page.url:
+                        actual_base = self.page.url.split("/game/")[0] + "/"
+                        if self.cfg.server_url.rstrip("/") != actual_base.rstrip("/"):
+                            self.log.warning(
+                                "Servidor real detectado en vivo: %s (configurado: %s). Actualizando server_url.",
+                                actual_base, self.cfg.server_url)
+                            self.cfg.server_url = actual_base
+                    return True
+
+                self.log.warning("Play intento %d/3: %s. Reintentando...", attempt,
+                                 "GameForge devolvió error de login" if login_error else "no se entró al juego")
+                time.sleep(3)
+                fresh = self._find_play_button()
+                if fresh is not None:
+                    play_locator = fresh
+
+            urls = []
             for pg in list(self.context.pages):
                 try:
-                    if pg is not self.page and not pg.is_closed():
-                        pg.close()
+                    if not pg.is_closed():
+                        urls.append(pg.url)
                 except Exception:
                     pass
-
-            # Auto-detectar y actualizar server_url si es distinto al configurado
-            if "/game/" in self.page.url:
-                actual_base = self.page.url.split("/game/")[0] + "/"
-                if self.cfg.server_url.rstrip("/") != actual_base.rstrip("/"):
-                    self.log.warning(
-                        "Servidor real detectado en vivo: %s (configurado: %s). Actualizando server_url.",
-                        actual_base, self.cfg.server_url
-                    )
-                    self.cfg.server_url = actual_base
-            return True
+            self.log.warning(
+                "Play: no se entró al juego tras 3 intentos (pestañas: %s). Si corres en un "
+                "servidor/VPS, GameForge suele bloquear el login por IP; configura un proxy "
+                "residencial (proxy_server / OGBOT_PROXY).", urls)
+            return False
         except Exception as e:
             self.log.warning("Error en _enter_game_via_play: %s", e)
             return False

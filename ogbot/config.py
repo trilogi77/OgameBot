@@ -151,6 +151,10 @@ class Config:
     fleetsave_mission: str = "deploy"        # deploy/transport/expedition
     fleetsave_carry_resources: bool = True   # llevarse los recursos del planeta en el fleetsave
     fleetsave_recall_halfway: bool = False   # retornar despliegues a mitad del descanso
+    # Barrido nocturno: cada N horas durante el descanso, vacía (fleetsave) los planetas
+    # activados para recoger la flota fabricada de noche. Activable por planeta.
+    enable_night_sweep: bool = False
+    night_sweep_interval_hours: float = 2.0
     min_action_delay_s: float = 3.0          # delays aleatorios entre acciones
     max_action_delay_s: float = 11.0
     cycle_interval_min_s: float = 600         # cada cuánto corre el ciclo principal

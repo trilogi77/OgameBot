@@ -361,8 +361,21 @@ class Brain:
                         self.log.info("Retorno nocturno completado. Esperando la segunda mitad...")
                     
                     self.log.info("Esperando hasta el inicio de la franja horaria activa...")
-                    # Esperar hasta que empiece el horario activo en silencio (sin comprobar ataques periódicamente para evitar sospechas)
+                    # Barrido nocturno opcional: cada N horas despierta y vacía los planetas
+                    # activados (para recoger la flota fabricada de noche). Si está apagado,
+                    # espera en silencio hasta el horario activo (sin actividad).
+                    night_sweep = getattr(self.cfg, "enable_night_sweep", False)
+                    sweep_interval_s = max(0.25, float(getattr(self.cfg, "night_sweep_interval_hours", 2.0) or 2.0)) * 3600
+                    last_sweep = time.time()
                     while self.running and not utils.within_active_hours(self.cfg.active_hours):
+                        if night_sweep and (time.time() - last_sweep) >= sweep_interval_s:
+                            last_sweep = time.time()
+                            self.log.info("Barrido nocturno: despertando para vaciar planetas...")
+                            try:
+                                if self.client.login():
+                                    self._night_sweep()
+                            except Exception as e:
+                                self.log.error("Error en barrido nocturno: %s", e)
                         time.sleep(10)
         except KeyboardInterrupt:
             self.log.info("Detenido por el usuario.")
@@ -1533,6 +1546,55 @@ class Brain:
                                    resources=res,
                                    speed_percent=plan.get("speed_percent", 1.0),
                                    target_duration_s=target_dur)
+
+    def _night_sweep(self):
+        """
+        Barrido nocturno: durante el descanso, vacía (fleetsave) los planetas/lunas
+        con barrido activado para recoger la flota fabricada por la noche y los
+        recursos acumulados. Solo toca las ubicaciones que el usuario active.
+        """
+        if not self.cfg.enable_fleetsave:
+            return
+        remaining_h = utils.hours_until_active(self.cfg.active_hours)
+        if remaining_h <= 0.15:
+            return
+        planets = self.client.read_planets()
+        if not planets:
+            return
+        all_locations = []
+        for p in planets:
+            all_locations.append(p)
+            if p.has_moon and p.moon:
+                all_locations.append(p.moon)
+        coords = [loc.coords for loc in all_locations]
+
+        swept = 0
+        for loc in all_locations:
+            parent = loc if loc.coords.type == "planet" else next(
+                (p for p in planets if p.coords.tuple() == loc.coords.tuple()), loc)
+            # Opt-in estricto por planeta (no hereda el toggle global): solo se barre
+            # lo que el usuario marque explícitamente, para no hacer mucha actividad.
+            pkey = f"{parent.coords.galaxy}:{parent.coords.system}:{parent.coords.position}"
+            if not (getattr(self.cfg, "planets_config", {}) or {}).get(pkey, {}).get("enable_night_sweep", False):
+                continue
+            self.client.read_planet_state(loc)
+            flyable = {k: v for k, v in loc.ships.items() if k != "solar_satellite" and v > 0}
+            if not flyable:
+                continue
+            plan = fleet_mod.fleetsave_plan(loc.coords, coords, self.cfg, remaining_h)
+            if not plan:
+                continue
+            self.rate.record()
+            self.client._delay()
+            res = "all" if getattr(self.cfg, "fleetsave_carry_resources", True) else None
+            self.log.info("Barrido nocturno: vaciando %s -> %s (vuelve en ~%.1fh)",
+                          loc.coords, plan["destination"], remaining_h)
+            self.client.send_fleet(loc.coords, plan["destination"], {},
+                                   mission=plan["mission"], resources=res,
+                                   speed_percent=plan.get("speed_percent", 1.0),
+                                   target_duration_s=remaining_h * 3600)
+            swept += 1
+        self.log.info("Barrido nocturno completado: %d ubicación(es) vaciada(s).", swept)
 
     def _recall_sleep_fleetsaves(self):
         planets = self.client.read_planets()

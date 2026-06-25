@@ -327,6 +327,8 @@ function mapConfigToUI(cfg) {
     setVal("fleetsave_mission", cfg.fleetsave_mission || "deploy");
     setCheck("fleetsave_carry_resources", cfg.fleetsave_carry_resources !== false);
     setCheck("fleetsave_recall_halfway", !!cfg.fleetsave_recall_halfway);
+    setCheck("enable_night_sweep", cfg.enable_night_sweep);
+    setVal("night_sweep_interval_hours", cfg.night_sweep_interval_hours !== undefined ? cfg.night_sweep_interval_hours : 2.0);
     setVal("telegram_token", cfg.telegram_token || "");
     setVal("telegram_chat_id", cfg.telegram_chat_id || "");
 
@@ -440,6 +442,9 @@ function saveChanges() {
     globalConfig.fleetsave_mission = getVal("fleetsave_mission");
     globalConfig.fleetsave_carry_resources = getCheck("fleetsave_carry_resources");
     globalConfig.fleetsave_recall_halfway = getCheck("fleetsave_recall_halfway");
+    globalConfig.enable_night_sweep = getCheck("enable_night_sweep");
+    let _nsi = parseFloat(getVal("night_sweep_interval_hours"));
+    globalConfig.night_sweep_interval_hours = (isNaN(_nsi) || _nsi <= 0) ? 2.0 : _nsi;
     globalConfig.telegram_token = getVal("telegram_token");
     globalConfig.telegram_chat_id = getVal("telegram_chat_id");
 
@@ -552,6 +557,8 @@ function saveChanges() {
         localPlanetsConfig[coords].enable_fleet_building = card.querySelector(".planet-fleet-building").checked;
         localPlanetsConfig[coords].enable_farming = card.querySelector(".planet-farming").checked;
         localPlanetsConfig[coords].enable_recycling = card.querySelector(".planet-recycling").checked;
+        const _ns = card.querySelector(".planet-night-sweep");
+        if (_ns) localPlanetsConfig[coords].enable_night_sweep = _ns.checked;
 
         // Eliminar ratios de defensa obsoletos
         delete localPlanetsConfig[coords].defense_rockets_per_mine;
@@ -634,6 +641,7 @@ function renderPlanetsList() {
         const isFleet = config.enable_fleet_building !== undefined ? config.enable_fleet_building : globalConfig.enable_fleet_building !== false;
         const isFarming = config.enable_farming !== undefined ? config.enable_farming : globalConfig.enable_farming !== false;
         const isRecycling = config.enable_recycling !== undefined ? config.enable_recycling : globalConfig.enable_recycling !== false;
+        const isNightSweep = config.enable_night_sweep === true;  // opt-in por planeta
 
         const card = document.createElement("div");
         card.className = "planet-card";
@@ -679,6 +687,10 @@ function renderPlanetsList() {
                 <label class="planet-toggle">
                     <input type="checkbox" class="planet-recycling" ${isRecycling ? "checked" : ""}>
                     <span>Reciclaje</span>
+                </label>
+                <label class="planet-toggle">
+                    <input type="checkbox" class="planet-night-sweep" ${isNightSweep ? "checked" : ""}>
+                    <span>Barrido nocturno</span>
                 </label>
             </div>
         `;

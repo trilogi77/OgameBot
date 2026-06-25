@@ -234,6 +234,12 @@ def live_worker():
                                 page.keyboard.type(task["text"])
                             elif action == "press":
                                 page.keyboard.press(task["key"])
+                            elif action == "drag":
+                                # Arrastre (para captchas "soy humano" de arrastrar)
+                                page.mouse.move(task["x"], task["y"])
+                                page.mouse.down()
+                                page.mouse.move(task["x2"], task["y2"], steps=20)
+                                page.mouse.up()
                             latest_screenshot = page.screenshot(type="jpeg", quality=60)
                             if "resp_queue" in task:
                                 task["resp_queue"].put({"success": True})
@@ -317,6 +323,8 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.handle_live_type(account)
         elif path == "/api/live/press":
             self.handle_live_press(account)
+        elif path == "/api/live/drag":
+            self.handle_live_drag(account)
         else:
             self.send_error(404, "Endpoint not found")
 
@@ -622,6 +630,12 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
     def handle_live_press(self, account):
         params = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
         self._live_action(account, {"action": "press", "key": params.get("key", "")})
+
+    def handle_live_drag(self, account):
+        params = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+        self._live_action(account, {"action": "drag",
+                                    "x": int(params.get("x", 0)), "y": int(params.get("y", 0)),
+                                    "x2": int(params.get("x2", 0)), "y2": int(params.get("y2", 0))})
 
     def send_json(self, status, data):
         self.send_response(status)

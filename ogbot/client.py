@@ -443,12 +443,16 @@ class GameClient:
         if sync_playwright is None:
             raise RuntimeError("pip install playwright && playwright install chromium")
         self._pw = sync_playwright().start()
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            f"--remote-debugging-port={getattr(self.cfg, 'cdp_port', 9222)}",
+        ]
+        # En Docker (Chromium como root) hacen falta estos flags
+        if os.environ.get("OGBOT_CHROMIUM_NO_SANDBOX"):
+            launch_args += ["--no-sandbox", "--disable-dev-shm-usage"]
         self.browser = self._pw.chromium.launch(
             headless=self.cfg.headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                f"--remote-debugging-port={getattr(self.cfg, 'cdp_port', 9222)}"
-            ],
+            args=launch_args,
         )
         state = "ogame_session.json"
         self.context = self.browser.new_context(
@@ -569,6 +573,39 @@ class GameClient:
 
         return None
 
+    def _wait_for_human_check(self, where: str) -> bool:
+        """
+        Verificación humana (CAPTCHA) en el login. En modo headless/Docker no hay
+        navegador visible, PERO el visor 'Bot en Directo' del panel web sí permite
+        verla y resolverla (clic/teclado vía CDP). Espera hasta
+        login_human_check_timeout_s sondeando si ya se resolvió, y avisa al usuario.
+        """
+        timeout_s = float(getattr(self.cfg, "login_human_check_timeout_s", 300) or 300)
+        self.log.warning(
+            "Verificación humana (CAPTCHA) %s. Abre el panel web -> pestaña "
+            "'Bot en Directo' y resuélvela. Esperando hasta %.0f min...",
+            where, timeout_s / 60.0)
+        try:
+            from . import utils
+            if getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""):
+                utils.send_telegram_message(
+                    self.cfg.telegram_token, self.cfg.telegram_chat_id,
+                    "🤖 OGBot: verificación humana en el login. Resuélvela en el visor "
+                    "'Bot en Directo' del panel web.", logger=self.log)
+        except Exception:
+            pass
+        start = time.time()
+        while time.time() - start < timeout_s:
+            time.sleep(5)
+            try:
+                if not self._has_captcha():
+                    self.log.info("Verificación humana resuelta; continúo con el login.")
+                    return True
+            except Exception:
+                pass
+        self.log.warning("Se agotó la espera de verificación humana (%s).", where)
+        return False
+
     def login(self) -> bool:
         # Determinar URL de cuentas localizada según país
         country = (self.cfg.country or "en").lower()
@@ -609,8 +646,7 @@ class GameClient:
 
         # 4) Login completo con credenciales
         if self._has_captcha():
-            self.log.warning("CAPTCHA en login. Resuélvelo manualmente (headless=false). 90s...")
-            time.sleep(90)
+            self._wait_for_human_check("antes del login")
 
         try:
             self.page.goto(self.lobby_url, wait_until="domcontentloaded", timeout=30000)
@@ -625,8 +661,7 @@ class GameClient:
             self._delay()
 
             if self._has_captcha():
-                self.log.warning("CAPTCHA tras login. Resuélvelo manualmente. 90s...")
-                time.sleep(90)
+                self._wait_for_human_check("tras introducir credenciales")
 
             play2 = self._find_play_button()
             if play2:

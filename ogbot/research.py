@@ -1,0 +1,148 @@
+"""
+research.py
+===========
+Gestor de investigación. Recorre la lista de prioridad de config y devuelve la
+próxima tecnología a investigar que sea asequible y cuyos prerequisitos estén
+cubiertos. La investigación es global a la cuenta.
+"""
+from __future__ import annotations
+from typing import Dict, Optional, Tuple
+from . import gamedata as gd
+from .models import Resources, Planet
+from .config import Config
+
+
+def next_research(
+    research: Dict[str, int],
+    planet: Planet,
+    cfg: Config
+) -> Optional[Tuple[str, gd.Cost, Optional[int]]]:
+    """
+    Devuelve (nombre_tech, coste, req_lab_lvl) de la próxima investigación recomendada,
+    o None si estamos esperando/ahorrando.
+    Si req_lab_lvl no es None, significa que estamos bloqueados esperando ese nivel de laboratorio.
+    """
+    from .economy import time_to_accumulate
+
+    # 1. Obtener pesos y límites de la configuración
+    weights = getattr(cfg, "research_weights", {
+        "astrophysics": 2.0,
+        "plasma_tech": 1.8,
+        "computer_tech": 1.5,
+        "combustion_drive": 1.2,
+        "impulse_drive": 1.1,
+        "hyperspace_drive": 1.0,
+        "espionage_tech": 1.0,
+        "weapons_tech": 1.0,
+        "shielding_tech": 1.0,
+        "armor_tech": 1.0,
+        "hyperspace_tech": 0.9,
+        "energy_tech": 0.5,
+        "laser_tech": 0.5,
+        "ion_tech": 0.5,
+    })
+    
+    caps = dict(getattr(cfg, "research_caps", {
+        "laser_tech": 12,
+        "ion_tech": 5,
+        "energy_tech": 8,
+        "hyperspace_tech": 15,
+    }))
+    
+    # Si habilitamos reactor de fusión, el límite de energía aumenta
+    if cfg.enable_fusion_reactor:
+        caps["energy_tech"] = max(caps.get("energy_tech", 8), 20)
+
+    plasma = research.get("plasma_tech", 0)
+    buf = 1 - cfg.keep_resources_buffer
+    avail = Resources(planet.resources.metal * buf,
+                      planet.resources.crystal * buf,
+                      planet.resources.deut * buf)
+
+    max_wait = getattr(cfg, "max_saving_hours_research", 6.0)
+    ratio = getattr(cfg, "trade_ratio", (2.5, 1.5, 1.0))
+
+    # Helper recursivo para obtener el siguiente paso inmediato
+    def get_next_steps(tech_name, target_lvl, visited=None):
+        if visited is None:
+            visited = set()
+        key = (tech_name, target_lvl)
+        if key in visited:
+            return []
+        visited.add(key)
+
+        current_lvl = research.get(tech_name, 0)
+        if current_lvl >= target_lvl:
+            return []
+
+        # Comprobar laboratorio en este planeta
+        lab_req = gd.RESEARCH_LAB_REQ.get(tech_name, 0)
+        if planet.lvl("research_lab") < lab_req:
+            # Requerimos subir laboratorio primero
+            return [("building", "research_lab", planet.lvl("research_lab") + 1)]
+
+        # Comprobar otros requisitos
+        prereqs = gd.RESEARCH_PREREQS.get(tech_name, {})
+        missing_prereqs = []
+        for req_name, req_lvl in prereqs.items():
+            req_current = research.get(req_name, 0)
+            if req_current < req_lvl:
+                missing_prereqs.append((req_name, req_current + 1))
+
+        if missing_prereqs:
+            # Si hay prerrequisitos sin cumplir, devolvemos sus pasos inmediatos
+            steps = []
+            for m_name, m_lvl in missing_prereqs:
+                steps.extend(get_next_steps(m_name, m_lvl, visited))
+            return steps
+
+        # Si no hay prerrequisitos pendientes, el paso es la tecnología misma
+        return [("research", tech_name, target_lvl)]
+
+    candidates = {}
+    for tech in cfg.research_priority:
+        if tech not in gd.RESEARCH_COST:
+            continue
+
+        # Verificar si se alcanzó el límite voluntario de utilidad
+        cap = caps.get(tech)
+        current_lvl = research.get(tech, 0)
+        if cap is not None and current_lvl >= cap:
+            continue
+
+        target_lvl = current_lvl + 1
+        steps = get_next_steps(tech, target_lvl)
+
+        for step in steps:
+            if step[0] == "research":
+                r_name, r_lvl = step[1], step[2]
+                if (r_name, r_lvl) not in candidates:
+                    cost = gd.research_cost(r_name, r_lvl)
+                    cost_val = cost.total_value(ratio)
+                    w = weights.get(r_name, 1.0)
+                    weighted_cost = cost_val / w
+                    candidates[(r_name, r_lvl)] = (cost, weighted_cost, None)
+            elif step[0] == "building":
+                # Bloqueado por laboratorio de investigación
+                b_name, b_lvl = step[1], step[2]
+                cost = gd.research_cost(tech, target_lvl)
+                cost_val = cost.total_value(ratio)
+                w = weights.get(tech, 1.0)
+                weighted_cost = cost_val / w
+                candidates[(tech, target_lvl)] = (cost, weighted_cost, b_lvl)
+
+    # Ordenar candidatos por coste ponderado (de menor a mayor)
+    sorted_candidates = sorted(candidates.items(), key=lambda x: x[1][1])
+
+    for (r_name, r_lvl), (cost, w_cost, lab_lvl) in sorted_candidates:
+        if avail.can_afford(cost):
+            return r_name, cost, lab_lvl
+
+        # Si no nos lo podemos permitir, comprobar cuánto tardamos en acumularlo
+        t = time_to_accumulate(cost, planet, cfg, plasma)
+        if t <= max_wait:
+            # Ahorrar para esta investigación
+            return None
+
+    return None
+

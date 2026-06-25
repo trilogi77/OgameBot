@@ -1,0 +1,36 @@
+# Configuración sensible (contiene contraseñas)
+config.yaml
+
+# Sesiones y Estado
+ogame_session.json
+state.json
+planets_cache.json
+ogbot_stats.json
+bot.pid
+
+# Logs de ejecución
+*.log
+errors/
+
+# Capturas de pantalla
+*.png
+
+# Entornos virtuales
+.venv/
+env/
+venv/
+
+# Caché de Python
+__pycache__/
+ogbot/__pycache__/
+*.py[cod]
+*$py.class
+
+# Herramientas locales
+.claude/
+.idea/
+.vscode/
+.history/
+
+# Crash dumps
+*.stackdump

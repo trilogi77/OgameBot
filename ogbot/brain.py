@@ -1,0 +1,1846 @@
+"""
+brain.py
+========
+El "cerebro": orquesta toda la estrategia en un bucle que corre en segundo plano.
+
+Cada CICLO (con intervalo aleatorio y dentro de tu franja horaria) hace, en orden
+de prioridad estratégica:
+
+  0. FLEETSAVE primero si toca terminar el ciclo / vas a estar offline.
+  1. Leer estado (recursos, planetas, flota en movimiento).
+  2. Reciclar campos de escombros propios pendientes.
+  3. Cobrar/relanzar expediciones.
+  4. Economía: subir la mejor mina/edificio por planeta (payback marginal).
+  5. Investigación: siguiente tecnología por prioridad.
+  6. Flota: fabricar cargueros/cazas según necesidad de farmeo.
+  7. Farmeo: buscar objetivos (API), espiar, evaluar y atacar los rentables.
+  8. Recoger loot (los ataques vuelven solos; el reciclaje se programa).
+  9. Colonización si hay slot libre de astrofísica.
+ 10. Lunas (opcional) si está activado y hay oportunidad.
+ 11. FLEETSAVE final antes de "dormir".
+
+Todo respeta dry_run, rate-limit y delays humanizados.
+"""
+from __future__ import annotations
+import random
+import time
+from typing import Dict, List, Optional, Tuple
+from .config import Config
+from .client import GameClient
+from .universe_api import UniverseAPI
+from . import economy, research as research_mod, targets as tgt, fleet as fleet_mod, moons, gamedata as gd
+from . import combat
+from .models import Coords, Resources, Planet
+from . import utils
+
+
+class Brain:
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self.log = utils.setup_logger("ogbot", cfg.log_file, cfg.log_level)
+        self.client = GameClient(cfg, self.log)
+        self.api = UniverseAPI(cfg.server_url, logger=self.log) if cfg.server_url else None
+        self.rate = utils.RateLimiter(cfg.max_actions_per_hour)
+        self.my_tech = combat.Tech()
+        self.research_levels: Dict[str, int] = {}
+        self.running = True
+        self.last_planets: List = []
+        self.active_slots = 0
+        self.active_expe_slots = 0
+        self.total_fleet_slots = 0
+        self.total_expe_slots = 0
+        self.escaped_fleets: List[dict] = []
+        self.attack_history: Dict[str, float] = {}
+        self.telegram_notified_attacks: Dict[str, float] = {}
+        self.last_economy_run_time = 0.0
+        self.last_farming_run_time = 0.0
+        self.last_expeditions_run_time = 0.0
+        self.last_recycling_run_time = 0.0
+        self._load_state()
+
+    def _load_state(self):
+        import json
+        import os
+        if os.path.exists(self.cfg.state_file):
+            try:
+                with open(self.cfg.state_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.attack_history = data.get("attack_history", {})
+                    self.telegram_notified_attacks = data.get("telegram_notified_attacks", {})
+                    self.last_economy_run_time = data.get("last_economy_run_time", 0.0)
+                    self.last_farming_run_time = data.get("last_farming_run_time", 0.0)
+                    self.last_expeditions_run_time = data.get("last_expeditions_run_time", 0.0)
+                    self.last_recycling_run_time = data.get("last_recycling_run_time", 0.0)
+                    self.log.info("Historial de cooldown de ataques cargado: %d registros.", len(self.attack_history))
+            except Exception as e:
+                self.log.debug("No se pudo cargar state.json: %s", e)
+
+    def _save_state(self):
+        import json
+        try:
+            # Limpiar notificaciones antiguas (más de 2 horas)
+            now = time.time()
+            self.telegram_notified_attacks = {
+                k: arr_epoch for k, arr_epoch in self.telegram_notified_attacks.items()
+                if arr_epoch > now - 7200
+            }
+            with open(self.cfg.state_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "attack_history": self.attack_history,
+                    "telegram_notified_attacks": self.telegram_notified_attacks,
+                    "last_economy_run_time": self.last_economy_run_time,
+                    "last_farming_run_time": self.last_farming_run_time,
+                    "last_expeditions_run_time": self.last_expeditions_run_time,
+                    "last_recycling_run_time": self.last_recycling_run_time
+                }, f, indent=2)
+        except Exception as e:
+            self.log.debug("No se pudo guardar state.json: %s", e)
+
+    def _get_planet_setting(self, planet, setting_name: str, default_val):
+        coords_str = f"{planet.coords.galaxy}:{planet.coords.system}:{planet.coords.position}"
+        planets_config = getattr(self.cfg, "planets_config", {}) or {}
+        p_cfg = planets_config.get(coords_str, {})
+        return p_cfg.get(setting_name, getattr(self.cfg, setting_name, default_val))
+
+    # ------------------------------------------------------------------ #
+    def run_forever(self):
+        self.log.info("=== OGBot iniciado (dry_run=%s) ===", self.cfg.dry_run)
+        self.client.start()
+        if not self.client.login():
+            self.log.error("Login fallido. Abortando.")
+            self.client.stop()
+            return
+        self.initialize_session_stats()
+        try:
+            while self.running:
+                # Comprobación de ataque prioritaria e incondicional (antes de evaluar franja horaria)
+                if getattr(self.cfg, "enable_attack_escape", True):
+                    try:
+                        self.log.info("Comprobación prioritaria de ataques hostiles...")
+                        self._check_and_escape_attacks()
+                    except Exception as e:
+                        self.log.debug("Error en comprobación prioritaria de ataques: %s", e)
+
+                if utils.within_active_hours(self.cfg.active_hours):
+                    try:
+                        self.cycle()
+                        self._continue_until_idle()
+                    except Exception as e:
+                        self.log.exception("Error en ciclo: %s", e)
+
+                    sleep_s = utils.jitter(random.uniform(self.cfg.cycle_interval_min_s,
+                                                           self.cfg.cycle_interval_max_s))
+                    self.log.info("Próximo ciclo en %.0f min.", sleep_s / 60)
+                    
+                    # Esperar al siguiente ciclo en pequeños intervalos
+                    start_sleep = time.time()
+                    last_attack_check = time.time()  # Ya comprobamos justo antes de entrar al ciclo
+                    while self.running and (time.time() - start_sleep) < sleep_s:
+                        if not utils.within_active_hours(self.cfg.active_hours):
+                            break
+                        
+                        # Comprobación periódica de ataques hostiles si está habilitado
+                        if getattr(self.cfg, "enable_attack_escape", True):
+                            now = time.time()
+                            if now - last_attack_check >= getattr(self.cfg, "attack_check_interval_s", 300):
+                                last_attack_check = now
+                                try:
+                                    self._check_and_escape_attacks()
+                                except Exception as e:
+                                    self.log.debug("Error comprobando ataques en espera: %s", e)
+                                    
+                        time.sleep(5)
+                else:
+                    hours_to_sleep = utils.hours_until_active(self.cfg.active_hours)
+                    self.log.info("Fuera de franja horaria. Modo descanso activado por %.2f horas.", hours_to_sleep)
+                    
+                    # Realizar fleetsave una sola vez para cubrir todo el periodo de inactividad
+                    self._fleetsave_all(offline_hours=hours_to_sleep)
+                    
+                    # Si el retorno a mitad de la noche está habilitado
+                    recall_halfway = getattr(self.cfg, "fleetsave_recall_halfway", False)
+                    if recall_halfway and hours_to_sleep > 0.5:
+                        half_sleep_hours = hours_to_sleep / 2.0
+                        half_sleep_seconds = half_sleep_hours * 3600
+                        self.log.info("Retorno a mitad de la noche habilitado. Esperando la primera mitad (%.2f horas) antes de retornar...", half_sleep_hours)
+                        
+                        start_sleep = time.time()
+                        while self.running and (time.time() - start_sleep) < half_sleep_seconds:
+                            time.sleep(10)
+                            
+                        if self.running:
+                            self.log.info("Despertando temporalmente para retornar despliegues de fleetsave...")
+                            try:
+                                if self.client.login():
+                                    # Comprobar ataques una única vez al despertar a mitad de la noche
+                                    if getattr(self.cfg, "enable_attack_escape", True):
+                                        try:
+                                            self._check_and_escape_attacks()
+                                        except Exception as ae:
+                                            self.log.debug("Error comprobando ataques a mitad de la noche: %s", ae)
+                                    self._recall_sleep_fleetsaves()
+                            except Exception as e:
+                                self.log.error("Error al retornar despliegues nocturnos: %s", e)
+                                
+                        self.log.info("Retorno nocturno completado. Esperando la segunda mitad...")
+                    
+                    self.log.info("Esperando hasta el inicio de la franja horaria activa...")
+                    # Esperar hasta que empiece el horario activo en silencio (sin comprobar ataques periódicamente para evitar sospechas)
+                    while self.running and not utils.within_active_hours(self.cfg.active_hours):
+                        time.sleep(10)
+        except KeyboardInterrupt:
+            self.log.info("Detenido por el usuario.")
+        finally:
+            self.client.stop()
+
+    def _sleep_hours(self) -> float:
+        return random.uniform(self.cfg.cycle_interval_min_s, self.cfg.cycle_interval_max_s) / 3600
+
+    def _guard(self) -> bool:
+        """Rate-limit + delay humanizado antes de cada acción."""
+        if not self.rate.allow():
+            self.log.info("Rate-limit alcanzado; salto acción.")
+            return False
+        self.rate.record()
+        self.client._delay()
+        return True
+
+    # ------------------------------------------------------------------ #
+    def _count_our_active_fleets(self, movements: List[dict], planets: List) -> int:
+        # Coordenadas propias (planetas y lunas) para reconocer flotas nuestras.
+        our_coords = set()
+        for p in planets:
+            c = p.coords
+            our_coords.add(f"{c.galaxy}:{c.system}:{c.position}")
+            moon = getattr(p, "moon", None)
+            if moon is not None and getattr(moon, "coords", None) is not None:
+                mc = moon.coords
+                our_coords.add(f"{mc.galaxy}:{mc.system}:{mc.position}")
+
+        seen = set()
+        count = 0
+        for m in movements:
+            origin = m.get("origin", "").replace("[", "").replace("]", "").strip()
+            dest = m.get("destination", "").replace("[", "").replace("]", "").strip()
+            is_return = bool(m.get("is_return", False))
+
+            # En OGame una misión (ida+vuelta) es UNA sola flota = UN slot, y aparece
+            # como una única fila en cada instante. Si el DOM devuelve filas duplicadas
+            # (selectores solapados), las colapsamos para no contar el mismo slot dos veces.
+            ident = (origin, dest, m.get("mission", ""), m.get("arrival_text", ""), is_return)
+            if ident in seen:
+                continue
+
+            # Solo flotas NUESTRAS: salientes desde un planeta/luna propio, o de regreso
+            # a uno propio. Así se excluyen ataques enemigos entrantes (origen ajeno).
+            mine = (origin in our_coords) if not is_return else (dest in our_coords)
+            if mine:
+                seen.add(ident)
+                count += 1
+        return count
+
+    def _count_our_active_expeditions(self, movements: List[dict]) -> int:
+        seen = set()
+        count = 0
+        for m in movements:
+            origin = m.get("origin", "").replace("[", "").replace("]", "").strip()
+            dest = m.get("destination", "").replace("[", "").replace("]", "").strip()
+            is_return = bool(m.get("is_return", False))
+            mission = m.get("mission", "")
+
+            ident = (origin, dest, mission, m.get("arrival_text", ""), is_return)
+            if ident in seen:
+                continue
+
+            if mission == "15" or "exped" in mission.lower():
+                seen.add(ident)
+                count += 1
+        return count
+
+    def _has_free_expe_slots(self) -> bool:
+        total = self.total_expe_slots if self.total_expe_slots > 0 else 1
+        return self.active_expe_slots < total
+
+    def _has_free_slots_for_mission(self) -> bool:
+        total = self.total_fleet_slots if self.total_fleet_slots else (
+            self.research_levels.get("computer_tech", 0) + 1 if self.research_levels else 1)
+        free = total - self.active_slots
+        return free >= 1
+
+    def _has_free_slots_for_espionage(self) -> bool:
+        total = self.total_fleet_slots if self.total_fleet_slots else (
+            self.research_levels.get("computer_tech", 0) + 1 if self.research_levels else 1)
+        free = total - self.active_slots
+        return free >= 1
+
+    def _has_ships(self, planets, ship_type: str, min_count: int = 1) -> bool:
+        return sum(p.ships.get(ship_type, 0) for p in planets) >= min_count
+
+    def cycle(self):
+        self.log.info("--- Nuevo ciclo ---")
+        try:
+            # Recargar configuración del disco para capturar cambios desde la GUI sin reiniciar el bot
+            path = getattr(self.cfg, "_path", "config.yaml")
+            new_cfg = Config.load(path)
+            for k, v in new_cfg.__dict__.items():
+                setattr(self.cfg, k, v)
+            self.log.info("Configuración recargada desde el disco.")
+        except Exception as e:
+            self.log.warning("No se pudo recargar la configuración desde el disco: %s", e)
+
+        planets = self.client.read_planets()
+        if not planets:
+            self.log.warning("Sin planetas legibles; revisa selectores.")
+            return
+
+        slot_info = self.client.read_fleet_slots()
+        if slot_info:
+            self.active_slots = slot_info.get("fleet_used", 0)
+            self.total_fleet_slots = slot_info.get("fleet_total", 0)
+            self.total_expe_slots = slot_info.get("expe_total", 0)
+            self.active_expe_slots = slot_info.get("expe_used", 0)
+            self.log.info("Slots reales del juego: Flotas %d/%d, Expediciones %d/%d",
+                          self.active_slots, self.total_fleet_slots,
+                          self.active_expe_slots, self.total_expe_slots)
+        else:
+            mvs = self.client.read_movements()
+            self.active_slots = self._count_our_active_fleets(mvs, planets)
+            self.active_expe_slots = self._count_our_active_expeditions(mvs)
+            self.total_expe_slots = int(self.research_levels.get("astrophysics", 0) ** 0.5)
+            self.log.info("Slots de flota (fallback movimientos): %d activos, Expediciones %d/%d",
+                          self.active_slots, self.active_expe_slots, self.total_expe_slots)
+
+        # Leer recursos y edificios de cada planeta y de su luna (si existe)
+        for p in planets:
+            self.client.read_planet_state(p)
+            if p.has_moon and p.moon:
+                self.client.read_planet_state(p.moon)
+
+        # Construir lista de todas las ubicaciones (planetas y lunas)
+        all_locations = []
+        for p in planets:
+            all_locations.append(p)
+            if p.has_moon and p.moon:
+                all_locations.append(p.moon)
+
+        # Guardar planetas en caché para la GUI (incluyendo naves e información de luna)
+        try:
+            import json
+            planets_data = []
+            for p in planets:
+                p_data = {
+                    "name": p.name, 
+                    "coords": f"{p.coords.galaxy}:{p.coords.system}:{p.coords.position}", 
+                    "id": p.id,
+                    "ships": p.ships,
+                    "defenses": p.defenses,
+                    "buildings": p.buildings,
+                    "has_moon": p.has_moon,
+                }
+                if p.has_moon and p.moon:
+                    p_data["moon"] = {
+                        "name": p.moon.name,
+                        "coords": f"{p.moon.coords.galaxy}:{p.moon.coords.system}:{p.moon.coords.position}",
+                        "id": p.moon.id,
+                        "ships": p.moon.ships,
+                        "defenses": p.moon.defenses,
+                        "buildings": p.moon.buildings
+                    }
+                planets_data.append(p_data)
+            with open("planets_cache.json", "w", encoding="utf-8") as f:
+                json.dump(planets_data, f, indent=2)
+        except Exception as e:
+            self.log.debug("No se pudo guardar planets_cache.json: %s", e)
+
+        # Leer niveles de investigación reales una vez por ciclo
+        self.research_levels = self.client.read_research()
+        if self.research_levels:
+            self.my_tech.weapons = self.research_levels.get("weapons_tech", 0)
+            self.my_tech.shielding = self.research_levels.get("shielding_tech", 0)
+            self.my_tech.armor = self.research_levels.get("armor_tech", 0)
+
+        now = time.time()
+        
+        # Evaluar si toca ejecutar ronda de economía (construcción)
+        run_economy = False
+        economy_interval = getattr(self.cfg, "economy_run_interval_mins", 0)
+        if economy_interval <= 0:
+            run_economy = True
+        else:
+            elapsed_economy = now - self.last_economy_run_time
+            if elapsed_economy >= economy_interval * 60:
+                run_economy = True
+            else:
+                self.log.info("Ronda de economía omitida (última ejecución hace %.1f min; intervalo configurado: %d min)", elapsed_economy / 60, economy_interval)
+
+        # Evaluar si toca ejecutar reciclaje
+        run_recycling = False
+        recycling_interval = getattr(self.cfg, "recycling_run_interval_mins", 0)
+        if recycling_interval <= 0:
+            run_recycling = True
+        else:
+            elapsed_recycling = now - self.last_recycling_run_time
+            if elapsed_recycling >= recycling_interval * 60:
+                run_recycling = True
+            else:
+                self.log.info("Reciclaje omitido (última ejecución hace %.1f min; intervalo configurado: %d min)", elapsed_recycling / 60, recycling_interval)
+
+        # Evaluar si toca ejecutar expediciones
+        run_expeditions = False
+        expeditions_interval = getattr(self.cfg, "expeditions_run_interval_mins", 0)
+        if expeditions_interval <= 0:
+            run_expeditions = True
+        else:
+            elapsed_expeditions = now - self.last_expeditions_run_time
+            if elapsed_expeditions >= expeditions_interval * 60:
+                run_expeditions = True
+            else:
+                self.log.info("Expediciones omitidas (última ejecución hace %.1f min; intervalo configurado: %d min)", elapsed_expeditions / 60, expeditions_interval)
+
+        # Evaluar si toca ejecutar ronda de farmeo (ataques a inactivos)
+        run_farming = False
+        farming_interval = getattr(self.cfg, "farming_run_interval_mins", 0)
+        if farming_interval <= 0:
+            run_farming = True
+        else:
+            elapsed_farming = now - self.last_farming_run_time
+            if elapsed_farming >= farming_interval * 60:
+                run_farming = True
+            else:
+                self.log.info("Ronda de farmeo omitida (última ejecución hace %.1f min; intervalo configurado: %d min)", elapsed_farming / 60, farming_interval)
+
+        # 2. Reciclaje (timer independiente)
+        if run_recycling and self.cfg.enable_recycling:
+            if self._has_ships(all_locations, "recycler"):
+                self._recycle(all_locations)
+            else:
+                self.log.debug("Reciclaje omitido: sin recicladores.")
+            self.last_recycling_run_time = time.time()
+            self._save_state()
+
+        # 3. Expediciones (timer independiente)
+        if run_expeditions and self.cfg.enable_expeditions:
+            for loc in all_locations:
+                parent_planet = loc if loc.coords.type == "planet" else next(p for p in planets if p.coords.tuple() == loc.coords.tuple())
+                if self._get_planet_setting(parent_planet, "enable_expeditions", True):
+                    active_exp_ships = {k: v for k, v in self.cfg.expedition_ships.items() if v > 0}
+                    if not active_exp_ships:
+                        active_exp_ships = {"large_cargo": 1}
+
+                    while self._has_free_slots_for_mission() and self._has_free_expe_slots():
+                        has_enough = all(loc.ships.get(ship, 0) >= qty for ship, qty in active_exp_ships.items())
+                        if not has_enough:
+                            break
+
+                        if self._expeditions(loc.coords):
+                            for ship, qty in active_exp_ships.items():
+                                loc.ships[ship] = max(0, loc.ships.get(ship, 0) - qty)
+                        else:
+                            break
+            self.last_expeditions_run_time = time.time()
+            self._save_state()
+
+        # 7-8. Farmeo (ataques a inactivos) + colonización + lunas (timer independiente)
+        if run_farming:
+            self.log.info("Iniciando ronda de farmeo (ataques a inactivos)...")
+            if self.cfg.enable_farming and self.api:
+                if self._has_ships(all_locations, "espionage_probe"):
+                    self._farm(all_locations)
+                else:
+                    self.log.info("Farmeo omitido: sin sondas de espionaje.")
+
+            # 9. Colonización
+            if self.cfg.enable_colonization:
+                self._colonize(planets)
+
+            # 10. Lunas
+            if self.cfg.enable_moon_creation:
+                self._moonshot(planets)
+
+            self.last_farming_run_time = time.time()
+            self._save_state()
+
+        # Ejecutar ronda de Economía/Construcción si corresponde
+        if run_economy:
+            self.log.info("Iniciando ronda de economía/construcción...")
+            # 4-7. Economía / defensa / formas de vida / instalaciones por planeta (solo planetas principales)
+            for p in planets:
+                self._economy_step(p)
+                self._defense_step(p)
+                self._lifeforms_step(p)
+                self._facilities_step(p)
+            self._research_step(planets)
+            self._fleet_step(planets)
+
+            self.last_economy_run_time = time.time()
+            self._save_state()
+
+        # 11. Actualizar estadísticas imperiales
+        self.update_imperial_stats()
+
+        self.last_planets = planets
+
+    # ------------------------------------------------------------------ #
+    def _economy_step(self, planet):
+        if not self._get_planet_setting(planet, "enable_economy", True):
+            self.log.debug("%s: economía desactivada para este planeta.", planet.coords)
+            return
+        if planet.building_in_progress:
+            self.log.debug("%s: construcción en progreso, saltando economía.", planet.coords)
+            return
+        plasma = self.research_levels.get("plasma_tech", 0)
+        choice = economy.affordable_build(planet, self.cfg, plasma=plasma)
+        if choice:
+            name, cost = choice
+            comp = "facilities" if name in ("robotics_factory", "nanite_factory",
+                                            "shipyard", "research_lab") else "supplies"
+            if self._guard():
+                ok = self.client.build(planet, comp, name)
+                if ok:
+                    self.record_session_action("buildings", name, planet.lvl(name) + 1, str(planet.coords))
+        else:
+            self.log.info("%s: nada rentable que construir ahora.", planet.coords)
+
+    def _defense_step(self, planet):
+        if not self._get_planet_setting(planet, "enable_defense", True):
+            self.log.debug("%s: defensa desactivada para este planeta.", planet.coords)
+            return
+        choice = economy.affordable_defense(planet, self.cfg)
+        if choice:
+            name, count, cost = choice
+            if self._guard():
+                ok = self.client.build_defense(planet, name, count)
+                if ok:
+                    self.record_session_action("defense", name, count, str(planet.coords))
+        else:
+            self.log.debug("%s: sin defensa asequible.", planet.coords)
+
+    def _lifeforms_step(self, planet):
+        if not self._get_planet_setting(planet, "enable_lifeforms", True):
+            return
+        if not planet.lifeform_available:
+            return
+        if planet.lifeform_in_progress:
+            self.log.debug("%s: cola de Formas de vida ocupada.", planet.coords)
+            return
+        if self._guard():
+            self.client.build_lifeform(planet)
+
+    def _research_step(self, planets: List):
+        if not getattr(self.cfg, "enable_research", True):
+            self.log.debug("Investigación desactivada globalmente.")
+            return
+        # Investigar desde el planeta con el laboratorio de mayor nivel
+        best = max(planets, key=lambda p: p.lvl("research_lab"))
+        choice = research_mod.next_research(self.research_levels, best, self.cfg)
+        if choice and self._guard():
+            ok = self.client.research(choice[0], planet=best)
+            if ok:
+                self.record_session_action("research", choice[0], self.research_levels.get(choice[0], 0) + 1)
+
+    def _fleet_step(self, planets):
+        """Fabrica cargueros/naves según los objetivos definidos en la configuración."""
+        if not getattr(self.cfg, "enable_fleet_building", True):
+            self.log.debug("Construcción de flota desactivada globalmente.")
+            return
+
+        # Filtrar los planetas donde la creación de flota está activada y tienen astillero
+        eligible_planets = [p for p in planets if self._get_planet_setting(p, "enable_fleet_building", True) and p.lvl("shipyard") >= 1]
+        if not eligible_planets:
+            self.log.debug("Fleet step omitido: no hay planetas con astillero y creación de flota activada.")
+            return
+
+        # Usar el planeta con el astillero de nivel más alto
+        home = max(eligible_planets, key=lambda p: p.lvl("shipyard"))
+
+        # Si hay objetivos de flota definidos, los procesamos
+        fleet_targets = getattr(self.cfg, "fleet_targets", {}) or {}
+        if fleet_targets:
+            for ship_name, target_qty in fleet_targets.items():
+                if target_qty <= 0:
+                    continue
+                # Contamos las naves totales en todo el imperio
+                current_qty = sum(p.ships.get(ship_name, 0) for p in planets)
+                if current_qty < target_qty:
+                    needed = target_qty - current_qty
+                    # Fabricar en lotes de máximo 10 para no drenar recursos
+                    batch = min(needed, 10)
+                    if self._guard():
+                        self.log.info("Fabricando %d %s (objetivo: %d, actual imperio: %d)", 
+                                       batch, ship_name, target_qty, current_qty)
+                        ok = self.client.build_ships(home, ship_name, batch)
+                        if ok:
+                            self.record_session_action("fleet", ship_name, batch, str(home.coords))
+                        # Actualizar inventario local para no duplicar en el mismo ciclo
+                        home.ships[ship_name] = home.ships.get(ship_name, 0) + batch
+                        break # Un solo lote de construcción por ciclo para balancear recursos
+        else:
+            # Fallback al comportamiento original (cargueros grandes para farmear)
+            if not self.cfg.enable_farming:
+                return
+            if home.lvl("metal_mine") < 4:
+                return
+            have_lc = home.ships.get("large_cargo", 0)
+            if have_lc < 20 and self._guard():
+                ok = self.client.build_ships(home, "large_cargo", 10)
+                if ok:
+                    self.record_session_action("fleet", "large_cargo", 10, str(home.coords))
+
+    def _farm(self, locations):
+        # Filtrar ubicaciones origen elegibles para farmeo (planetas y lunas)
+        eligible_locations = [p for p in locations if self._get_planet_setting(p, "enable_farming", True)]
+        if not eligible_locations:
+            self.log.info("Farmeo omitido: no hay ningún planeta o luna con farmeo activado.")
+            return
+
+        # 1. Template de flota de ataque
+        template = {k: v for k, v in
+                    (self.cfg.attacker_fleet_template or {}).items() if v > 0}
+        if not template:
+            template = {"large_cargo": 5}
+
+        # Comprobar si tenemos al menos una naves de estos tipos en algún origen elegible
+        has_farming_fleet = any(self._has_ships(eligible_locations, ship_type, min_count=1) for ship_type in template.keys())
+        if not has_farming_fleet:
+            self.log.info("Farmeo omitido: sin flota de ataque/cargueros configurados en %s en ubicaciones con farmeo activo.", list(template.keys()))
+            return
+
+        self.log.info("Buscando objetivos (API)...")
+        candidates = self.api.inactive_targets()
+
+        # Filtrar candidatos por cooldown de ataques
+        cooldown_s = getattr(self.cfg, "farming_attack_cooldown_hours", 2.0) * 3600
+        now = time.time()
+        filtered_candidates = []
+        for cand in candidates:
+            coords_str = cand.get("coords")
+            if not coords_str:
+                continue
+            last_atk = self.attack_history.get(coords_str, 0.0)
+            if now - last_atk < cooldown_s:
+                remaining_min = (cooldown_s - (now - last_atk)) / 60
+                self.log.debug("Candidato %s omitido por cooldown de ataque (restan %.1f min).", coords_str, remaining_min)
+                continue
+            filtered_candidates.append(cand)
+
+        origins = [p.coords for p in eligible_locations]
+        pre = tgt.select_targets(filtered_candidates, origins, self.cfg.max_target_distance_systems)
+        limit = self.cfg.max_attack_targets_per_cycle
+        # Espiar el doble del límite para tener margen tras la evaluación
+        spy_batch = pre[: limit * 2]
+        self.log.info("%d candidatos en radio, espionando %d.", len(pre), len(spy_batch))
+        if not spy_batch:
+            return
+
+        probes = max(1, self.research_levels.get("espionage_tech", 4))
+
+        # Helper para encontrar el origen más cercano con sondas de espionaje
+        def get_best_spy_origin(target_coords: Coords) -> Optional[Planet]:
+            eligible = [p for p in eligible_locations if p.ships.get("espionage_probe", 0) >= probes]
+            if not eligible:
+                return None
+            return min(eligible, key=lambda p: gd.distance(p.coords.tuple(), target_coords.tuple()))
+
+        # ── Fase 1: enviar sondas a todos los candidatos ───────────────
+        spied: List[Coords] = []
+        for cand in spy_batch:
+            if not self._has_free_slots_for_espionage():
+                self.log.info("Farmeo: deteniendo envío de sondas por falta de slots libres.")
+                break
+            coords = tgt.parse_coords(cand["coords"])
+            origin_planet = get_best_spy_origin(coords)
+            if not origin_planet:
+                self.log.info("Farmeo: no hay ninguna ubicación con al menos %d sondas disponibles.", probes)
+                break
+            if not self._guard():
+                break
+            ok = self.client.send_fleet(
+                origin_planet.coords, coords, {"espionage_probe": probes}, mission="espionage"
+            )
+            if ok:
+                self.active_slots += 1
+                spied.append(coords)
+                self.log.debug("Sondas enviadas desde %s -> %s", origin_planet.coords, coords)
+                self.record_session_action("espionage", f"{coords}", "Espionaje enviado", str(origin_planet.coords))
+
+        if not spied:
+            self.log.info("Farmeo: ninguna sonda enviada.")
+            return
+
+        # ── Fase 2: esperar retorno de las sondas (máx 5 min) ─────────
+        self.log.info("Farmeo: %d sondas en vuelo, esperando retorno...", len(spied))
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            mvs = self.client.read_movements()
+            spy_flying = [m for m in mvs
+                          if m.get("mission") in ("9", "espionage", "Espionage")]
+            if not spy_flying:
+                break
+            self.log.debug("Sondas aún en vuelo: %d. Comprobando en 15s.", len(spy_flying))
+            time.sleep(15)
+
+        # Recuentar slots reales activos después de que vuelvan las sondas
+        slot_info = self.client.read_fleet_slots()
+        if slot_info:
+            self.active_slots = slot_info.get("fleet_used", 0)
+            self.total_fleet_slots = slot_info.get("fleet_total", 0)
+        else:
+            mvs = self.client.read_movements()
+            self.active_slots = self._count_our_active_fleets(mvs, locations)
+
+        # ── Fase 3: leer informes, evaluar y atacar ────────────────────
+        reports = self.client.read_all_spy_reports()
+        
+        # Helper para verificar si un origen tiene la flota necesaria
+        def can_afford_fleet(p, fleet_req):
+            return all(p.ships.get(ship, 0) >= qty for ship, qty in fleet_req.items())
+
+        best_attacks_by_target = {}
+        for coords in spied:
+            key = f"{coords.galaxy}:{coords.system}:{coords.position}"
+            report = reports.get(key)
+            if not report:
+                self.log.debug("Sin informe para %s.", coords)
+                self.record_session_action("espionage", f"{coords}", "Sin informe: no se pudo leer el reporte de espionaje")
+                continue
+
+            # Calcular botín completo (sin limitar por la capacidad inicial del template)
+            full_loot = tgt.estimate_loot(report.resources, 10**9, self.cfg.loot_percent)
+
+            # Buscar el mejor origen para este objetivo
+            best_atk_for_target = None
+            reasons_by_planet = {}
+            for p in eligible_locations:
+                # 1. Dimensionar la flota específicamente para los cargueros disponibles en este origen
+                atk_fleet = fleet_mod.size_attack_fleet_for_planet(p, full_loot, template)
+                
+                # 2. Verificar que el origen tenga toda la flota requerida (cargueros + cazas del template)
+                if not can_afford_fleet(p, atk_fleet):
+                    reasons_by_planet[str(p.coords)] = "Falta de flota en hangar"
+                    continue
+                
+                # 3. Evitar ataques vacíos si no tenemos cargueros disponibles en absoluto
+                if tgt.cargo_capacity(atk_fleet) == 0:
+                    reasons_by_planet[str(p.coords)] = "Falta de cargueros en hangar"
+                    continue
+
+                # 4. Evaluar rentabilidad del objetivo desde este origen específico
+                res_eval = tgt.evaluate(report, p.coords, atk_fleet, self.my_tech, self.cfg, return_reason=True)
+                target, reason = res_eval
+                if not target:
+                    reasons_by_planet[str(p.coords)] = reason
+                    continue
+
+                dist_value = gd.distance(p.coords.tuple(), coords.tuple())
+                atk_info = {
+                    "target": target,
+                    "origin": p,
+                    "fleet": atk_fleet,
+                    "distance": dist_value,
+                    "full_loot": full_loot
+                }
+
+                # Conservar el origen que dé el mejor score
+                if best_atk_for_target is None or target.score > best_atk_for_target["target"].score:
+                    best_atk_for_target = atk_info
+
+            if best_atk_for_target:
+                best_attacks_by_target[key] = best_atk_for_target
+                score_val = best_atk_for_target["target"].score
+                origin_str = str(best_atk_for_target["origin"].coords)
+                self.record_session_action("espionage", f"{coords}", f"Apto para ataque (Score: {score_val:.0f})", origin_str)
+            else:
+                if not reasons_by_planet:
+                    summary_reason = "No rentable o sin flota"
+                else:
+                    summary_reason = "; ".join(f"{p_c}: {r}" for p_c, r in reasons_by_planet.items())
+                self.record_session_action("espionage", f"{coords}", f"Descartado: {summary_reason}")
+
+        valid_attacks = list(best_attacks_by_target.values())
+
+        # Ordenar por distancia ascendente (prioridad para los más cercanos), y por score descendente en caso de empate
+        valid_attacks.sort(key=lambda x: (x["distance"], -x["target"].score))
+
+        # ── Fase 5: ejecutar ataques ──────────────────────────────────
+        attacked = 0
+        for attack in valid_attacks:
+            if attacked >= limit:
+                break
+            if not self._has_free_slots_for_mission():
+                self.log.info("Farmeo: deteniendo ataques por falta de slots libres (se requiere dejar 1 libre).")
+                break
+
+            target = attack["target"]
+            origin = attack["origin"]
+            fleet_to_send = attack["fleet"]
+            coords = target.coords
+            full_loot = attack["full_loot"]
+
+            # Comprobar de nuevo si el origen aún conserva la flota requerida (por si se enviaron naves en un ataque previo en este mismo ciclo)
+            if not can_afford_fleet(origin, fleet_to_send):
+                # Intentar buscar otro origen elegible sobre la marcha
+                best_alt = None
+                for p in eligible_locations:
+                    alt_fleet = fleet_mod.size_attack_fleet_for_planet(p, full_loot, template)
+                    if not can_afford_fleet(p, alt_fleet):
+                        continue
+                    if tgt.cargo_capacity(alt_fleet) == 0:
+                        continue
+                    
+                    alt_target = tgt.evaluate(target.report, p.coords, alt_fleet, self.my_tech, self.cfg)
+                    if not alt_target:
+                        continue
+                    
+                    if best_alt is None or alt_target.score > best_alt["target"].score:
+                        best_alt = {
+                            "target": alt_target,
+                            "origin": p,
+                            "fleet": alt_fleet
+                        }
+                
+                if not best_alt:
+                    self.log.debug("Ataque a %s omitido: ningún origen alternativo puede realizar el ataque.", coords)
+                    continue
+                
+                origin = best_alt["origin"]
+                target = best_alt["target"]
+                fleet_to_send = best_alt["fleet"]
+
+            # Calcular duración estimada del viaje de ataque (ida y vuelta)
+            slowest_speed = min((gd.SHIPS[ship].speed for ship in fleet_to_send if fleet_to_send[ship] > 0), default=1)
+            dist = gd.distance(origin.coords.tuple(), coords.tuple())
+            ftime = gd.flight_time(dist, slowest_speed, 1.0, self.cfg.fleet_speed)
+            total_duration = 2 * ftime
+            
+            # Segundos restantes del horario activo
+            seconds_left = utils.seconds_until_inactive(self.cfg.active_hours)
+            
+            if total_duration > seconds_left:
+                self.log.info("Farmeo: omitiendo ataque desde %s a %s por horario de descanso inminente (tardaría %.1f min y quedan %.1f min activos).",
+                              origin.coords, coords, total_duration / 60.0, seconds_left / 60.0)
+                continue
+
+            if not self._guard():
+                break
+
+            ok = self.client.send_fleet(origin.coords, coords, fleet_to_send, mission="attack")
+            if ok:
+                # Actualizar el inventario local de naves del origen
+                for ship, qty in fleet_to_send.items():
+                    if ship in origin.ships:
+                        origin.ships[ship] = max(0, origin.ships[ship] - qty)
+                self.active_slots += 1
+                attacked += 1
+                self.log.info("Ataque desde %s: %s loot~%d score=%.0f (distancia=%d)",
+                               origin.coords, coords, int(target.expected_loot.value()), target.score, attack["distance"])
+                # Registrar acción de la sesión
+                self.record_session_action("farming", f"{coords}", 1, str(origin.coords))
+                self.record_session_action("espionage", f"{coords}", f"Ataque enviado (Score: {target.score:.0f})", str(origin.coords))
+                # Guardar timestamp de ataque para el cooldown
+                coords_str = f"{coords.galaxy}:{coords.system}:{coords.position}"
+                self.attack_history[coords_str] = time.time()
+                self._save_state()
+
+        self.log.info("Farmeo completado: %d ataques en este ciclo.", attacked)
+
+    def _recycle(self, locations):
+        locations_with_recyclers = [p for p in locations 
+                                    if p.ships.get("recycler", 0) >= 1 
+                                    and self._get_planet_setting(p, "enable_recycling", True)]
+        if not locations_with_recyclers:
+            self.log.debug("Reciclaje omitido: sin ubicaciones con recicladores disponibles y activos en hangar.")
+            return
+
+        fields = self.client.read_debris_fields(locations_with_recyclers)
+        if not fields:
+            return
+
+        # Helper para encontrar la ubicación con recicladores más cercana
+        def get_best_recycle_origin(target_coords) -> Optional[Planet]:
+            eligible = [p for p in locations_with_recyclers if p.ships.get("recycler", 0) >= 1]
+            if not eligible:
+                return None
+            return min(eligible, key=lambda p: gd.distance(p.coords.tuple(), target_coords.tuple()))
+
+        for f in fields:
+            if not self._has_free_slots_for_mission():
+                self.log.info("Reciclaje: deteniendo envío por falta de slots libres.")
+                break
+            
+            target_coords = tgt.parse_coords(f["coords"])
+            origin_loc = get_best_recycle_origin(target_coords)
+            if not origin_loc:
+                self.log.info("Reciclaje: sin ubicaciones con recicladores disponibles para %s.", target_coords)
+                break
+
+            avail = origin_loc.ships.get("recycler", 0)
+            needed = fleet_mod.recycler_count(f["debris"])
+            n = min(needed, avail)
+            
+            self.log.info("Reciclaje: evaluando campo en %s (escombros=%s). Necesita %d reciclador(es).",
+                          target_coords, f["debris"], needed)
+            self.log.info("Reciclaje: ubicación con recicladores más cercana %s tiene %d libre(s).",
+                          origin_loc.coords, avail)
+
+            if n <= 0:
+                if avail == 0:
+                    self.log.info("Reciclaje: omitido en %s porque %s tiene 0 recicladores libres.", target_coords, origin_loc.coords)
+                else:
+                    self.log.info("Reciclaje: omitido en %s porque se requieren 0 recicladores.", target_coords)
+                continue
+
+            # Calcular duración estimada del viaje de reciclaje (ida y vuelta)
+            dist = gd.distance(origin_loc.coords.tuple(), target_coords.tuple())
+            slowest_speed = gd.SHIPS["recycler"].speed
+            ftime = gd.flight_time(dist, slowest_speed, 1.0, self.cfg.fleet_speed)
+            total_duration = 2 * ftime
+            
+            # Segundos restantes del horario activo
+            seconds_left = utils.seconds_until_inactive(self.cfg.active_hours)
+            
+            if total_duration > seconds_left:
+                self.log.info("Reciclaje: omitiendo envío a %s por horario de descanso inminente (tardaría %.1f min y quedan %.1f min activos).",
+                              target_coords, total_duration / 60.0, seconds_left / 60.0)
+                continue
+
+            if not self._guard():
+                break
+
+            plan = fleet_mod.harvest_plan(origin_loc.coords, target_coords, f["debris"])
+            plan["ships"] = {"recycler": n}
+
+            ok = self.client.send_fleet(plan["origin"], plan["destination"],
+                                   plan["ships"], mission="harvest")
+            if ok:
+                origin_loc.ships["recycler"] = max(0, origin_loc.ships["recycler"] - n)
+                self.active_slots += 1
+
+    def _expeditions(self, home: Coords) -> bool:
+        if not self._has_free_slots_for_mission():
+            self.log.info("Expedición: deteniendo envío por falta de slots de flota libres.")
+            return False
+        if not self._has_free_expe_slots():
+            self.log.info("Expedición: deteniendo envío por falta de slots de expedición libres (%d/%d).",
+                          self.active_expe_slots, self.total_expe_slots)
+            return False
+        plan = fleet_mod.expedition_plan(home, self.cfg)
+
+        # Calcular duración estimada del vuelo (ida y vuelta + permanencia)
+        dist = gd.distance(home.tuple(), plan["destination"].tuple())
+        slowest_speed = min((gd.SHIPS[ship].speed for ship in plan["ships"] if plan["ships"][ship] > 0), default=1)
+        ftime = gd.flight_time(dist, slowest_speed, 1.0, self.cfg.fleet_speed)
+        total_duration = 2 * ftime + plan["hold_hours"] * 3600
+
+        # Segundos restantes del horario activo
+        seconds_left = utils.seconds_until_inactive(self.cfg.active_hours)
+
+        if total_duration > seconds_left:
+            self.log.info("Expedición: omitido desde %s por horario de descanso inminente (tardaría %.1f min y quedan %.1f min activos).",
+                          home, total_duration / 60.0, seconds_left / 60.0)
+            return False
+
+        if self._guard():
+            ok = self.client.send_fleet(home, plan["destination"], plan["ships"],
+                                   mission="expedition", hold_hours=plan["hold_hours"])
+            if ok:
+                self.active_slots += 1
+                self.active_expe_slots += 1
+                # Registrar acción de la sesión
+                self.record_session_action("expeditions", f"{plan['destination']}", 1, str(home))
+                return True
+        return False
+
+    def _colonize(self, planets):
+        occupied = {p.coords.tuple() for p in planets}
+        if len(planets) >= self.cfg.max_colonies:
+            return
+        if not self._has_ships(planets, "colony_ship"):
+            self.log.debug("Colonización omitida: sin nave de colonización.")
+            return
+        if not self._has_free_slots_for_mission():
+            self.log.info("Colonización: deteniendo envío por falta de slots libres.")
+            return
+        dest = moons.pick_colony(occupied, self.cfg, home_coords=planets[0].coords)
+        if dest and self._guard():
+            self.log.info("Colonizando %s", dest)
+            ok = self.client.send_fleet(planets[0].coords, dest,
+                                   {"colony_ship": 1}, mission="colonize")
+            if ok:
+                self.active_slots += 1
+
+    def _moonshot(self, planets):
+        plan = moons.plan_moonshot(planets[0].coords, self.cfg)
+        self.log.info("Plan de luna: %s naves %s (prob %.0f%%). %s",
+                      plan["ships_to_crash"], plan["sacrifice_ship"],
+                      plan["expected_chance"] * 100, plan["note"])
+
+    def _continue_until_idle(self):
+        """
+        Tras el ciclo principal, sondea las colas de construcción cada ~45s.
+        En cuanto un slot se libera, inicia la siguiente construcción de inmediato
+        en lugar de esperar el intervalo de ciclo completo.
+        Garantiza progreso continuo al inicio del juego (donde los builds son breves).
+        """
+        if not getattr(self.cfg, "enable_economy", True) and not getattr(self.cfg, "enable_lifeforms", True):
+            return
+        planets = self.last_planets
+        if not planets:
+            return
+
+        POLL = 45  # segundos entre sondeos
+        # No extendemos más allá del intervalo de ciclo mínimo configurado
+        deadline = time.time() + self.cfg.cycle_interval_min_s
+
+        while time.time() < deadline:
+            still_busy = [p for p in planets
+                          if p.building_in_progress or p.lifeform_in_progress]
+            if not still_busy:
+                self.log.debug("Todas las colas libres; terminando _continue_until_idle.")
+                break
+
+            wait = min(POLL, deadline - time.time() - 5)
+            if wait <= 0:
+                break
+
+            self.log.info("Construcciones activas (%d planeta/s). Sondeo en %.0fs.",
+                          len(still_busy), wait)
+            time.sleep(wait)
+
+            for p in planets:
+                try:
+                    # Comprobar cola de suministros/instalaciones
+                    if p.building_in_progress:
+                        self.client._goto("overview", p)
+                        prev = p.building_in_progress
+                        p.building_in_progress = self.client._is_build_queue_active_from_overview()
+                        if prev and not p.building_in_progress:
+                            self.log.info("%s: construcción completada. Actualizando estado.", p.coords)
+                            p.resources = self.client.read_resources()
+                            for comp in ("supplies", "facilities"):
+                                p.buildings.update(self.client._read_tech_page(comp, p))
+
+                    # Comprobar cola de Formas de vida
+                    if p.lifeform_in_progress:
+                        self.client._goto("lfbuildings", p)
+                        try:
+                            self.client._wait_tech(timeout=4000)
+                            prev_lf = p.lifeform_in_progress
+                            p.lifeform_in_progress = self.client._is_lf_queue_active()
+                            if prev_lf and not p.lifeform_in_progress:
+                                self.log.info("%s: Forma de vida completada.", p.coords)
+                        except Exception:
+                            p.lifeform_in_progress = False
+                except Exception as e:
+                    self.log.debug("Poll error en %s: %s", p.coords, e)
+
+            # Construir lo siguiente en los planetas con slot libre
+            for p in planets:
+                if not p.building_in_progress:
+                    self._economy_step(p)
+                    self._facilities_step(p)
+                if not p.lifeform_in_progress:
+                    self._lifeforms_step(p)
+                self._defense_step(p)
+                self._facilities_step(p)
+
+    def _facilities_step(self, planet):
+        if not self._get_planet_setting(planet, "enable_facilities", True):
+            self.log.debug("%s: instalaciones desactivadas para este planeta.", planet.coords)
+            return
+        if planet.building_in_progress:
+            self.log.debug("%s: construcción en progreso, saltando instalaciones.", planet.coords)
+            return
+
+        target_robotics = self._get_planet_setting(planet, "target_robotics_factory", 0)
+        target_shipyard = self._get_planet_setting(planet, "target_shipyard", 0)
+        target_lab = self._get_planet_setting(planet, "target_research_lab", 0)
+        target_nanite = self._get_planet_setting(planet, "target_nanite_factory", 0)
+
+        # Buscar qué instalación subir de nivel
+        to_upgrade = None
+        for facility, target_val in [
+            ("robotics_factory", target_robotics),
+            ("shipyard", target_shipyard),
+            ("research_lab", target_lab),
+            ("nanite_factory", target_nanite),
+        ]:
+            current_lvl = planet.lvl(facility)
+            if current_lvl < target_val:
+                from .prereqs import resolve_prerequisites
+                res = resolve_prerequisites("building", facility, current_lvl + 1, planet, self.research_levels)
+                if res and res[0] == "building":
+                    actual_name = res[1]
+                    actual_lvl = res[2]
+                    cost = gd.building_cost(actual_name, actual_lvl)
+                    to_upgrade = (actual_name, cost)
+                    break
+
+        if to_upgrade:
+            name, cost = to_upgrade
+            buf = 1 - self.cfg.keep_resources_buffer
+            avail = Resources(planet.resources.metal * buf,
+                              planet.resources.crystal * buf,
+                              planet.resources.deut * buf)
+
+            if avail.can_afford(cost):
+                if self._guard():
+                    self.log.info("Instalaciones %s: construyendo %s (nivel %d) para alcanzar objetivo.",
+                                  planet.coords, name, planet.lvl(name) + 1)
+                    comp = "facilities" if name in ("robotics_factory", "nanite_factory", "shipyard", "research_lab") else "supplies"
+                    ok = self.client.build(planet, comp, name)
+                    if ok:
+                        self.record_session_action("buildings", name, planet.lvl(name) + 1, str(planet.coords))
+                    planet.building_in_progress = True
+            else:
+                plasma = self.research_levels.get("plasma_tech", 0)
+                t = economy.time_to_accumulate(cost, planet, self.cfg, plasma)
+                max_wait = getattr(self.cfg, "max_saving_hours_economy", 4.0)
+                if t <= max_wait:
+                    self.log.info("%s: ahorrando para instalaciones: %s (tiempo estimado: %.1fh)", 
+                                  planet.coords, name, t)
+                    planet.building_in_progress = True
+
+    def _fleetsave_all(self, offline_hours: float):
+        if not self.cfg.enable_fleetsave:
+            return
+        planets = self.client.read_planets()
+        # Leer lunas para tener sus datos también
+        for p in planets:
+            if p.has_moon and p.moon:
+                self.client.read_planet_state(p.moon)
+
+        # Construir lista de todas las ubicaciones (planetas y lunas)
+        all_locations = []
+        for p in planets:
+            all_locations.append(p)
+            if p.has_moon and p.moon:
+                all_locations.append(p.moon)
+
+        coords = [loc.coords for loc in all_locations]
+        
+        recall_halfway = getattr(self.cfg, "fleetsave_recall_halfway", False)
+        if recall_halfway:
+            target_dur = (offline_hours / 2.0) * 3600
+        else:
+            target_dur = offline_hours * 3600
+
+        for loc in all_locations:
+            # Rellenar estado para saber las naves actuales
+            self.client.read_planet_state(loc)
+            # Omitir satélites solares porque no vuelan
+            flyable_ships = {k: v for k, v in loc.ships.items() if k != "solar_satellite" and v > 0}
+            if not flyable_ships:
+                continue
+
+            plan = fleet_mod.fleetsave_plan(loc.coords, coords, self.cfg, offline_hours)
+            if not plan:
+                continue
+            # Fleetsave is safety-critical and must run even if hourly action rate limits are reached.
+            self.rate.record()
+            self.client._delay()
+            self.log.info("Fleetsave %s -> %s (objetivo: %.2fh)", loc.coords, plan["destination"], target_dur / 3600)
+            res = "all" if getattr(self.cfg, "fleetsave_carry_resources", True) else None
+            self.client.send_fleet(loc.coords, plan["destination"], {},
+                                   mission=plan["mission"],
+                                   resources=res,
+                                   speed_percent=plan.get("speed_percent", 1.0),
+                                   target_duration_s=target_dur)
+
+    def _recall_sleep_fleetsaves(self):
+        planets = self.client.read_planets()
+        if not planets:
+            return
+        # Construir lista de todas las ubicaciones (planetas y lunas)
+        all_locations = []
+        for p in planets:
+            all_locations.append(p)
+            if p.has_moon and p.moon:
+                all_locations.append(p.moon)
+
+        mvs = self.client.read_movements()
+        our_coords_str = {f"{loc.coords.galaxy}:{loc.coords.system}:{loc.coords.position}" for loc in all_locations}
+        
+        for mv in mvs:
+            if (mv.get("mission") in ("4", "deploy")) and not mv.get("is_return", False):
+                origin = mv.get("origin")
+                dest = mv.get("destination")
+                if origin in our_coords_str and dest in our_coords_str and origin != dest:
+                    self.log.info("Retornando despliegue de fleetsave: %s -> %s", origin, dest)
+                    self.client.recall_fleet(origin, dest, mission="deploy")
+
+    def _check_and_escape_attacks(self):
+        if not getattr(self.cfg, "enable_attack_escape", True):
+            return
+        mvs = self.client.read_movements()
+        planets = self.client.read_planets()
+        if not planets:
+            return
+            
+        # Construir lista de todas las ubicaciones (planetas y lunas)
+        all_locations = []
+        for p in planets:
+            all_locations.append(p)
+            if p.has_moon and p.moon:
+                all_locations.append(p.moon)
+
+        our_locations_map = {}
+        for loc in all_locations:
+            k = f"{loc.coords.galaxy}:{loc.coords.system}:{loc.coords.position}:{loc.coords.type}"
+            our_locations_map[k] = loc
+
+        # 1. Encontrar planetas/lunas actualmente bajo ataque con su tiempo de llegada mínimo
+        under_attack = {}
+        for mv in mvs:
+            if (mv.get("is_hostile") or mv.get("mission") in ("1", "2", "9")) and not mv.get("is_return", False):
+                dest_coords = mv.get("destination")
+                dest_type = mv.get("dest_type", "planet")
+                dest_key = f"{dest_coords}:{dest_type}"
+                if dest_key in our_locations_map:
+                    arr_text = mv.get("arrival_text", "")
+                    arr_sec = parse_time_to_seconds(arr_text)
+                    if arr_sec is None:
+                        arr_sec = 999999  # valor por defecto si no es parseable
+                    if dest_key not in under_attack or arr_sec < under_attack[dest_key]:
+                        under_attack[dest_key] = arr_sec
+                    
+                    # Registrar ataque hostil recibido o actualizarlo
+                    origin_coords_str = mv.get("origin", "Desconocido")
+                    mission_str = "Ataque" if mv.get("mission") in ("1", "2") else "Espionaje"
+                    self.record_session_action("hostile_attacks", f"{mission_str} desde {origin_coords_str}", arr_sec, dest_coords)
+
+                    # Enviar notificación de Telegram si está configurado
+                    if getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""):
+                        now = time.time()
+                        arr_epoch = now + arr_sec
+                        # Redondear el tiempo de llegada estimado a 60 segundos
+                        arr_epoch_rounded = int(arr_epoch / 60) * 60
+                        attack_key = f"{origin_coords_str}->{dest_coords}:{dest_type}:{mission_str}:{arr_epoch_rounded}"
+                        
+                        if attack_key not in self.telegram_notified_attacks:
+                            self.telegram_notified_attacks[attack_key] = arr_epoch
+                            self._save_state()
+                            
+                            # Formatear y enviar mensaje
+                            msg = (
+                                f"⚠️ <b>¡ALERTA DE ATAQUE EN OGAME!</b>\n\n"
+                                f"• <b>Misión:</b> {mission_str}\n"
+                                f"• <b>Origen:</b> [{origin_coords_str}]\n"
+                                f"• <b>Destino:</b> [{dest_coords}] ({dest_type})\n"
+                                f"• <b>Tiempo de llegada estimado:</b> {arr_text}\n"
+                            )
+                            loc = our_locations_map[dest_key]
+                            flyable_ships = {k: v for k, v in getattr(loc, 'ships', {}).items() if k != "solar_satellite" and v > 0}
+                            if flyable_ships:
+                                msg += f"• <b>Flota en origen:</b> " + ", ".join(f"{k}: {v}" for k, v in flyable_ships.items()) + "\n"
+                            else:
+                                msg += f"• <b>Flota en origen:</b> Ninguna nave voladora en hangar.\n"
+                            
+                            msg += f"\n<i>Acción del bot: El bot intentará esquivar el ataque o realizar compras de pánico según tu configuración.</i>"
+                            
+                            self.log.info("Disparando alerta de Telegram para ataque: %s", attack_key)
+                            utils.send_telegram_message(
+                                self.cfg.telegram_token,
+                                self.cfg.telegram_chat_id,
+                                msg,
+                                logger=self.log
+                            )
+                    
+        # 2. Iniciar evasión para planetas o lunas bajo ataque que no hayamos evadido todavía
+        for dest_key, arrival_seconds in under_attack.items():
+            try:
+                parts = dest_key.split(":")
+                g = int(parts[0])
+                sys = int(parts[1])
+                p = int(parts[2])
+                t = parts[3]
+                
+                # Encontrar la ubicación exacta en esta coordenada y tipo
+                loc = next((l for l in all_locations if l.coords.galaxy == g and l.coords.system == sys and l.coords.position == p and l.coords.type == t), None)
+                if not loc:
+                    continue
+                
+                # Leer estado primero para conocer las naves actuales
+                self.client.read_planet_state(loc)
+                # Satélites solares no cuentan para evasión
+                flyable_ships = {k: v for k, v in loc.ships.items() if k != "solar_satellite" and v > 0}
+                if not flyable_ships:
+                    continue
+
+                # Comprobar si ya evadimos esta ubicación específica (el tipo de coordenada coincide)
+                already_escaped = any(e["origin"].tuple() == loc.coords.tuple() and e["origin"].type == loc.coords.type for e in self.escaped_fleets)
+                if not already_escaped:
+                    self._escape_attack_loc(loc, all_locations, under_attack)
+                
+                # Comprobar pánico (menos de 5 minutos para el impacto) - solo en planeta por simplicidad
+                if arrival_seconds < 300 and t == "planet":
+                    planet = next((pl for pl in planets if pl.coords.galaxy == g and pl.coords.system == sys and pl.coords.position == p), None)
+                    if planet:
+                        total_res_approx = planet.resources.metal + planet.resources.crystal + planet.resources.deut
+                        if total_res_approx == 0 or total_res_approx >= 5000:
+                            self._panic_build_resources(planet, arrival_seconds)
+            except Exception as e:
+                self.log.error("Error al procesar evasión/pánico de ataque en %s: %s", dest_key, e)
+                
+        # 3. Comprobar si los ataques a planetas evadidos han finalizado o han sido retirados
+        now = time.time()
+        still_escaped = []
+        for esc in self.escaped_fleets:
+            origin_key = f"{esc['origin'].galaxy}:{esc['origin'].system}:{esc['origin'].position}:{esc['origin'].type}"
+            
+            if origin_key not in under_attack:
+                if esc.get("is_sibling"):
+                    # Es una evasión hermano, no se le hace recall (despliegue permanente)
+                    self.log.info("Ataque finalizado en %s (evasión hermano). Removiendo del registro de evasión.", origin_key)
+                else:
+                    elapsed = now - esc["escaped_at"]
+                    if elapsed >= 300: # 5 minutos
+                        dest_str = f"{esc['destination'].galaxy}:{esc['destination'].system}:{esc['destination'].position}"
+                        origin_coords_str = f"{esc['origin'].galaxy}:{esc['origin'].system}:{esc['origin'].position}"
+                        self.log.info("Ataque retirado o finalizado en %s. Retornando flota de evasión %s -> %s...", origin_key, origin_coords_str, dest_str)
+                        ok = self.client.recall_fleet(origin_coords_str, dest_str, mission="deploy")
+                        if ok:
+                            self.log.info("Flota de evasión retornada con éxito.")
+                        else:
+                            self.log.warning("No se pudo retornar la flota de evasión (puede haber llegado ya o haber sido cancelada manualmente).")
+                    else:
+                        still_escaped.append(esc)
+            else:
+                still_escaped.append(esc)
+                 
+        self.escaped_fleets = still_escaped
+ 
+    def _escape_attack_loc(self, origin_loc: Planet, all_locations: List[Planet], under_attack: dict):
+        has_any_ships = any(count > 0 for count in origin_loc.ships.values())
+        if not has_any_ships:
+            self.log.debug("Evasión de ataque en %s omitida: no hay naves.", origin_loc.coords)
+            return
+
+        # Intentar evasión al sibling (hermano) a 100%
+        sibling_loc = None
+        if origin_loc.coords.type == "planet":
+            if origin_loc.has_moon and origin_loc.moon:
+                sibling_loc = origin_loc.moon
+        elif origin_loc.coords.type == "moon":
+            # Buscar el planeta hermano en all_locations
+            sibling_loc = next((loc for loc in all_locations if 
+                                loc.coords.galaxy == origin_loc.coords.galaxy and
+                                loc.coords.system == origin_loc.coords.system and
+                                loc.coords.position == origin_loc.coords.position and
+                                loc.coords.type == "planet"), None)
+
+        sibling_under_attack = False
+        if sibling_loc:
+            sibling_key = f"{sibling_loc.coords.galaxy}:{sibling_loc.coords.system}:{sibling_loc.coords.position}:{sibling_loc.coords.type}"
+            if sibling_key in under_attack:
+                sibling_under_attack = True
+
+        if sibling_loc and not sibling_under_attack:
+            dest = sibling_loc.coords
+            speed_percent = 1.0
+            is_sibling_escape = True
+            self.log.warning("¡ALERTA DE ATAQUE ENMIGO detectado en %s! El hermano %s NO está bajo ataque. Iniciando evasión al 100%% de velocidad hacia %s.", origin_loc.coords, sibling_loc.coords, dest)
+        else:
+            # Fallback a evasión remota al 10%
+            candidates = [loc.coords for loc in all_locations if loc.coords.tuple() != origin_loc.coords.tuple()]
+            if not candidates:
+                self.log.warning("Evasión de ataque en %s omitida: no hay planetas/lunas de destino alternativos.", origin_loc.coords)
+                return
+            # Seleccionar el más lejano
+            dest = max(candidates, key=lambda c: gd.distance(origin_loc.coords.tuple(), c.tuple()))
+            speed_percent = 0.1
+            is_sibling_escape = False
+            self.log.warning("¡ALERTA DE ATAQUE ENMIGO detectado en %s! Iniciando evasión al 10%% de velocidad hacia %s.", origin_loc.coords, dest)
+
+        # Llevar recursos SIEMPRE habilitado para evasión de ataques
+        res = "all"
+ 
+        ok = self.client.send_fleet(origin_loc.coords, dest, {}, mission="deploy", resources=res, speed_percent=speed_percent)
+        if ok:
+            self.log.info("¡Evasión de flota desde %s enviada con éxito!", origin_loc.coords)
+            self.escaped_fleets.append({
+                "origin": origin_loc.coords,
+                "destination": dest,
+                "escaped_at": time.time(),
+                "is_sibling": is_sibling_escape
+            })
+        else:
+            self.log.error("Fallo al enviar la flota de evasión desde %s.", origin_loc.coords)
+    def initialize_session_stats(self):
+        """Inicializa las estadísticas a 0 para la nueva sesión e ignora mensajes existentes."""
+        self.log.info("Inicializando estadísticas de la sesión (ignorando mensajes previos)...")
+        import json
+        import os
+
+        stats_file = "ogbot_stats.json"
+        stats = {
+            "total_farming": {"metal": 0, "crystal": 0, "deut": 0},
+            "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
+            "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}},
+            "parsed_messages": [],
+            "session_actions": {
+                "buildings": {},
+                "research": [],
+                "fleet": {},
+                "defense": {},
+                "farming": {},
+                "expeditions": {},
+                "hostile_attacks": {},
+                "espionage": {}
+            }
+        }
+
+        tabs = [21, 22, 24]
+        for tab_id in tabs:
+            try:
+                msgs = self.client.read_message_reports(tab_id)
+                for m in msgs:
+                    msg_id = f"{tab_id}-{m['id']}"
+                    if msg_id not in stats["parsed_messages"]:
+                        stats["parsed_messages"].append(msg_id)
+            except Exception as e:
+                self.log.warning("No se pudieron leer mensajes previos del tab %d durante la inicialización: %s", tab_id, e)
+
+        try:
+            with open(stats_file, "w", encoding="utf-8") as f:
+                json.dump(stats, f, indent=2)
+            self.log.info("Estadísticas de sesión inicializadas con éxito. %d mensajes previos marcados como leídos o ignorados.", len(stats["parsed_messages"]))
+        except Exception as e:
+            self.log.error("No se pudo escribir el archivo de estadísticas inicial: %s", e)
+
+    def record_session_action(self, action_type: str, name: str, value, planet_coords: str = None):
+        """
+        Registra una acción de la sesión (edificio, investigación, naves, defensa, farmeo, expedición, ataque hostil o espionaje) en ogbot_stats.json.
+        """
+        import json
+        import os
+        import time
+
+        stats_file = "ogbot_stats.json"
+        stats = {
+            "total_farming": {"metal": 0, "crystal": 0, "deut": 0},
+            "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
+            "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}},
+            "parsed_messages": [],
+            "session_actions": {
+                "buildings": {},
+                "research": [],
+                "fleet": {},
+                "defense": {},
+                "farming": {},
+                "expeditions": {},
+                "hostile_attacks": {},
+                "espionage": {}
+            }
+        }
+
+        if os.path.exists(stats_file):
+            try:
+                with open(stats_file, "r", encoding="utf-8") as f:
+                    stats = json.load(f)
+            except Exception:
+                pass
+
+        if "session_actions" not in stats:
+            stats["session_actions"] = {
+                "buildings": {},
+                "research": [],
+                "fleet": {},
+                "defense": {},
+                "farming": {},
+                "expeditions": {},
+                "hostile_attacks": {},
+                "espionage": {}
+            }
+        elif "espionage" not in stats["session_actions"]:
+            stats["session_actions"]["espionage"] = {}
+
+        timestamp_str = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        action_data = {
+            "name": name,
+            "value": value,
+            "timestamp": timestamp_str
+        }
+
+        if action_type == "research":
+            stats["session_actions"]["research"].append(action_data)
+        else:
+            if not planet_coords:
+                planet_coords = "Empire"
+            actions_dict = stats["session_actions"].setdefault(action_type, {})
+            planet_list = actions_dict.setdefault(planet_coords, [])
+            
+            # Evitar duplicar alertas de ataque hostil o espionajes idénticos
+            if action_type in ("hostile_attacks", "espionage"):
+                for existing in planet_list:
+                    if existing["name"] == name:
+                        existing["value"] = value
+                        existing["timestamp"] = timestamp_str
+                        try:
+                            with open(stats_file, "w", encoding="utf-8") as f:
+                                json.dump(stats, f, indent=2)
+                        except Exception:
+                            pass
+                        return
+                        
+            planet_list.append(action_data)
+
+        try:
+            with open(stats_file, "w", encoding="utf-8") as f:
+                json.dump(stats, f, indent=2)
+        except Exception as e:
+            self.log.debug("No se pudo escribir ogbot_stats.json en record_session_action: %s", e)
+
+    def update_imperial_stats(self):
+        """Lee los mensajes recientes de combates, expediciones y reciclaje para compilar estadísticas."""
+        self.log.info("Actualizando estadísticas imperiales desde mensajes...")
+        import json
+        import os
+        import re
+
+        stats_file = "ogbot_stats.json"
+        stats = {
+            "total_farming": {"metal": 0, "crystal": 0, "deut": 0},
+            "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
+            "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}},
+            "parsed_messages": []
+        }
+
+        if os.path.exists(stats_file):
+            try:
+                with open(stats_file, "r", encoding="utf-8") as f:
+                    stats = json.load(f)
+            except Exception:
+                pass
+
+        parsed_set = set(stats.get("parsed_messages", []))
+        changed = False
+
+        tabs = {
+            21: "total_farming",
+            22: "total_expeditions",
+            24: "total_recycling"
+        }
+
+        def clean_num(s):
+            """Convierte '1.234.567' / '1 234 567' / '1,234,567' -> 1234567."""
+            if isinstance(s, (int, float)):
+                return int(s)
+            return int(re.sub(r'[^\d]', '', str(s))) if s and re.search(r'\d', str(s)) else 0
+
+        def num_from_raw(raw, *keys):
+            for k in keys:
+                if k in raw:
+                    n = clean_num(str(raw[k]))
+                    if n:
+                        return n
+            return 0
+
+        def loot_from_raw(raw):
+            """El botín de combate suele venir como JSON en data-raw-loot/resources o data-raw-result."""
+            # 1. Chequear data-raw-result (para reportes de combate)
+            if "result" in raw:
+                try:
+                    res_data = json.loads(raw["result"])
+                    resources_list = res_data.get("loot", {}).get("resources", [])
+                    m, c, d = 0, 0, 0
+                    for res in resources_list:
+                        name = res.get("resource", "").lower()
+                        amount = clean_num(res.get("amount"))
+                        if "metal" in name:
+                            m = amount
+                        elif "crystal" in name:
+                            c = amount
+                        elif "deuterium" in name:
+                            d = amount
+                    if m or c or d:
+                        return m, c, d
+                except Exception:
+                    pass
+
+            # 2. Chequear data-raw-cargo (para transportes y expediciones)
+            if "cargo" in raw:
+                try:
+                    cargo_data = json.loads(raw["cargo"])
+                    m = clean_num(cargo_data.get("metal"))
+                    c = clean_num(cargo_data.get("crystal"))
+                    d = clean_num(cargo_data.get("deuterium") or cargo_data.get("deut"))
+                    if m or c or d:
+                        return m, c, d
+                except Exception:
+                    pass
+
+            # 3. Formato clásico (data-raw-loot/resources)
+            blob = raw.get("loot") or raw.get("resources")
+            if not blob:
+                return (0, 0, 0)
+            try:
+                d = json.loads(blob)
+            except Exception:
+                return (0, 0, 0)
+            g = lambda *ks: next(
+                (clean_num(str(d[k])) for k in ks if k in d), 0)
+            return (g("metal", "901"), g("crystal", "902"),
+                    g("deuterium", "deut", "903"))
+
+        def num_from_text(text, labels):
+            """Respaldo: extrae una cifra junto a una etiqueta, en cualquier orden."""
+            for lab in labels:
+                m = re.search(
+                    r'(?:%s)\s*:?\s*([\d][\d\.\s,]*)|([\d][\d\.\s,]*)\s*(?:de\s+)?(?:%s)'
+                    % (lab, lab), text, re.IGNORECASE)
+                if m:
+                    return clean_num(m.group(1) or m.group(2))
+            return 0
+
+        for tab_id, key in tabs.items():
+            msgs = self.client.read_message_reports(tab_id)
+            for m in msgs:
+                msg_id = f"{tab_id}-{m['id']}"
+                if msg_id in parsed_set:
+                    continue
+
+                text = m.get("text", "") or ""
+                raw = m.get("raw", {}) or {}
+                dark_matter = 0
+
+                text_lower = text.lower()
+                # Filtrar mensajes de combate para registrar solo ataques exitosos propios
+                if key == "total_farming":
+                    is_win = ("has ganado" in text_lower or "you won" in text_lower or "gewonnen" in text_lower)
+                    is_loss_to_attacker = ("el atacante ha ganado" in text_lower or "the attacker has won" in text_lower or "der angreifer hat gewonnen" in text_lower)
+                    if not is_win or is_loss_to_attacker:
+                        parsed_set.add(msg_id)
+                        stats["parsed_messages"].append(msg_id)
+                        changed = True
+                        continue
+
+                # Filtrar mensajes del tab "Otros" para procesar solo informes de reciclaje reales
+                elif key == "total_recycling":
+                    is_rec = ("reciclador" in text_lower or "recycler" in text_lower or 
+                              "escombros" in text_lower or "debris" in text_lower or 
+                              "recolecci" in text_lower or "trümmerfeld" in text_lower)
+                    if not is_rec:
+                        parsed_set.add(msg_id)
+                        stats["parsed_messages"].append(msg_id)
+                        changed = True
+                        continue
+
+                # 1) Datos estructurados data-raw-* (fiables, sin depender del idioma)
+                metal = num_from_raw(raw, "metal")
+                crystal = num_from_raw(raw, "crystal")
+                deut = num_from_raw(raw, "deuterium", "deut")
+                if not (metal or crystal or deut):
+                    metal, crystal, deut = loot_from_raw(raw)
+
+                # 2) Respaldo: parsear el texto del informe
+                if not (metal or crystal or deut):
+                    metal = num_from_text(text, ["metal"])
+                    crystal = num_from_text(text, ["cristal", "crystal"])
+                    deut = num_from_text(text, ["deuterio", "deuterium"])
+
+                if not (metal or crystal or deut) and key != "total_expeditions":
+                    self.log.debug("Mensaje %s sin recursos extraídos. raw=%s txt=%.120s",
+                                   msg_id, raw, text.replace("\n", " "))
+
+                if key == "total_expeditions":
+                    dark_matter = (num_from_raw(raw, "darkmatter", "dark_matter")
+                                   or num_from_text(text, ["materia oscura", "dark matter"]))
+
+                    ships_found = stats["total_expeditions"].setdefault("ships_found", {})
+                    for ship_key, name_variants in [
+                        ("large_cargo", ["carguero grande", "large cargo"]),
+                        ("small_cargo", ["carguero pequeño", "small cargo"]),
+                        ("recycler", ["reciclador", "recycler"]),
+                        ("light_fighter", ["caza ligero", "light fighter"]),
+                        ("heavy_fighter", ["caza pesado", "heavy fighter"]),
+                        ("cruiser", ["crucero", "cruiser"]),
+                        ("battleship", ["nave de batalla", "battleship"]),
+                        ("espionage_probe", ["sonda", "espionage probe"])
+                    ]:
+                        for variant in name_variants:
+                            m_ship = re.search(r'([\d\.,]+)\s+' + variant + r'|' + variant + r':?\s*([\d\.,]+)', text, re.IGNORECASE)
+                            if m_ship:
+                                qty = clean_num(m_ship.group(1) or m_ship.group(2))
+                                ships_found[ship_key] = ships_found.get(ship_key, 0) + qty
+
+                stats[key]["metal"] = stats[key].get("metal", 0) + metal
+                stats[key]["crystal"] = stats[key].get("crystal", 0) + crystal
+                stats[key]["deut"] = stats[key].get("deut", 0) + deut
+                if key == "total_expeditions":
+                    stats[key]["dark_matter"] = stats[key].get("dark_matter", 0) + dark_matter
+
+                parsed_set.add(msg_id)
+                stats["parsed_messages"].append(msg_id)
+                changed = True
+
+        if changed:
+            try:
+                with open(stats_file, "w", encoding="utf-8") as f:
+                    json.dump(stats, f, indent=2)
+                self.log.info("Estadísticas imperiales actualizadas en ogbot_stats.json.")
+            except Exception as e:
+                self.log.debug("No se pudo escribir ogbot_stats.json: %s", e)
+
+    def _calculate_panic_build(self, planet: Planet) -> Dict[str, int]:
+        """
+        Calcula la combinación óptima de defensa y flota para gastar la mayor cantidad de recursos.
+        Usa una ponderación dinámica según los recursos restantes.
+        """
+        from ogbot import gamedata as gd
+        from ogbot.economy import check_defense_prereqs
+        from ogbot.prereqs import resolve_prerequisites
+
+        # Lista de candidatos a evaluar
+        defenses_candidates = ["rocket_launcher", "light_laser", "heavy_laser", "gauss_cannon", "ion_cannon", "plasma_turret"]
+        ships_candidates = ["small_cargo", "large_cargo", "light_fighter", "heavy_fighter", "cruiser", "battleship", "battlecruiser", "bomber", "destroyer", "recycler", "espionage_probe", "reaper", "pathfinder"]
+
+        buildable_items = []  # Lista de tuples (nombre, tipo, Cost)
+
+        # 1. Filtrar defensas buildables
+        for d_name in defenses_candidates:
+            if check_defense_prereqs(d_name, planet, self.research_levels):
+                unit_data = gd.DEFENSES.get(d_name)
+                if unit_data:
+                    buildable_items.append((d_name, "defense", unit_data.cost))
+
+        # 2. Filtrar naves buildables
+        for s_name in ships_candidates:
+            res = resolve_prerequisites("ship", s_name, 1, planet, self.research_levels)
+            if res == ("ship", s_name, 1):
+                unit_data = gd.SHIPS.get(s_name)
+                if unit_data:
+                    buildable_items.append((s_name, "ship", unit_data.cost))
+
+        if not buildable_items:
+            return {}
+
+        # Recursos disponibles actuales
+        r_metal = planet.resources.metal
+        r_crystal = planet.resources.crystal
+        r_deut = planet.resources.deut
+
+        plan = {}
+
+        # Algoritmo codicioso (greedy) con pesos dinámicos
+        while True:
+            best_item = None
+            best_score = -1.0
+
+            # Los pesos de cada recurso son proporcionales a lo que nos queda
+            w_metal = max(0.0, r_metal)
+            w_crystal = max(0.0, r_crystal)
+            w_deut = max(0.0, r_deut)
+
+            # Si nos quedan poquísimos recursos, parar
+            if w_metal + w_crystal + w_deut < 1000:
+                break
+
+            for name, item_type, cost in buildable_items:
+                # Verificar si nos lo podemos permitir
+                if cost.metal <= r_metal and cost.crystal <= r_crystal and cost.deut <= r_deut:
+                    # Puntuación basada en consumir los recursos que más abundan
+                    score = (cost.metal * w_metal) + (cost.crystal * w_crystal) + (cost.deut * w_deut)
+                    if score > best_score:
+                        best_score = score
+                        best_item = (name, item_type, cost)
+
+            if not best_item:
+                # No nos podemos permitir ninguna unidad más
+                break
+
+            name, item_type, cost = best_item
+            plan[name] = plan.get(name, 0) + 1
+            r_metal -= cost.metal
+            r_crystal -= cost.crystal
+            r_deut -= cost.deut
+
+        return plan
+
+    def _panic_build_resources(self, planet: Planet, seconds_remaining: float):
+        """
+        Navega, lee recursos actuales e intenta comprar naves/defensas
+        para vaciar los almacenes ante un ataque inminente.
+        """
+        self.log.warning("[PANIC BUILD] ¡Impacto de ataque inminente en %s en %.1f min! Ejecutando compra de pánico...",
+                             planet.coords, seconds_remaining / 60)
+        from ogbot import gamedata as gd
+
+        # 1. Asegurar que estamos en el planeta y recargar recursos reales
+        try:
+            self.client._goto("overview", planet)
+            planet.resources = self.client.read_resources()
+        except Exception as e:
+            self.log.error("[PANIC BUILD] Error al ir a Overview y recargar recursos en %s: %s", planet.coords, e)
+            return
+
+        # 2. Calcular qué construir para consumir el máximo
+        plan = self._calculate_panic_build(planet)
+        if not plan:
+            self.log.info("[PANIC BUILD] No hay ninguna nave o defensa asequible/desbloqueada para comprar en %s.", planet.coords)
+            return
+
+        self.log.warning("[PANIC BUILD] Plan de compra calculado para %s: %s", planet.coords, plan)
+
+        # 3. Agrupar compras por tipo de página para optimizar navegación
+        ships_to_build = {}
+        defenses_to_build = {}
+        for name, qty in plan.items():
+            if qty <= 0:
+                continue
+            if name in gd.SHIPS:
+                ships_to_build[name] = qty
+            elif name in gd.DEFENSES:
+                defenses_to_build[name] = qty
+
+        # 4. Ejecutar compras de naves
+        if ships_to_build:
+            try:
+                for name, qty in ships_to_build.items():
+                    ok = self.client.build_ships(planet, name, qty)
+                    if ok:
+                        self.record_session_action("fleet", name, qty, str(planet.coords))
+            except Exception as e:
+                self.log.error("[PANIC BUILD] Error construyendo naves de pánico en %s: %s", planet.coords, e)
+
+        # 5. Ejecutar compras de defensas
+        if defenses_to_build:
+            try:
+                for name, qty in defenses_to_build.items():
+                    ok = self.client.build_defense(planet, name, qty)
+                    if ok:
+                        self.record_session_action("defense", name, qty, str(planet.coords))
+            except Exception as e:
+                self.log.error("[PANIC BUILD] Error construyendo defensas de pánico en %s: %s", planet.coords, e)
+
+        self.log.info("[PANIC BUILD] Proceso de compra de pánico completado en %s.", planet.coords)
+
+def parse_time_to_seconds(time_str: str) -> Optional[int]:
+    if not time_str:
+        return None
+    time_str = time_str.strip().lower()
+    import re
+    # Formato HH:MM:SS
+    m_hms = re.match(r'^(\d+):(\d+):(\d+)$', time_str)
+    if m_hms:
+        h, m, s = map(int, m_hms.groups())
+        return h * 3600 + m * 60 + s
+    
+    # Formato Xh Ym Zs / Ym Zs / Zs / etc.
+    parts = re.findall(r'(\d+)\s*([hms])', time_str)
+    if parts:
+        total_seconds = 0
+        for val, unit in parts:
+            if unit == 'h':
+                total_seconds += int(val) * 3600
+            elif unit == 'm':
+                total_seconds += int(val) * 60
+            elif unit == 's':
+                total_seconds += int(val)
+        return total_seconds
+    
+    # Formato de solo dígitos o "X s"
+    m_s = re.match(r'^(\d+)\s*s?$', time_str)
+    if m_s:
+        return int(m_s.group(1))
+    return None

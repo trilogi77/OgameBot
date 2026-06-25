@@ -1,0 +1,130 @@
+"""
+models.py
+=========
+Estructuras de datos que representan el estado del juego.
+"""
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Tuple
+
+
+@dataclass
+class Resources:
+    metal: float = 0.0
+    crystal: float = 0.0
+    deut: float = 0.0
+    energy: float = 0.0
+
+    def value(self, ratio=(2.5, 1.5, 1.0)) -> float:
+        """Valor en metal-equivalente para comparar/ordenar."""
+        return (self.metal
+                + self.crystal * (ratio[0] / ratio[1])
+                + self.deut * (ratio[0] / ratio[2]))
+
+    def total(self) -> float:
+        return self.metal + self.crystal + self.deut
+
+    def __add__(self, o: "Resources") -> "Resources":
+        return Resources(self.metal + o.metal, self.crystal + o.crystal,
+                         self.deut + o.deut, self.energy + o.energy)
+
+    def __sub__(self, o: "Resources") -> "Resources":
+        return Resources(self.metal - o.metal, self.crystal - o.crystal,
+                         self.deut - o.deut, self.energy - o.energy)
+
+    def can_afford(self, cost) -> bool:
+        return (self.metal >= cost.metal and self.crystal >= cost.crystal
+                and self.deut >= cost.deut)
+
+
+@dataclass
+class Coords:
+    galaxy: int
+    system: int
+    position: int
+    type: str = "planet"  # 'planet', 'moon', o 'debris'
+
+    def tuple(self) -> Tuple[int, int, int]:
+        return (self.galaxy, self.system, self.position)
+
+    def __str__(self) -> str:
+        if self.type == "moon":
+            tag = "M"
+        elif self.type == "debris":
+            tag = "D"
+        else:
+            tag = "P"
+        return f"[{self.galaxy}:{self.system}:{self.position}]{tag}"
+
+
+@dataclass
+class Planet:
+    id: str
+    name: str
+    coords: Coords
+    resources: Resources = field(default_factory=Resources)
+    max_temp: int = 30
+    buildings: Dict[str, int] = field(default_factory=dict)   # nombre -> nivel
+    ships: Dict[str, int] = field(default_factory=dict)
+    defenses: Dict[str, int] = field(default_factory=dict)
+    has_moon: bool = False
+    moon: Optional["Planet"] = None
+    fields_used: int = 0
+    fields_max: int = 163
+    building_in_progress: bool = False
+    building_remaining_seconds: int = 0
+    building_queue: List[str] = field(default_factory=list)
+    lifeform_in_progress: bool = False
+    lifeform_available: bool = True   # False si el universo/planeta no tiene Formas de vida
+
+    def lvl(self, b: str) -> int:
+        val = self.buildings.get(b, 0)
+        if hasattr(self, 'building_queue') and self.building_queue:
+            val += self.building_queue.count(b)
+        return val
+
+
+@dataclass
+class EspionageReport:
+    coords: Coords
+    player_name: str
+    is_inactive: bool
+    resources: Resources
+    fleet: Dict[str, int] = field(default_factory=dict)
+    defense: Dict[str, int] = field(default_factory=dict)
+    buildings: Dict[str, int] = field(default_factory=dict)
+    research: Dict[str, int] = field(default_factory=dict)
+    timestamp: float = 0.0
+    counterespionage_risk: float = 0.0  # probabilidad de detección
+
+    @property
+    def is_undefended(self) -> bool:
+        return sum(self.fleet.values()) == 0 and sum(self.defense.values()) == 0
+
+
+@dataclass
+class Target:
+    coords: Coords
+    player_name: str
+    report: Optional[EspionageReport] = None
+    expected_loot: Resources = field(default_factory=Resources)
+    fuel_cost: float = 0.0
+    flight_time: float = 0.0
+    score: float = 0.0          # beneficio neto ponderado
+    needs_clearing: bool = False  # tiene defensa/flota que destruir primero
+
+    def __str__(self) -> str:
+        return (f"{self.coords} {self.player_name} "
+                f"loot≈{int(self.expected_loot.value()):,} score={self.score:,.0f}")
+
+
+@dataclass
+class FleetMovement:
+    mission: str                # attack, transport, deploy, expedition, harvest, colonize, espionage
+    origin: Coords
+    destination: Coords
+    ships: Dict[str, int]
+    arrival_ts: float
+    return_ts: float
+    cargo: Resources = field(default_factory=Resources)
+    is_return: bool = False

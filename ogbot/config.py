@@ -1,0 +1,189 @@
+"""
+config.py
+=========
+Carga la configuración desde config.yaml. Todos los parámetros estratégicos
+y de seguridad viven aquí para que NO tengas que tocar el código.
+"""
+from __future__ import annotations
+import os
+from dataclasses import dataclass, field
+from typing import List, Tuple
+import yaml
+
+
+@dataclass
+class Config:
+    # --- Cuenta / servidor ---
+    universe: str = ""               # ej. "Quantum"
+    country: str = "es"              # comunidad/idioma del servidor
+    username: str = ""               # email de Gameforge
+    password: str = ""               # mejor vía variable de entorno OGBOT_PASS
+    server_url: str = ""             # ej. https://s123-es.ogame.gameforge.com
+
+    # --- Parámetros del universo (varían entre universos) ---
+    universe_speed: float = 1.0      # economía
+    fleet_speed: float = 1.0         # velocidad de flotas
+    debris_factor: float = 0.30      # % de naves destruidas que va a escombros
+    debris_includes_deut: bool = False
+    loot_percent: float = 0.50       # % de recursos saqueables
+    trade_ratio: Tuple[float, float, float] = (2.5, 1.5, 1.0)
+
+    # --- Estrategia económica ---
+    enable_economy: bool = True
+    target_mine_ratio_payback_hours: float = 16.0  # umbral payback para subir mina
+    keep_resources_buffer: float = 0.10            # % de recursos a no gastar
+    enable_fusion_reactor: bool = True
+    fusion_reactor_solar_offset: int = 25            # Niveles que debe tener la planta solar por encima del reactor de fusión
+    max_mine_level: int = 40
+    target_metal_mine: int = 99
+    target_crystal_mine: int = 99
+    target_deut_synth: int = 99
+    storage_fill_trigger_percent: float = 0.90
+    enable_facilities: bool = True
+    target_robotics_factory: int = 0
+    target_shipyard: int = 0
+    target_research_lab: int = 0
+    target_nanite_factory: int = 0
+
+    # --- Investigación ---
+    enable_research: bool = True
+    research_priority: List[str] = field(default_factory=lambda: [
+        "astrophysics", "plasma_tech", "computer_tech", "combustion_drive",
+        "impulse_drive", "hyperspace_drive", "espionage_tech", "weapons_tech",
+        "shielding_tech", "armor_tech", "hyperspace_tech", "energy_tech",
+        "laser_tech", "ion_tech"
+    ])
+    research_weights: dict = field(default_factory=lambda: {
+        "astrophysics": 2.0,
+        "plasma_tech": 1.8,
+        "computer_tech": 1.5,
+        "combustion_drive": 1.2,
+        "impulse_drive": 1.1,
+        "hyperspace_drive": 1.0,
+        "espionage_tech": 1.0,
+        "weapons_tech": 1.0,
+        "shielding_tech": 1.0,
+        "armor_tech": 1.0,
+        "hyperspace_tech": 0.9,
+        "energy_tech": 0.5,
+        "laser_tech": 0.5,
+        "ion_tech": 0.5,
+    })
+    research_caps: dict = field(default_factory=lambda: {
+        "laser_tech": 12,
+        "ion_tech": 5,
+        "energy_tech": 8,
+        "hyperspace_tech": 15,
+    })
+
+
+    # --- Farming ---
+    enable_farming: bool = True
+    enable_fleet_building: bool = True
+    enable_cargo_building: bool = False
+    max_attack_targets_per_cycle: int = 8
+    min_loot_value: float = 50_000          # ignorar objetivos por debajo de esto
+    max_target_distance_systems: int = 200
+    only_inactive_targets: bool = True       # solo jugadores inactivos (más seguro/legal-grey)
+    avoid_strong_players: bool = True
+    farming_attack_cooldown_hours: float = 2.0  # tiempo de espera (en horas) para volver a atacar/espiar
+    attacker_fleet_template: dict = field(default_factory=lambda: {
+        "small_cargo": 0, "large_cargo": 0, "light_fighter": 0, "cruiser": 0,
+    })
+    fleet_multipliers: dict = field(default_factory=lambda: {
+        "small_cargo": 5.0,
+        "large_cargo": 6.0,
+        "recycler": 2.5,
+        "light_fighter": 40.0,
+        "heavy_fighter": 20.0,
+        "cruiser": 10.0,
+        "battleship": 5.0,
+        "battlecruiser": 2.4,
+    })
+
+    # --- Expediciones ---
+    enable_expeditions: bool = True
+    expedition_position: int = 16
+    expedition_ships: dict = field(default_factory=lambda: {"large_cargo": 1})
+
+    # --- Reciclaje ---
+    enable_recycling: bool = True
+    recycling_system_range: int = 0
+    recycling_min_debris: int = 8000
+
+    # --- Lunas ---
+    enable_moon_creation: bool = False
+    moon_target_debris: int = 100_000        # escombros objetivo para 20% prob.
+    moon_sacrifice_ship: str = "light_fighter"
+
+    # --- Colonización ---
+    enable_colonization: bool = True
+    preferred_colony_positions: List[int] = field(default_factory=lambda: [4, 5, 6, 7, 8, 9, 10, 11, 12])
+    max_colonies: int = 9
+
+    # --- Seguridad / fleetsave / humanización ---
+    enable_fleetsave: bool = True
+    enable_attack_escape: bool = True       # Huir de ataques enemigos de forma automática
+    attack_check_interval_s: int = 300       # Intervalo en segundos para comprobar ataques en standby
+    fleetsave_mission: str = "deploy"        # deploy/transport/expedition
+    fleetsave_carry_resources: bool = True   # llevarse los recursos del planeta en el fleetsave
+    fleetsave_recall_halfway: bool = False   # retornar despliegues a mitad del descanso
+    min_action_delay_s: float = 3.0          # delays aleatorios entre acciones
+    max_action_delay_s: float = 11.0
+    cycle_interval_min_s: float = 600         # cada cuánto corre el ciclo principal
+    cycle_interval_max_s: float = 1500
+    active_hours: Tuple[int, int] = (8, 24)  # horas (local) en que el bot "juega"
+    max_actions_per_hour: int = 40           # rate-limit para parecer humano
+    headless: bool = True
+    max_saving_hours_research: float = 6.0   # horas máx a ahorrar para investigación
+    max_saving_hours_economy: float = 4.0    # horas máx a ahorrar para economía
+
+    # --- Estilo de Juego (ofensivo / defensivo) ---
+    server_playstyle: str = "defensive"      # "offensive" (prioriza flotas) o "defensive" (prioriza defensas)
+
+    # --- Defensa ---
+    enable_defense: bool = True
+    defense_batch_size: int = 25          # unidades a construir por ciclo
+
+    # --- Formas de vida (Lifeforms) ---
+    enable_lifeforms: bool = True
+
+    # --- Configuración por planeta ---
+    planets_config: dict = field(default_factory=dict)
+
+    # --- Objetivos de flota ---
+    fleet_targets: dict = field(default_factory=dict)
+
+    # --- Persistencia / logs ---
+    state_file: str = "state.json"
+    log_file: str = "ogbot.log"
+    log_level: str = "INFO"
+    dry_run: bool = True                     # True = NO ejecuta acciones reales
+
+    # --- Notificaciones de Telegram ---
+    telegram_token: str = ""
+    telegram_chat_id: str = ""
+
+    # --- Frecuencias de rondas independientes ---
+    economy_run_interval_mins: int = 0
+    farming_run_interval_mins: int = 0
+    expeditions_run_interval_mins: int = 0
+    recycling_run_interval_mins: int = 0
+
+
+    @staticmethod
+    def load(path: str = "config.yaml") -> "Config":
+        cfg = Config()
+        cfg._path = path
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            for k, v in data.items():
+                if hasattr(cfg, k):
+                    if k in ("trade_ratio", "active_hours", "night_hours") and isinstance(v, list):
+                        v = tuple(v)
+                    setattr(cfg, k, v)
+        # La contraseña SIEMPRE preferimos leerla del entorno
+        cfg.password = os.environ.get("OGBOT_PASS", cfg.password)
+        cfg.username = os.environ.get("OGBOT_USER", cfg.username)
+        return cfg

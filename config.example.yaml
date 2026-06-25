@@ -1,0 +1,142 @@
+# ==========================================================================
+# OGBot - configuración de ejemplo
+# Copia este archivo a config.yaml y ajústalo. La contraseña NO se pone aquí:
+# usa variables de entorno OGBOT_USER / OGBOT_PASS.
+# ==========================================================================
+
+# --- Servidor / cuenta ---
+universe: "Quasi'Stellar"          # nombre del universo
+country: "es"
+server_url: "https://s272-es.ogame.gameforge.com/"   # AJUSTA a tu servidor real
+
+# --- Parámetros del universo (míralos en /api/serverData.xml) ---
+universe_speed: 4.0          # velocidad de economía
+fleet_speed: 2.0             # velocidad de flotas
+debris_factor: 0.30          # % de naves destruidas que va a escombros
+debris_includes_deut: false
+loot_percent: 0.50           # % de recursos saqueables
+trade_ratio: [2.5, 1.5, 1.0] # metal:cristal:deuterio
+
+# --- Economía ---
+target_mine_ratio_payback_hours: 16   # sube mina si se amortiza en <= X horas
+keep_resources_buffer: 0.10
+enable_fusion_reactor: true
+fusion_reactor_solar_offset: 25        # Diferencia de niveles mínima que debe haber entre la planta solar y la de fusión (solar - fusión >= offset) antes de subir la de fusión
+max_mine_level: 40
+
+# --- Investigación (orden de prioridad para evaluación en paralelo) ---
+research_priority:
+  - astrophysics
+  - plasma_tech
+  - computer_tech
+  - combustion_drive
+  - impulse_drive
+  - hyperspace_drive
+  - espionage_tech
+  - weapons_tech
+  - shielding_tech
+  - armor_tech
+  - hyperspace_tech
+  - energy_tech
+  - laser_tech
+  - ion_tech
+
+# Pesos de prioridad (mayor peso = mayor importancia y se sube antes)
+# research_weights:
+#   astrophysics: 2.0
+#   plasma_tech: 1.8
+#   computer_tech: 1.5
+#   combustion_drive: 1.2
+#   impulse_drive: 1.1
+#   hyperspace_drive: 1.0
+#   espionage_tech: 1.0
+#   weapons_tech: 1.0
+#   shielding_tech: 1.0
+#   armor_tech: 1.0
+#   hyperspace_tech: 0.9
+#   energy_tech: 0.5
+#   laser_tech: 0.5
+#   ion_tech: 0.5
+
+# Límites de utilidad máximos (no se suben de forma voluntaria más allá de este nivel)
+# research_caps:
+#   laser_tech: 12
+#   ion_tech: 5
+#   energy_tech: 8
+#   hyperspace_tech: 15
+
+
+# --- Farmeo ---
+enable_farming: true
+only_inactive_targets: true          # MÁS SEGURO: solo inactivos
+avoid_strong_players: true
+max_attack_targets_per_cycle: 8
+min_loot_value: 50000
+max_target_distance_systems: 200
+attacker_fleet_template:
+  small_cargo: 10
+  light_fighter: 0
+
+# Multiplicadores de flota (escalados por el nivel de mina de metal del bot en el modo ofensivo)
+fleet_multipliers:
+  small_cargo: 5.0
+  large_cargo: 6.0
+  recycler: 2.5
+  light_fighter: 40.0
+  heavy_fighter: 20.0
+  cruiser: 10.0
+  battleship: 5.0
+  battlecruiser: 2.4
+
+# --- Expediciones ---
+enable_expeditions: true
+expedition_position: 16
+expedition_ships:
+  large_cargo: 1
+
+# --- Reciclaje ---
+enable_recycling: true
+recycling_min_debris: 8000
+
+# --- Lunas (avanzado; lee la nota del README) ---
+enable_moon_creation: false
+moon_target_debris: 100000
+moon_sacrifice_ship: light_fighter
+
+# --- Colonización ---
+enable_colonization: true
+preferred_colony_positions: [4, 5, 6, 7, 8, 9, 10, 11, 12]
+max_colonies: 9
+
+# --- Seguridad / humanización ---
+enable_fleetsave: true
+enable_attack_escape: true
+attack_check_interval_s: 300
+fleetsave_mission: deploy
+min_action_delay_s: 3
+max_action_delay_s: 11
+cycle_interval_min_s: 600
+cycle_interval_max_s: 1500
+active_hours: [8, 24]        # solo "juega" entre las 8:00 y las 24:00 (local)
+max_actions_per_hour: 40
+headless: true
+
+# --- Estilo de Juego (ofensivo / defensivo) ---
+server_playstyle: "defensive"          # "offensive" (prioriza flotas) o "defensive" (prioriza defensas)
+
+# --- Persistencia / seguridad de pruebas ---
+state_file: state.json
+log_file: ogbot.log
+log_level: INFO
+dry_run: true                # ⚠️ DÉJALO EN true HASTA QUE LO HAYAS VALIDADO
+
+# --- Notificaciones de Telegram ---
+telegram_token: ""               # Token del bot de Telegram obtenido con @BotFather
+telegram_chat_id: ""             # Tu chat ID de Telegram obtenido con @userinfobot
+
+# --- Frecuencias de rondas independientes (minutos; 0 o menos = en cada ciclo) ---
+economy_run_interval_mins: 0
+farming_run_interval_mins: 0
+expeditions_run_interval_mins: 0
+recycling_run_interval_mins: 0
+

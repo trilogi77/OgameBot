@@ -1,0 +1,190 @@
+"""
+fleet.py
+========
+Lógica de flota (pura, sin tocar el navegador):
+ - fleetsave: calcular un movimiento seguro para que la flota y/o recursos no
+   estén en el planeta cuando estés offline (es LA mecánica de supervivencia).
+ - dimensionar cargueros para un saqueo.
+ - planificar expediciones.
+ - planificar reciclaje de campos de escombros.
+"""
+from __future__ import annotations
+import math
+from typing import Dict, List, Optional, Tuple
+from . import gamedata as gd
+from .models import Coords, Resources, Planet
+from .config import Config
+
+
+def cargos_needed(loot: Resources, ship: str = "large_cargo") -> int:
+    cap = gd.SHIPS[ship].cargo
+    return max(1, math.ceil(loot.total() / cap))
+
+
+def size_attack_fleet(loot: Resources, template: Dict[str, int]) -> Dict[str, int]:
+    """Ajusta el nº de cargueros del template para llevar todo el loot."""
+    fleet = dict(template)
+    cargo_cap = sum(gd.SHIPS[n].cargo * q for n, q in fleet.items() if n in gd.SHIPS)
+    if cargo_cap >= loot.total():
+        return {k: v for k, v in fleet.items() if v > 0}
+    
+    # Decidir qué tipo de carguero escalar según el template
+    cargo_ship = "large_cargo"
+    if "small_cargo" in fleet and fleet["small_cargo"] > 0 and fleet.get("large_cargo", 0) == 0:
+        cargo_ship = "small_cargo"
+        
+    deficit = loot.total() - cargo_cap
+    extra = math.ceil(deficit / gd.SHIPS[cargo_ship].cargo)
+    fleet[cargo_ship] = fleet.get(cargo_ship, 0) + extra
+    return {k: v for k, v in fleet.items() if v > 0}
+
+
+def size_attack_fleet_for_planet(planet: Planet, loot: Resources, template: Dict[str, int]) -> Dict[str, int]:
+    """
+    Dimensiona la flota de ataque para llevar el loot de forma dinámica.
+    - Mantiene escoltas/miliares del template.
+    - Calcula la cantidad de cargueros estrictamente necesaria basándose en el botín,
+      escalando y combinando small_cargo y large_cargo de forma inteligente según hangar.
+    """
+    # 1. Copiar escoltas del template (naves no cargueras)
+    fleet = {k: v for k, v in template.items() if k not in ("small_cargo", "large_cargo") and v > 0}
+    
+    # 2. Determinar la capacidad de carga requerida
+    loot_total = loot.total()
+    
+    # 3. Obtener naves disponibles en el planeta
+    avail_large = planet.ships.get("large_cargo", 0)
+    avail_small = planet.ships.get("small_cargo", 0)
+    
+    # 4. Ver preferencia del usuario según el template
+    pref_large = template.get("large_cargo", 0)
+    pref_small = template.get("small_cargo", 0)
+    
+    # Si el usuario explícitamente configuró sólo un tipo de carguero en el template, respetamos esa preferencia.
+    # Si configuró ambos o ninguno, preferimos usar lo disponible en el planeta.
+    use_large = True
+    use_small = True
+    if pref_large > 0 and pref_small == 0:
+        use_small = False
+    elif pref_small > 0 and pref_large == 0:
+        use_large = False
+        
+    # Calcular capacidades unitarias
+    cap_large = gd.SHIPS["large_cargo"].cargo
+    cap_small = gd.SHIPS["small_cargo"].cargo
+    
+    needed_large = 0
+    needed_small = 0
+    
+    # Si preferimos large_cargo o si ambos están activos, intentamos cubrir con large_cargo primero
+    if use_large and avail_large > 0 and loot_total > 0:
+        max_large_needed = math.ceil(loot_total / cap_large)
+        needed_large = min(max_large_needed, avail_large)
+        loot_total -= needed_large * cap_large
+        
+    # Si todavía queda botín por cargar y podemos usar small_cargo
+    if use_small and avail_small > 0 and loot_total > 0:
+        max_small_needed = math.ceil(loot_total / cap_small)
+        needed_small = min(max_small_needed, avail_small)
+        loot_total -= needed_small * cap_small
+        
+    # Si todavía queda botín (por escasez del carguero preferido) y el otro está desactivado por preferencia
+    # del template, pero tenemos en el hangar, lo usamos como último recurso de respaldo:
+    if loot_total > 0:
+        if not use_large and pref_small > 0 and avail_large > 0:
+            max_large_needed = math.ceil(loot_total / cap_large)
+            extra_large = min(max_large_needed, avail_large)
+            needed_large += extra_large
+            loot_total -= extra_large * cap_large
+            
+        if not use_small and pref_large > 0 and avail_small > 0 and loot_total > 0:
+            max_small_needed = math.ceil(loot_total / cap_small)
+            extra_small = min(max_small_needed, avail_small)
+            needed_small += extra_small
+            loot_total -= extra_small * cap_small
+
+    if needed_large > 0:
+        fleet["large_cargo"] = needed_large
+    if needed_small > 0:
+        fleet["small_cargo"] = needed_small
+        
+    return fleet
+
+
+def fleetsave_plan(origin: Coords, all_planets: List[Coords], cfg: Config,
+                   offline_hours: float = 8.0) -> Optional[dict]:
+    """
+    Devuelve un plan de fleetsave que retorna pasado ~offline_hours.
+    Estrategia: 'deploy' a tu planeta/luna al % de velocidad adecuado.
+    """
+    if not cfg.enable_fleetsave:
+        return None
+
+    candidates = [p for p in all_planets if p.tuple() != origin.tuple()]
+    if not candidates:
+        # fallback: expedición (16ª posición del propio sistema), vuelve sola
+        exp_dest = Coords(origin.galaxy, origin.system, 16)
+        return {"mission": "expedition", "destination": exp_dest,
+                "speed_percent": 1.0, "hold_hours": min(offline_hours, 1.0)}
+
+    # Si se conecta a mitad de la noche para retornar los despliegues,
+    # el tiempo de ida debe ser al menos la mitad del offline_hours.
+    recall_halfway = getattr(cfg, "fleetsave_recall_halfway", False)
+    if recall_halfway:
+        target_t = (offline_hours / 2.0) * 3600
+    else:
+        target_t = offline_hours * 3600
+
+    if cfg.fleetsave_mission == "deploy":
+        options = []
+        for dest in candidates:
+            dist = gd.distance(origin.tuple(), dest.tuple())
+            for sp in (1.0, 0.5, 0.4, 0.3, 0.2, 0.1):
+                t = gd.flight_time(dist, gd.SHIPS["small_cargo"].speed, sp, cfg.fleet_speed)
+                options.append({
+                    "destination": dest,
+                    "speed_percent": sp,
+                    "flight_s": t
+                })
+
+        # Buscar combinaciones que duren al menos target_t
+        valid_options = [opt for opt in options if opt["flight_s"] >= target_t]
+        if valid_options:
+            # Elegir la opción más corta dentro de las válidas (que duren >= target_t)
+            # de esta forma durará lo mismo o un poco más, pero no excesivamente más.
+            best = min(valid_options, key=lambda opt: opt["flight_s"])
+        else:
+            # Si ninguna opción es lo suficientemente larga, elegir la más larga de todas
+            best = max(options, key=lambda opt: opt["flight_s"])
+
+        return {
+            "mission": "deploy",
+            "destination": best["destination"],
+            "speed_percent": best["speed_percent"],
+            "flight_s": best["flight_s"]
+        }
+
+    # fallback para otras misiones (expedición / transport)
+    exp_dest = Coords(origin.galaxy, origin.system, 16)
+    return {"mission": "expedition", "destination": exp_dest,
+            "speed_percent": 1.0, "hold_hours": min(offline_hours, 1.0)}
+
+
+def expedition_plan(home: Coords, cfg: Config) -> dict:
+    dest = Coords(home.galaxy, home.system, cfg.expedition_position)
+    return {"mission": "expedition", "destination": dest,
+            "ships": dict(cfg.expedition_ships), "hold_hours": 1.0}
+
+
+def recycler_count(debris: Dict[str, float]) -> int:
+    total = debris.get("metal", 0) + debris.get("crystal", 0) + debris.get("deut", 0)
+    cap = gd.SHIPS["recycler"].cargo
+    return max(1, math.ceil(total / cap))
+
+
+def harvest_plan(origin: Coords, debris_coords: Coords,
+                 debris: Dict[str, float]) -> dict:
+    n = recycler_count(debris)
+    dest = Coords(debris_coords.galaxy, debris_coords.system, debris_coords.position, type="debris")
+    return {"mission": "harvest", "origin": origin, "destination": dest,
+            "ships": {"recycler": n}}

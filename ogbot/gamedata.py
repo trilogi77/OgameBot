@@ -304,3 +304,61 @@ def expedition_slots(astrophysics_level: int) -> int:
 
 def fleet_slots(computer_tech_level: int) -> int:
     return computer_tech_level + 1
+
+
+# ---------------------------------------------------------------------------
+# EXPEDICIONES: botín máximo encontrable
+#   Tabla oficial de OGame: el tope depende de los puntos del Top-1 del universo.
+#   metal es el tope; cristal = metal/2, deuterio = metal/3. Es la misma lógica
+#   que usa la calculadora de proxyforgame.com/ogame/calc/expeditions.php
+# ---------------------------------------------------------------------------
+EXPEDITION_METAL_CAP_TABLE = [
+    (10_000, 40_000),
+    (100_000, 500_000),
+    (1_000_000, 1_200_000),
+    (5_000_000, 1_800_000),
+    (25_000_000, 2_400_000),
+    (50_000_000, 3_000_000),
+    (75_000_000, 3_600_000),
+    (100_000_000, 4_200_000),
+]
+EXPEDITION_METAL_CAP_TOP = 5_000_000  # Top-1 >= 100M puntos
+
+
+def expedition_base_metal_cap(top1_points: float) -> int:
+    """Tope base de metal por expedición según los puntos del Top-1 del universo."""
+    for threshold, cap in EXPEDITION_METAL_CAP_TABLE:
+        if top1_points < threshold:
+            return cap
+    return EXPEDITION_METAL_CAP_TOP
+
+
+def expedition_max_find_units(top1_points: float, eco_speed: float = 1.0,
+                              discoverer: bool = False, pathfinder: bool = False) -> int:
+    """
+    Máximo de RECURSOS EN BRUTO (unidades) que una sola expedición puede encontrar
+    en el mejor hallazgo posible. Sirve para dimensionar la carga (NGC) y no perder
+    recursos: el hallazgo real es aleatorio (10%-100% de este tope).
+
+    Factores: velocidad de economía del universo, clase Descubridor (x1.5) e
+    incluir un Pathfinder en la flota (x2). El recurso con tope mayor es el metal,
+    así que dimensionamos la bodega a ese tope.
+    """
+    base = expedition_base_metal_cap(top1_points)
+    k_class = 1.5 if discoverer else 1.0
+    k_pf = 2.0 if pathfinder else 1.0
+    return int(base * max(eco_speed, 1.0) * k_class * k_pf)
+
+
+def research_time(cost: "Cost", lab_level: int, universe_speed: float = 1.0,
+                  nanite: int = 0) -> float:
+    """
+    Segundos estimados de una investigación (fórmula estándar de OGame).
+    No lee la página: permite saber cuánto queda sin navegar.
+    ponytail: ignora la Red de Investigación Intergaláctica (IRN); si la usas el
+    tiempo real será algo menor.
+    """
+    denom = 1000.0 * (1 + max(lab_level, 0)) * max(universe_speed, 1.0) * (2 ** max(nanite, 0))
+    if denom <= 0:
+        return 0.0
+    return ((cost.metal + cost.crystal) / denom) * 3600.0

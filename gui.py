@@ -160,6 +160,10 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.get_planets()
         elif self.path == "/api/stats":
             self.get_stats()
+        elif self.path == "/api/expedition":
+            self.get_expedition_status()
+        elif self.path == "/api/buildstatus":
+            self.get_build_status()
         elif self.path == "/api/live/status":
             self.send_json(200, {"available": live_status["available"]})
         elif self.path.startswith("/api/live/screenshot"):
@@ -460,6 +464,30 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
                 "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
                 "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}}
             })
+
+    def get_expedition_status(self):
+        path = os.path.join(os.path.dirname(__file__), "expedition_status.json")
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.send_json(200, data)
+            except Exception as e:
+                self.send_json(500, {"error": str(e)})
+        else:
+            self.send_json(200, {})
+
+    def get_build_status(self):
+        path = os.path.join(os.path.dirname(__file__), "build_status.json")
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.send_json(200, data)
+            except Exception as e:
+                self.send_json(500, {"error": str(e)})
+        else:
+            self.send_json(200, {})
 
     def serve_live_screenshot(self):
         global latest_screenshot

@@ -56,7 +56,15 @@ class Brain:
         self.last_farming_run_time = 0.0
         self.last_expeditions_run_time = 0.0
         self.last_recycling_run_time = 0.0
+        # Expediciones: rotación de sistemas + reactivación por vuelta/fin
+        self.expedition_rotation_index = 0
+        self.next_expedition_event = 0.0
+        self._expedition_returns: List[float] = []
+        self._expedition_top1_cache: Tuple[float, int] = (0.0, 0)
         self._load_state()
+        # Memoria de estado (niveles de edificios/investigación/defensas)
+        self.state_cache = {"research": {}, "planets": {}}
+        self._load_state_cache()
 
     def _load_state(self):
         import json
@@ -71,6 +79,9 @@ class Brain:
                     self.last_farming_run_time = data.get("last_farming_run_time", 0.0)
                     self.last_expeditions_run_time = data.get("last_expeditions_run_time", 0.0)
                     self.last_recycling_run_time = data.get("last_recycling_run_time", 0.0)
+                    self.expedition_rotation_index = data.get("expedition_rotation_index", 0)
+                    self.next_expedition_event = data.get("next_expedition_event", 0.0)
+                    self._expedition_returns = data.get("expedition_returns", [])
                     self.log.info("Historial de cooldown de ataques cargado: %d registros.", len(self.attack_history))
             except Exception as e:
                 self.log.debug("No se pudo cargar state.json: %s", e)
@@ -91,10 +102,165 @@ class Brain:
                     "last_economy_run_time": self.last_economy_run_time,
                     "last_farming_run_time": self.last_farming_run_time,
                     "last_expeditions_run_time": self.last_expeditions_run_time,
-                    "last_recycling_run_time": self.last_recycling_run_time
+                    "last_recycling_run_time": self.last_recycling_run_time,
+                    "expedition_rotation_index": self.expedition_rotation_index,
+                    "next_expedition_event": self.next_expedition_event,
+                    "expedition_returns": [e for e in self._expedition_returns if e > now],
                 }, f, indent=2)
         except Exception as e:
             self.log.debug("No se pudo guardar state.json: %s", e)
+
+    # ------------------------------------------------------------------ #
+    #  Memoria de estado: caché de niveles (edificios/investigación/defensas)
+    # ------------------------------------------------------------------ #
+    STATE_CACHE_FILE = "game_state_cache.json"
+
+    def _loc_key(self, coords) -> str:
+        return f"{coords.galaxy}:{coords.system}:{coords.position}:{coords.type}"
+
+    def _load_state_cache(self):
+        import json
+        import os
+        self.state_cache = {"research": {}, "planets": {}}
+        if os.path.exists(self.STATE_CACHE_FILE):
+            try:
+                with open(self.STATE_CACHE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.state_cache["research"] = data.get("research", {}) or {}
+                self.state_cache["planets"] = data.get("planets", {}) or {}
+                self.log.info("Caché de estado cargada: %d ubicaciones.", len(self.state_cache["planets"]))
+            except Exception as e:
+                self.log.debug("No se pudo cargar game_state_cache.json: %s", e)
+
+    def _save_state_cache(self):
+        import json
+        try:
+            with open(self.STATE_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.state_cache, f, indent=2)
+        except Exception as e:
+            self.log.debug("No se pudo guardar game_state_cache.json: %s", e)
+
+    def _cache_store_location(self, loc):
+        self.state_cache["planets"][self._loc_key(loc.coords)] = {
+            "buildings": dict(loc.buildings),
+            "defenses": dict(loc.defenses),
+            "lifeform_available": loc.lifeform_available,
+            "scanned_at": time.time(),
+            "build_queue": list(loc.building_queue),
+            "build_finish_epoch": (time.time() + loc.building_remaining_seconds) if loc.building_in_progress else 0.0,
+        }
+        self._save_state_cache()
+
+    def _refresh_buildings(self, loc):
+        """Re-lee SOLO los niveles de edificios de esta ubicación (sin tocar lo demás)."""
+        components = ["facilities"]
+        if loc.coords.type == "planet":
+            components.append("supplies")
+        for comp in components:
+            try:
+                data = self.client._read_tech_page(comp, loc)
+                loc.buildings.update(data)
+            except Exception as e:
+                self.log.debug("No se pudieron refrescar edificios (%s) en %s: %s", comp, loc.coords, e)
+
+    def _read_location_state(self, loc):
+        """
+        Lee el estado de una ubicación CON memoria: escaneo completo al inicio y en el
+        resync periódico; en el resto de ciclos solo recursos+cola+naves en vivo,
+        hidratando edificios/defensas desde la caché (decide 'a tiro hecho' sin ramas).
+        """
+        if not getattr(self.cfg, "enable_state_cache", True):
+            self.client.read_planet_state(loc)
+            return
+        key = self._loc_key(loc.coords)
+        entry = self.state_cache["planets"].get(key)
+        resync_s = float(getattr(self.cfg, "state_resync_hours", 6.0)) * 3600
+        needs_full = (entry is None) or (time.time() - entry.get("scanned_at", 0.0) >= resync_s)
+
+        if needs_full:
+            self.client.read_planet_state(loc)
+            self._cache_store_location(loc)
+            return
+
+        # Hidratar niveles desde la caché y leer solo lo que cambia en vivo
+        loc.buildings.update(entry.get("buildings", {}))
+        loc.defenses.update(entry.get("defenses", {}))
+        loc.lifeform_available = entry.get("lifeform_available", loc.lifeform_available)
+        # ponytail: en ciclos ligeros no leemos la cola de formas de vida; se evalúan
+        # en los ciclos de resync. Marcar ocupada evita encolar dos veces.
+        loc.lifeform_in_progress = True
+        self.client.read_planet_light(loc)
+
+        finished = entry.get("build_finish_epoch", 0.0)
+        if finished and time.time() >= finished and not loc.building_in_progress:
+            self.log.info("Estado %s: construcción terminada -> refresco niveles de edificios.", loc.coords)
+            self._refresh_buildings(loc)
+            self._cache_store_location(loc)
+        else:
+            entry["build_queue"] = list(loc.building_queue)
+            entry["build_finish_epoch"] = (time.time() + loc.building_remaining_seconds) if loc.building_in_progress else 0.0
+            self._save_state_cache()
+
+    def _read_research_smart(self):
+        """Niveles de investigación desde caché; re-lee en resync o cuando una termina."""
+        if not getattr(self.cfg, "enable_state_cache", True):
+            return self.client.read_research()
+        r = self.state_cache.setdefault("research", {})
+        levels = r.get("levels") or {}
+        resync_s = float(getattr(self.cfg, "state_resync_hours", 6.0)) * 3600
+        needs_full = (not levels) or (time.time() - r.get("scanned_at", 0.0) >= resync_s)
+        finish = r.get("finish_epoch", 0.0)
+        if finish and time.time() >= finish:
+            needs_full = True
+        if needs_full:
+            fresh = self.client.read_research()
+            if fresh:
+                r["levels"] = fresh
+                r["scanned_at"] = time.time()
+                r["finish_epoch"] = 0.0
+                r["tech"] = ""
+                self._save_state_cache()
+                return fresh
+        return dict(levels)
+
+    def _cache_bump_defense(self, planet, name, count):
+        """Sube el contador de una defensa en la caché tras construirla."""
+        if not getattr(self.cfg, "enable_state_cache", True):
+            return
+        entry = self.state_cache["planets"].get(self._loc_key(planet.coords))
+        if entry is not None:
+            d = entry.setdefault("defenses", {})
+            d[name] = d.get(name, 0) + count
+            self._save_state_cache()
+
+    def _write_build_status(self, planets):
+        """Escribe build_status.json con los tiempos restantes de construcción/investigación."""
+        try:
+            import json
+            now = time.time()
+            out = {"updated_at": now, "planets": [], "research": {}}
+            all_locs = []
+            for p in planets:
+                all_locs.append(p)
+                if p.has_moon and p.moon:
+                    all_locs.append(p.moon)
+            for loc in all_locs:
+                entry = self.state_cache["planets"].get(self._loc_key(loc.coords), {})
+                finish = entry.get("build_finish_epoch", 0.0)
+                if loc.building_in_progress or (finish and finish > now):
+                    out["planets"].append({
+                        "coords": str(loc.coords),
+                        "name": loc.name,
+                        "queue": entry.get("build_queue", loc.building_queue),
+                        "finish_epoch": finish or (now + loc.building_remaining_seconds),
+                    })
+            r = self.state_cache.get("research", {})
+            if r.get("finish_epoch", 0.0) and r["finish_epoch"] > now:
+                out["research"] = {"tech": r.get("tech", ""), "finish_epoch": r["finish_epoch"]}
+            with open("build_status.json", "w", encoding="utf-8") as f:
+                json.dump(out, f, indent=2)
+        except Exception as e:
+            self.log.debug("No se pudo guardar build_status.json: %s", e)
 
     def _get_planet_setting(self, planet, setting_name: str, default_val):
         coords_str = f"{planet.coords.galaxy}:{planet.coords.system}:{planet.coords.position}"
@@ -138,7 +304,14 @@ class Brain:
                     while self.running and (time.time() - start_sleep) < sleep_s:
                         if not utils.within_active_hours(self.cfg.active_hours):
                             break
-                        
+
+                        # Reactivarse al volver/terminar una expedición para reenviar nuevas
+                        if getattr(self.cfg, "expedition_smart_schedule", True) and self.next_expedition_event > 0:
+                            if time.time() >= self.next_expedition_event:
+                                self.log.info("Despertando por evento de expedición (vuelta/fin) para reenviar.")
+                                self.next_expedition_event = 0.0
+                                break
+
                         # Comprobación periódica de ataques hostiles si está habilitado
                         if getattr(self.cfg, "enable_attack_escape", True):
                             now = time.time()
@@ -310,11 +483,12 @@ class Brain:
             self.log.info("Slots de flota (fallback movimientos): %d activos, Expediciones %d/%d",
                           self.active_slots, self.active_expe_slots, self.total_expe_slots)
 
-        # Leer recursos y edificios de cada planeta y de su luna (si existe)
+        # Leer estado de cada planeta y luna usando la memoria/caché (escaneo completo
+        # solo al inicio o en el resync; el resto de ciclos, lectura ligera).
         for p in planets:
-            self.client.read_planet_state(p)
+            self._read_location_state(p)
             if p.has_moon and p.moon:
-                self.client.read_planet_state(p.moon)
+                self._read_location_state(p.moon)
 
         # Construir lista de todas las ubicaciones (planetas y lunas)
         all_locations = []
@@ -352,8 +526,8 @@ class Brain:
         except Exception as e:
             self.log.debug("No se pudo guardar planets_cache.json: %s", e)
 
-        # Leer niveles de investigación reales una vez por ciclo
-        self.research_levels = self.client.read_research()
+        # Niveles de investigación: desde la caché (solo re-lee en resync o al terminar una)
+        self.research_levels = self._read_research_smart()
         if self.research_levels:
             self.my_tech.weapons = self.research_levels.get("weapons_tech", 0)
             self.my_tech.shielding = self.research_levels.get("shielding_tech", 0)
@@ -420,24 +594,9 @@ class Brain:
 
         # 3. Expediciones (timer independiente)
         if run_expeditions and self.cfg.enable_expeditions:
-            for loc in all_locations:
-                parent_planet = loc if loc.coords.type == "planet" else next(p for p in planets if p.coords.tuple() == loc.coords.tuple())
-                if self._get_planet_setting(parent_planet, "enable_expeditions", True):
-                    active_exp_ships = {k: v for k, v in self.cfg.expedition_ships.items() if v > 0}
-                    if not active_exp_ships:
-                        active_exp_ships = {"large_cargo": 1}
-
-                    while self._has_free_slots_for_mission() and self._has_free_expe_slots():
-                        has_enough = all(loc.ships.get(ship, 0) >= qty for ship, qty in active_exp_ships.items())
-                        if not has_enough:
-                            break
-
-                        if self._expeditions(loc.coords):
-                            for ship, qty in active_exp_ships.items():
-                                loc.ships[ship] = max(0, loc.ships.get(ship, 0) - qty)
-                        else:
-                            break
+            self._run_expeditions_round(planets, all_locations)
             self.last_expeditions_run_time = time.time()
+            self._update_next_expedition_event()
             self._save_state()
 
         # 7-8. Farmeo (ataques a inactivos) + colonización + lunas (timer independiente)
@@ -474,6 +633,14 @@ class Brain:
 
             self.last_economy_run_time = time.time()
             self._save_state()
+
+        # Mantener armado el despertar por vuelta de expedición aunque la ronda no se haya
+        # ejecutado este ciclo (p.ej. bloqueada por su intervalo), para no perder reenvíos.
+        if self.cfg.enable_expeditions:
+            self._update_next_expedition_event()
+
+        # Publicar tiempos restantes de construcciones/investigación para la GUI
+        self._write_build_status(planets)
 
         # 11. Actualizar estadísticas imperiales
         self.update_imperial_stats()
@@ -512,6 +679,7 @@ class Brain:
                 ok = self.client.build_defense(planet, name, count)
                 if ok:
                     self.record_session_action("defense", name, count, str(planet.coords))
+                    self._cache_bump_defense(planet, name, count)
         else:
             self.log.debug("%s: sin defensa asequible.", planet.coords)
 
@@ -537,6 +705,20 @@ class Brain:
             ok = self.client.research(choice[0], planet=best)
             if ok:
                 self.record_session_action("research", choice[0], self.research_levels.get(choice[0], 0) + 1)
+                # Estimar cuánto tardará (sin leer página) y subir el nivel en la caché
+                try:
+                    secs = gd.research_time(choice[1], best.lvl("research_lab"), self.cfg.universe_speed)
+                    r = self.state_cache.setdefault("research", {})
+                    lv = r.setdefault("levels", {})
+                    new_level = self.research_levels.get(choice[0], 0) + 1
+                    lv[choice[0]] = new_level
+                    self.research_levels[choice[0]] = new_level
+                    r["finish_epoch"] = time.time() + secs
+                    r["tech"] = choice[0]
+                    self._save_state_cache()
+                    self.log.info("Investigación %s en curso, ~%.0f min restantes.", choice[0], secs / 60.0)
+                except Exception as e:
+                    self.log.debug("No se pudo estimar ETA de investigación: %s", e)
 
     def _fleet_step(self, planets):
         """Fabrica cargueros/naves según los objetivos definidos en la configuración."""
@@ -915,7 +1097,8 @@ class Brain:
                 origin_loc.ships["recycler"] = max(0, origin_loc.ships["recycler"] - n)
                 self.active_slots += 1
 
-    def _expeditions(self, home: Coords) -> bool:
+    def _expeditions(self, home: Coords, ships: Optional[dict] = None,
+                     target_system: Optional[int] = None) -> bool:
         if not self._has_free_slots_for_mission():
             self.log.info("Expedición: deteniendo envío por falta de slots de flota libres.")
             return False
@@ -923,7 +1106,10 @@ class Brain:
             self.log.info("Expedición: deteniendo envío por falta de slots de expedición libres (%d/%d).",
                           self.active_expe_slots, self.total_expe_slots)
             return False
-        plan = fleet_mod.expedition_plan(home, self.cfg)
+        destination = None
+        if target_system is not None:
+            destination = Coords(home.galaxy, target_system, self.cfg.expedition_position)
+        plan = fleet_mod.expedition_plan(home, self.cfg, destination=destination, ships=ships)
 
         # Calcular duración estimada del vuelo (ida y vuelta + permanencia)
         dist = gd.distance(home.tuple(), plan["destination"].tuple())
@@ -945,10 +1131,183 @@ class Brain:
             if ok:
                 self.active_slots += 1
                 self.active_expe_slots += 1
+                # Feature #2: registrar la vuelta estimada para reactivarse y reenviar
+                self._expedition_returns.append(time.time() + total_duration)
                 # Registrar acción de la sesión
                 self.record_session_action("expeditions", f"{plan['destination']}", 1, str(home))
                 return True
         return False
+
+    def _run_expeditions_round(self, planets, all_locations):
+        """
+        Lanza expediciones desde cada ubicación habilitada. Dos modos:
+          - manual: usa cfg.expedition_ships tal cual.
+          - auto: calcula los cargueros óptimos para el botín máximo del universo
+            y los reparte entre todos los slots libres para maximizar el nº de
+            expediciones (y la rentabilidad). Rota el sistema destino si procede.
+        """
+        auto = bool(getattr(self.cfg, "expedition_auto_ships", False))
+        cargo_ship = getattr(self.cfg, "expedition_cargo_ship", "large_cargo") or "large_cargo"
+        use_pf = bool(getattr(self.cfg, "expedition_use_pathfinder", False))
+        min_cargo = max(1, int(getattr(self.cfg, "expedition_min_cargo", 1) or 1))
+
+        def parent_of(loc):
+            return loc if loc.coords.type == "planet" else next(
+                p for p in planets if p.coords.tuple() == loc.coords.tuple())
+
+        enabled_locs = [loc for loc in all_locations
+                        if self._get_planet_setting(parent_of(loc), "enable_expeditions", True)]
+
+        top1 = max_find = optimal = per_exp_auto = 0
+        optimal_nopf = optimal_pf = 0
+        spread_cap = None  # None = cada expedición a su óptimo; int = reparto por slot
+        if auto:
+            top1 = self._expedition_top1_points()
+            safety = float(getattr(self.cfg, "expedition_find_safety", 1.0))
+            discoverer = bool(getattr(self.cfg, "expedition_discoverer_class", False))
+            # Dimensionado distinto con/sin pathfinder: solo se dobla el botín en las
+            # expediciones que de verdad llevan un pathfinder (no en todas).
+            base_find = gd.expedition_max_find_units(top1, self.cfg.universe_speed, discoverer, False)
+            optimal_nopf = fleet_mod.optimal_expedition_cargo(base_find, cargo_ship, safety)
+            if use_pf:
+                pf_find = gd.expedition_max_find_units(top1, self.cfg.universe_speed, discoverer, True)
+                optimal_pf = fleet_mod.optimal_expedition_cargo(pf_find, cargo_ship, safety)
+            else:
+                pf_find = base_find
+                optimal_pf = optimal_nopf
+            max_cargo = int(getattr(self.cfg, "expedition_max_cargo", 0) or 0)
+            if max_cargo > 0:
+                optimal_nopf = min(optimal_nopf, max_cargo)
+                optimal_pf = min(optimal_pf, max_cargo)
+            free_slots = max(1, (self.total_expe_slots or 1) - self.active_expe_slots)
+            total_avail = sum(loc.ships.get(cargo_ship, 0) for loc in enabled_locs)
+            # ¿Hay NGC de sobra para llenar todos los slots al óptimo? Si no, repartir
+            # las disponibles entre todos los slots para maximizar el nº de expediciones.
+            if total_avail >= optimal_nopf * free_slots:
+                spread_cap = None
+            else:
+                spread_cap = max(min_cargo, total_avail // free_slots)
+            max_find = pf_find if use_pf else base_find
+            optimal = optimal_pf if use_pf else optimal_nopf
+            per_exp_auto = optimal if spread_cap is None else spread_cap
+            self.log.info(
+                "Auto-expediciones: Top1=%s pts, botín_máx=%s u, óptimo x1=%d / pf=%d %s, "
+                "slots libres=%d, disponibles=%d, reparto=%s",
+                top1, max_find, optimal_nopf, optimal_pf, cargo_ship,
+                free_slots, total_avail, "óptimo" if spread_cap is None else per_exp_auto)
+
+        for loc in enabled_locs:
+            manual_ships = None
+            if not auto:
+                manual_ships = {k: v for k, v in self.cfg.expedition_ships.items() if v > 0}
+                if not manual_ships:
+                    manual_ships = {"large_cargo": 1}
+
+            while self._has_free_slots_for_mission() and self._has_free_expe_slots():
+                if auto:
+                    ships = self._auto_exp_ships(cargo_ship, optimal_nopf, optimal_pf,
+                                                 spread_cap, use_pf, loc.ships, min_cargo)
+                else:
+                    ships = dict(manual_ships)
+                    if not all(loc.ships.get(s, 0) >= q for s, q in ships.items()):
+                        ships = None
+                if not ships:
+                    break
+
+                target_system = None
+                if getattr(self.cfg, "expedition_rotate_systems", True):
+                    target_system = fleet_mod.expedition_rotation_system(
+                        loc.coords.system,
+                        int(getattr(self.cfg, "expedition_system_range", 15)),
+                        self.expedition_rotation_index)
+
+                if self._expeditions(loc.coords, ships=ships, target_system=target_system):
+                    self.expedition_rotation_index += 1
+                    for s, q in ships.items():
+                        loc.ships[s] = max(0, loc.ships.get(s, 0) - q)
+                else:
+                    break
+
+        self._write_expedition_status(top1, max_find, optimal, per_exp_auto, cargo_ship, auto)
+
+    def _auto_exp_ships(self, cargo_ship, optimal_nopf, optimal_pf, spread_cap,
+                        use_pf, avail, min_cargo):
+        """
+        Dict de naves para una expedición auto, limitado por el hangar. Decide PRIMERO
+        si esta expedición lleva pathfinder (solo si lo hay) y dimensiona la carga al
+        óptimo correspondiente (x2 con pathfinder, x1 sin él), sin pasar del reparto.
+        """
+        will_pf = use_pf and cargo_ship != "pathfinder" and avail.get("pathfinder", 0) >= 1
+        loc_optimal = optimal_pf if will_pf else optimal_nopf
+        target = loc_optimal if spread_cap is None else min(loc_optimal, spread_cap)
+        n = min(target, avail.get(cargo_ship, 0))
+        if n < min_cargo:
+            return None
+        ships = {cargo_ship: n}
+        if will_pf:
+            ships["pathfinder"] = 1
+        return ships
+
+    def _expedition_top1_points(self) -> int:
+        """Puntos del Top-1 del universo (override de config, o API con caché de 6h)."""
+        override = int(getattr(self.cfg, "expedition_top1_points", 0) or 0)
+        if override > 0:
+            return override
+        now = time.time()
+        ts, val = self._expedition_top1_cache
+        if val > 0 and now - ts < 6 * 3600:
+            return val
+        pts = 0
+        if self.api:
+            try:
+                pts = self.api.top_player_points(0)
+            except Exception as e:
+                self.log.debug("No se pudo leer puntos Top-1 del universo: %s", e)
+        self._expedition_top1_cache = (now, pts)
+        return pts
+
+    def _update_next_expedition_event(self):
+        """
+        Próximo instante (epoch) en que conviene despertar para reenviar expediciones:
+        cuando vuelve la primera, pero NUNCA antes de que el intervalo de ronda lo permita
+        (así el despertar coincide con que el envío vuelva a estar autorizado).
+        """
+        now = time.time()
+        self._expedition_returns = [e for e in self._expedition_returns if e > now]
+        if not self._expedition_returns:
+            self.next_expedition_event = 0.0
+            return
+        soonest = min(self._expedition_returns)
+        interval = max(0, int(getattr(self.cfg, "expeditions_run_interval_mins", 0) or 0))
+        boundary = self.last_expeditions_run_time + interval * 60
+        self.next_expedition_event = max(soonest, boundary)
+
+    def _write_expedition_status(self, top1, max_find, optimal, per_exp, cargo_ship, auto):
+        """Escribe expedition_status.json para que la GUI muestre cálculo y temporizadores."""
+        try:
+            import json
+            now = time.time()
+            returns = sorted(e for e in self._expedition_returns if e > now)
+            status = {
+                "auto_ships": bool(auto),
+                "top1_points": top1,
+                "max_find_units": max_find,
+                "optimal_cargo": optimal,
+                "cargo_per_expedition": per_exp,
+                "cargo_ship": cargo_ship,
+                "rotate_systems": bool(getattr(self.cfg, "expedition_rotate_systems", True)),
+                "system_range": int(getattr(self.cfg, "expedition_system_range", 15)),
+                "rotation_index": self.expedition_rotation_index,
+                "active_expe_slots": self.active_expe_slots,
+                "total_expe_slots": self.total_expe_slots,
+                "next_event_epoch": self.next_expedition_event,
+                "returns_epochs": returns,
+                "updated_at": now,
+            }
+            with open("expedition_status.json", "w", encoding="utf-8") as f:
+                json.dump(status, f, indent=2)
+        except Exception as e:
+            self.log.debug("No se pudo guardar expedition_status.json: %s", e)
 
     def _colonize(self, planets):
         occupied = {p.coords.tuple() for p in planets}

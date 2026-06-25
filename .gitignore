@@ -34,3 +34,8 @@ ogbot/__pycache__/
 
 # Crash dumps
 *.stackdump
+
+# Memoria de estado y temporizadores (generados en runtime)
+game_state_cache.json
+build_status.json
+expedition_status.json

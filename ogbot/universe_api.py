@@ -114,6 +114,20 @@ class UniverseAPI:
                                 "score": int(float(p.get("score", 0)))}
         return out
 
+    def top_player_points(self, type_: int = 0) -> int:
+        """
+        Puntos del jugador Top-1 del universo (posición 1 del ranking).
+        type 0=puntos totales. Se usa para el tope de botín de expedición.
+        Devuelve 0 si la API no responde (el llamante usará el override de config).
+        """
+        scores = self.highscore(category=1, type_=type_)
+        best = 0
+        for s in scores.values():
+            if s.get("rank") == 1:
+                return s.get("score", 0)
+            best = max(best, s.get("score", 0))
+        return best
+
     def player_detail(self, player_id: str) -> dict:
         root = self._get(f"playerData.xml?id={player_id}")
         if root is None:

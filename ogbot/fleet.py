@@ -170,10 +170,45 @@ def fleetsave_plan(origin: Coords, all_planets: List[Coords], cfg: Config,
             "speed_percent": 1.0, "hold_hours": min(offline_hours, 1.0)}
 
 
-def expedition_plan(home: Coords, cfg: Config) -> dict:
-    dest = Coords(home.galaxy, home.system, cfg.expedition_position)
+def expedition_plan(home: Coords, cfg: Config, destination: Optional[Coords] = None,
+                    ships: Optional[Dict[str, int]] = None) -> dict:
+    dest = destination or Coords(home.galaxy, home.system, cfg.expedition_position)
+    fleet = dict(ships) if ships else dict(cfg.expedition_ships)
     return {"mission": "expedition", "destination": dest,
-            "ships": dict(cfg.expedition_ships), "hold_hours": 1.0}
+            "ships": fleet,
+            "hold_hours": float(getattr(cfg, "expedition_hold_hours", 1.0))}
+
+
+def expedition_rotation_system(home_system: int, system_range: int, index: int) -> int:
+    """
+    Sistema destino rotado alrededor de home_system para que las expediciones no
+    agoten siempre el mismo sistema. Recorre 0, +1, -1, +2, -2, ... dentro de
+    +/- system_range, envolviendo dentro del rango válido de sistemas (1..499).
+    """
+    if system_range <= 0:
+        return home_system
+    span = 2 * system_range + 1
+    i = index % span
+    if i == 0:
+        offset = 0
+    elif i % 2 == 1:
+        offset = (i + 1) // 2
+    else:
+        offset = -(i // 2)
+    return ((home_system + offset - 1) % 499) + 1
+
+
+def optimal_expedition_cargo(max_find_units: int, cargo_ship: str = "large_cargo",
+                             safety: float = 1.0) -> int:
+    """
+    Nº de naves de carga necesarias para sostener el botín máximo sin perder
+    recursos. Más cargueros que esto no es rentable (capacidad ociosa).
+    """
+    cap = gd.SHIPS[cargo_ship].cargo if cargo_ship in gd.SHIPS else gd.SHIPS["large_cargo"].cargo
+    if cap <= 0:
+        return 1
+    target = max_find_units * max(safety, 0.0)
+    return max(1, math.ceil(target / cap))
 
 
 def recycler_count(debris: Dict[str, float]) -> int:

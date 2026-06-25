@@ -93,6 +93,31 @@ enable_expeditions: true
 expedition_position: 16
 expedition_ships:
   large_cargo: 1
+# Auto-cálculo: el bot calcula cuántos cargueros (NGC) hacen falta para sostener
+# el botín máximo de tu universo y reparte los disponibles entre todos los slots
+# de expedición para maximizar el número de expediciones (y la rentabilidad).
+expedition_auto_ships: false
+expedition_cargo_ship: large_cargo   # tipo de carguero a dimensionar
+expedition_use_pathfinder: false     # incluir 1 Pathfinder por expedición (x2 botín) si hay
+expedition_discoverer_class: false   # marca true si tienes la clase Descubridor (x1.5 botín)
+expedition_top1_points: 0            # puntos del Top-1 del universo (0 = leerlos de la API)
+expedition_find_safety: 1.0          # escala del botín objetivo (1.0 = tope exacto)
+expedition_min_cargo: 1              # mínimo de cargueros por expedición
+expedition_max_cargo: 0              # tope de cargueros por expedición (0 = sin tope)
+expedition_hold_hours: 1.0           # horas de permanencia en la posición 16
+# Rotación de sistemas para que no se agote siempre el mismo
+expedition_rotate_systems: true
+expedition_system_range: 15          # +/- sistemas alrededor del tuyo
+# Reactivarse al volver/terminar las expediciones para reenviar nuevas
+expedition_smart_schedule: true
+
+# --- Memoria de estado ---
+# El bot escanea todos los niveles de edificios/investigación/defensas al inicio y
+# luego solo lee recursos, cola y naves en vivo cada ciclo (decide "a tiro hecho"
+# sin recorrer todas las ramas). Re-escanea todo cada state_resync_hours por si algo
+# se desincroniza (p.ej. juego manual).
+enable_state_cache: true
+state_resync_hours: 6.0
 
 # --- Reciclaje ---
 enable_recycling: true

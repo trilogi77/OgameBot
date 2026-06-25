@@ -1546,4 +1546,76 @@ body {
     }
 }
 
+/* -------------------------------------------------------------------------- */
+/* Pestaña Expediciones                                                        */
+/* -------------------------------------------------------------------------- */
+.exp-tab-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+.exp-field-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+.exp-field-row > label:not(.switch-container) {
+    font-size: 13px;
+    color: var(--text-secondary);
+    min-width: 210px;
+}
+.exp-field-row input[type="number"],
+.exp-field-row select {
+    padding: 6px 10px;
+    font-size: 13px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    color: #fff;
+    min-width: 110px;
+}
+.exp-inline-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+.exp-help {
+    font-size: 11px;
+    color: var(--text-muted, #8a93a6);
+    font-style: italic;
+}
+.exp-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 24px;
+}
+@media (max-width: 900px) {
+    .exp-grid { grid-template-columns: 1fr; }
+}
+.exp-subtitle {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    margin: 4px 0 10px;
+}
+.switch-container.small { transform: scale(0.85); transform-origin: left center; }
+.exp-preview, .exp-live {
+    margin-top: 12px;
+    padding: 12px 14px;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+.exp-live .exp-metric {
+    display: inline-block;
+    margin-right: 18px;
+}
+.exp-live .exp-metric b { color: var(--accent-primary, #4da3ff); }
+.exp-live .exp-eta { color: #6fe09a; font-weight: 600; }
+
 

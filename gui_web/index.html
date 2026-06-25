@@ -56,6 +56,7 @@
                 <div class="tab-headers">
                     <button class="tab-btn active" data-tab="tab-globals">Globales</button>
                     <button class="tab-btn" data-tab="tab-modules">Módulos</button>
+                    <button class="tab-btn" data-tab="tab-expeditions">Expediciones</button>
                     <button class="tab-btn" data-tab="tab-planets">Por Planeta</button>
                     <button class="tab-btn" data-tab="tab-targets">Objetivos</button>
                     <button class="tab-btn" data-tab="tab-stats">Estadísticas</button>
@@ -298,38 +299,7 @@
                                 </div>
                             </div>
 
-                            <!-- EXPEDICIONES -->
-                            <div class="module-card col-span-2">
-                                <div class="module-main">
-                                    <label class="switch-container">
-                                        <input type="checkbox" id="enable_expeditions">
-                                        <span class="slider"></span>
-                                    </label>
-                                    <div class="module-desc">
-                                        <h3>Expediciones</h3>
-                                        <p>Mandar flotas a la posición 16 a buscar recursos.</p>
-                                    </div>
-                                </div>
-                                <div class="module-details">
-                                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                        <label for="expeditions_run_interval_mins" style="font-size: 12px; color: var(--text-secondary);">Intervalo de ronda (mins):</label>
-                                        <input type="number" id="expeditions_run_interval_mins" min="0" placeholder="Ej: 20" style="width: 80px; padding: 4px 8px; font-size: 12px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; color: #fff;">
-                                    </div>
-                                    <div class="exp-ships-dynamic">
-                                        <div id="expShipsList" class="exp-ships-list">
-                                            <!-- Renderizado dinámicamente -->
-                                        </div>
-                                        <div class="exp-add-ship-row">
-                                            <select id="expAddShipSelect">
-                                                <!-- Cargado dinámicamente -->
-                                            </select>
-                                            <button type="button" id="btnExpAddShip" class="btn-secondary">
-                                                + Añadir Nave
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
+                            <!-- EXPEDICIONES: configuración completa en la pestaña "Expediciones" -->
 
                             <!-- RECICLAJE ESCOMBROS -->
                             <div class="module-card">
@@ -399,10 +369,159 @@
                         </div>
                     </div>
                     
+                    <!-- TAB: EXPEDICIONES -->
+                    <div class="tab-pane" id="tab-expeditions">
+                        <div class="exp-tab-grid">
+
+                            <!-- Activación + programación -->
+                            <div class="module-card col-span-2">
+                                <div class="module-main">
+                                    <label class="switch-container">
+                                        <input type="checkbox" id="enable_expeditions">
+                                        <span class="slider"></span>
+                                    </label>
+                                    <div class="module-desc">
+                                        <h3>Activar expediciones</h3>
+                                        <p>Mandar flotas a la posición 16 a buscar recursos, naves y materia oscura.</p>
+                                    </div>
+                                </div>
+                                <div class="module-details">
+                                    <div class="exp-field-row">
+                                        <label for="expeditions_run_interval_mins">Intervalo de ronda (min)</label>
+                                        <input type="number" id="expeditions_run_interval_mins" min="0" placeholder="0">
+                                        <span class="exp-help">0 = en cada ciclo del bot.</span>
+                                    </div>
+                                    <div class="exp-field-row">
+                                        <label class="switch-container small">
+                                            <input type="checkbox" id="expedition_smart_schedule"><span class="slider"></span>
+                                        </label>
+                                        <span class="exp-inline-label">Reactivarse cuando una expedición vuelve/termina para reenviar al instante</span>
+                                    </div>
+                                    <div class="exp-field-row">
+                                        <label for="expedition_hold_hours">Permanencia en posición (horas)</label>
+                                        <input type="number" id="expedition_hold_hours" min="0" max="2" step="0.5">
+                                        <span class="exp-help">Tiempo que la flota se queda explorando.</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Cálculo de naves -->
+                            <div class="module-card col-span-2">
+                                <div class="module-main">
+                                    <label class="switch-container">
+                                        <input type="checkbox" id="expedition_auto_ships">
+                                        <span class="slider"></span>
+                                    </label>
+                                    <div class="module-desc">
+                                        <h3>Auto-calcular naves (NGC)</h3>
+                                        <p>El bot calcula cuántos cargueros necesita para el botín máximo de tu universo y reparte los disponibles entre todos los slots para maximizar las expediciones y la rentabilidad.</p>
+                                    </div>
+                                </div>
+                                <div class="module-details">
+                                    <!-- Modo manual -->
+                                    <div id="expManualBlock">
+                                        <div class="exp-subtitle">Naves por expedición (manual)</div>
+                                        <div class="exp-ships-dynamic">
+                                            <div id="expShipsList" class="exp-ships-list"></div>
+                                            <div class="exp-add-ship-row">
+                                                <select id="expAddShipSelect"></select>
+                                                <button type="button" id="btnExpAddShip" class="btn-secondary">+ Añadir Nave</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <!-- Modo auto -->
+                                    <div id="expAutoBlock" style="display:none;">
+                                        <div class="exp-grid">
+                                            <div class="exp-field-row">
+                                                <label for="expedition_cargo_ship">Carguero a dimensionar</label>
+                                                <select id="expedition_cargo_ship">
+                                                    <option value="large_cargo">Nave de gran carga</option>
+                                                    <option value="small_cargo">Nave de carga pequeña</option>
+                                                    <option value="pathfinder">Explorador (Pathfinder)</option>
+                                                </select>
+                                            </div>
+                                            <div class="exp-field-row">
+                                                <label class="switch-container small">
+                                                    <input type="checkbox" id="expedition_use_pathfinder"><span class="slider"></span>
+                                                </label>
+                                                <span class="exp-inline-label">Incluir 1 Pathfinder por expedición (x2 botín)</span>
+                                            </div>
+                                            <div class="exp-field-row">
+                                                <label class="switch-container small">
+                                                    <input type="checkbox" id="expedition_discoverer_class"><span class="slider"></span>
+                                                </label>
+                                                <span class="exp-inline-label">Tengo la clase Descubridor (x1.5 botín)</span>
+                                            </div>
+                                            <div class="exp-field-row">
+                                                <label for="expedition_top1_points">Puntos del Top-1 del universo</label>
+                                                <input type="number" id="expedition_top1_points" min="0" placeholder="0">
+                                                <span class="exp-help">0 = el bot los lee de la API del universo.</span>
+                                            </div>
+                                            <div class="exp-field-row">
+                                                <label for="expedition_find_safety">Factor de seguridad del botín</label>
+                                                <input type="number" id="expedition_find_safety" min="0.1" max="2" step="0.1">
+                                                <span class="exp-help">1.0 = dimensiona al tope exacto.</span>
+                                            </div>
+                                            <div class="exp-field-row">
+                                                <label for="expedition_min_cargo">Mín. cargueros / expedición</label>
+                                                <input type="number" id="expedition_min_cargo" min="1">
+                                            </div>
+                                            <div class="exp-field-row">
+                                                <label for="expedition_max_cargo">Máx. cargueros / expedición</label>
+                                                <input type="number" id="expedition_max_cargo" min="0" placeholder="0">
+                                                <span class="exp-help">0 = sin tope.</span>
+                                            </div>
+                                        </div>
+                                        <div id="expAutoPreview" class="exp-preview">Inicia el bot para ver el cálculo en vivo.</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Rotación de sistemas -->
+                            <div class="module-card col-span-2">
+                                <div class="module-main">
+                                    <label class="switch-container">
+                                        <input type="checkbox" id="expedition_rotate_systems">
+                                        <span class="slider"></span>
+                                    </label>
+                                    <div class="module-desc">
+                                        <h3>Rotar sistemas</h3>
+                                        <p>Cambia el sistema destino en cada envío para que no se agote siempre el mismo.</p>
+                                    </div>
+                                </div>
+                                <div class="module-details">
+                                    <div class="exp-grid">
+                                        <div class="exp-field-row">
+                                            <label for="expedition_system_range">Rango de sistemas (±)</label>
+                                            <input type="number" id="expedition_system_range" min="0" max="100">
+                                        </div>
+                                        <div class="exp-field-row">
+                                            <label for="expedition_position">Posición de expedición</label>
+                                            <input type="number" id="expedition_position" min="1" max="16">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Estado en vivo -->
+                            <div class="module-card col-span-2">
+                                <div class="module-desc" style="padding:0 0 10px 0;">
+                                    <h3>Estado en vivo</h3>
+                                </div>
+                                <div id="expLiveStatus" class="exp-live">El bot no está enviando datos todavía. Inícialo para ver el estado de las expediciones.</div>
+                            </div>
+
+                        </div>
+                    </div>
+
                     <!-- TAB 3: POR PLANETA -->
                     <div class="tab-pane" id="tab-planets">
                         <div class="alert-info" id="planetAlert">
                             💡 Para ver los planetas aquí, el bot debe ejecutar al menos un ciclo (para raspar la lista actual de tu cuenta de OGame).
+                        </div>
+                        <div class="section-title" style="margin-top:4px;">⏳ Construcciones e investigación en curso</div>
+                        <div class="exp-live" id="buildStatusPanel" style="margin-bottom:16px;">
+                            Inicia el bot para ver los tiempos restantes de construcciones e investigación.
                         </div>
                         <div class="planets-list" id="planetsListContainer">
                             <!-- Inyectado dinámicamente por JS -->

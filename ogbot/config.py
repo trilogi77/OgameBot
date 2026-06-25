@@ -105,6 +105,27 @@ class Config:
     enable_expeditions: bool = True
     expedition_position: int = 16
     expedition_ships: dict = field(default_factory=lambda: {"large_cargo": 1})
+    # Auto-cálculo de naves: dimensiona la carga al botín máximo y reparte por slots
+    expedition_auto_ships: bool = False
+    expedition_cargo_ship: str = "large_cargo"   # tipo de carguero a dimensionar (NGC)
+    expedition_use_pathfinder: bool = False      # incluir 1 Pathfinder (x2 botín) si hay
+    expedition_discoverer_class: bool = False    # clase Descubridor (x1.5 botín)
+    expedition_top1_points: int = 0              # override puntos Top-1 (0 = leer de la API)
+    expedition_find_safety: float = 1.0          # escala el botín objetivo (1.0 = tope)
+    expedition_min_cargo: int = 1                # mínimo de cargueros por expedición
+    expedition_max_cargo: int = 0                # tope de cargueros por expedición (0 = sin tope)
+    expedition_hold_hours: float = 1.0           # tiempo de permanencia en la posición 16
+    # Rotación de sistemas (para no agotar siempre el mismo sistema)
+    expedition_rotate_systems: bool = True
+    expedition_system_range: int = 15            # +/- sistemas alrededor del tuyo
+    # Reactivarse al volver/terminar las expediciones para reenviar nuevas
+    expedition_smart_schedule: bool = True
+
+    # --- Memoria de estado (caché de niveles de edificios/investigación/defensas) ---
+    # El bot escanea todo al inicio y luego solo lee recursos/cola/naves en vivo,
+    # usando la caché para decidir "a tiro hecho" sin recorrer todas las ramas.
+    enable_state_cache: bool = True
+    state_resync_hours: float = 6.0   # cada cuánto re-escanea todo para corregir desfases
 
     # --- Reciclaje ---
     enable_recycling: bool = True

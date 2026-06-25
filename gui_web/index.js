@@ -25,6 +25,10 @@ const planetAlert = document.getElementById("planetAlert");
 window.addEventListener("DOMContentLoaded", () => {
     initTabs();
     initExpeditionShipsSelector();
+    const expAutoToggle = document.getElementById("expedition_auto_ships");
+    if (expAutoToggle) expAutoToggle.addEventListener("change", toggleExpeditionMode);
+    loadExpeditionStatus();
+    loadBuildStatus();
     loadConfig();
     loadPlanets();
     checkBotStatus();
@@ -66,6 +70,8 @@ window.addEventListener("DOMContentLoaded", () => {
     setInterval(loadLogs, 2000);
     setInterval(loadPlanets, 5000); // Recargar planetas si se detectan nuevos en vivo
     setInterval(loadStats, 4000);
+    setInterval(loadExpeditionStatus, 2000);
+    setInterval(loadBuildStatus, 2000);
     
     // Refrescar el directo si la pestaña está activa
     setInterval(() => {
@@ -201,6 +207,19 @@ function mapConfigToUI(cfg) {
     setCheck("enable_fleet_building", cfg.enable_fleet_building);
     setCheck("enable_expeditions", cfg.enable_expeditions);
     setVal("expeditions_run_interval_mins", cfg.expeditions_run_interval_mins !== undefined ? cfg.expeditions_run_interval_mins : 0);
+    setCheck("expedition_auto_ships", cfg.expedition_auto_ships);
+    setCheck("expedition_smart_schedule", cfg.expedition_smart_schedule !== false);
+    setCheck("expedition_rotate_systems", cfg.expedition_rotate_systems !== false);
+    setCheck("expedition_use_pathfinder", cfg.expedition_use_pathfinder);
+    setCheck("expedition_discoverer_class", cfg.expedition_discoverer_class);
+    setVal("expedition_cargo_ship", cfg.expedition_cargo_ship || "large_cargo");
+    setVal("expedition_top1_points", cfg.expedition_top1_points !== undefined ? cfg.expedition_top1_points : 0);
+    setVal("expedition_find_safety", cfg.expedition_find_safety !== undefined ? cfg.expedition_find_safety : 1.0);
+    setVal("expedition_min_cargo", cfg.expedition_min_cargo !== undefined ? cfg.expedition_min_cargo : 1);
+    setVal("expedition_max_cargo", cfg.expedition_max_cargo !== undefined ? cfg.expedition_max_cargo : 0);
+    setVal("expedition_hold_hours", cfg.expedition_hold_hours !== undefined ? cfg.expedition_hold_hours : 1.0);
+    setVal("expedition_system_range", cfg.expedition_system_range !== undefined ? cfg.expedition_system_range : 15);
+    setVal("expedition_position", cfg.expedition_position !== undefined ? cfg.expedition_position : 16);
     setCheck("enable_recycling", cfg.enable_recycling);
     setVal("recycling_min_debris", cfg.recycling_min_debris !== undefined ? cfg.recycling_min_debris : 8000);
     setVal("recycling_run_interval_mins", cfg.recycling_run_interval_mins !== undefined ? cfg.recycling_run_interval_mins : 0);
@@ -237,6 +256,7 @@ function mapConfigToUI(cfg) {
 
     // Flota de expedición (dinámico)
     renderExpeditionShips(cfg);
+    toggleExpeditionMode();
 
     // Objetivos de minas
     setVal("target_metal_mine", cfg.target_metal_mine !== undefined ? cfg.target_metal_mine : 99);
@@ -297,6 +317,21 @@ function saveChanges() {
     globalConfig.enable_fleet_building = getCheck("enable_fleet_building");
     globalConfig.enable_expeditions = getCheck("enable_expeditions");
     globalConfig.expeditions_run_interval_mins = parseInt(getVal("expeditions_run_interval_mins")) || 0;
+    globalConfig.expedition_auto_ships = getCheck("expedition_auto_ships");
+    globalConfig.expedition_smart_schedule = getCheck("expedition_smart_schedule");
+    globalConfig.expedition_rotate_systems = getCheck("expedition_rotate_systems");
+    globalConfig.expedition_use_pathfinder = getCheck("expedition_use_pathfinder");
+    globalConfig.expedition_discoverer_class = getCheck("expedition_discoverer_class");
+    globalConfig.expedition_cargo_ship = getVal("expedition_cargo_ship") || "large_cargo";
+    globalConfig.expedition_top1_points = parseInt(getVal("expedition_top1_points")) || 0;
+    globalConfig.expedition_find_safety = parseFloat(getVal("expedition_find_safety")) || 1.0;
+    globalConfig.expedition_min_cargo = parseInt(getVal("expedition_min_cargo")) || 1;
+    globalConfig.expedition_max_cargo = parseInt(getVal("expedition_max_cargo")) || 0;
+    let _expHold = parseFloat(getVal("expedition_hold_hours"));
+    globalConfig.expedition_hold_hours = isNaN(_expHold) ? 1.0 : _expHold;
+    let _expRange = parseInt(getVal("expedition_system_range"));
+    globalConfig.expedition_system_range = isNaN(_expRange) ? 15 : _expRange;
+    globalConfig.expedition_position = parseInt(getVal("expedition_position")) || 16;
     globalConfig.enable_recycling = getCheck("enable_recycling");
     globalConfig.recycling_run_interval_mins = parseInt(getVal("recycling_run_interval_mins")) || 0;
     globalConfig.enable_defense = getCheck("enable_defense");
@@ -895,6 +930,93 @@ function renderExpeditionShips(cfg) {
             addExpeditionShipRow(shipKey, qty);
         }
     });
+}
+
+// Alterna entre el editor manual de naves y las opciones de auto-cálculo
+function toggleExpeditionMode() {
+    const auto = document.getElementById("expedition_auto_ships");
+    const manualBlock = document.getElementById("expManualBlock");
+    const autoBlock = document.getElementById("expAutoBlock");
+    if (!auto || !manualBlock || !autoBlock) return;
+    const isAuto = auto.checked;
+    manualBlock.style.display = isAuto ? "none" : "block";
+    autoBlock.style.display = isAuto ? "block" : "none";
+}
+
+function expFmtETA(sec) {
+    if (typeof sec !== "number" || isNaN(sec) || sec <= 0) return "ahora";
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = Math.floor(sec % 60);
+    const pad = n => n.toString().padStart(2, "0");
+    return `${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+
+function loadExpeditionStatus() {
+    fetch("/api/expedition")
+        .then(res => res.json())
+        .then(data => renderExpeditionStatus(data))
+        .catch(() => {});
+}
+
+function loadBuildStatus() {
+    fetch("/api/buildstatus")
+        .then(res => res.json())
+        .then(data => renderBuildStatus(data))
+        .catch(() => {});
+}
+
+function renderBuildStatus(data) {
+    const el = document.getElementById("buildStatusPanel");
+    if (!el) return;
+    if (!data || !data.updated_at) {
+        el.textContent = "Inicia el bot para ver los tiempos restantes de construcciones e investigación.";
+        return;
+    }
+    const now = Date.now() / 1000;
+    let html = "";
+    (data.planets || []).forEach(p => {
+        const eta = expFmtETA((p.finish_epoch || 0) - now);
+        const q = (p.queue && p.queue.length) ? p.queue.join(", ") : "construcción";
+        html += `<div style="margin:4px 0;">🏗️ <b>${p.name || p.coords}</b> <span style="opacity:.7">${p.coords}</span>: ${q} — <span class="exp-eta">${eta}</span></div>`;
+    });
+    if (data.research && data.research.finish_epoch) {
+        const eta = expFmtETA(data.research.finish_epoch - now);
+        html += `<div style="margin:4px 0;">🔬 Investigación <b>${data.research.tech || ""}</b> — <span class="exp-eta">${eta}</span></div>`;
+    }
+    el.innerHTML = html || "Sin construcciones ni investigación en curso ahora mismo.";
+}
+
+function renderExpeditionStatus(data) {
+    const live = document.getElementById("expLiveStatus");
+    const preview = document.getElementById("expAutoPreview");
+    if (!data || !data.updated_at) {
+        if (live) live.textContent = "El bot no está enviando datos todavía. Inícialo para ver el estado de las expediciones.";
+        return;
+    }
+    const now = Date.now() / 1000;
+    const nextEpoch = data.next_event_epoch || 0;
+    const eta = nextEpoch > 0 ? expFmtETA(nextEpoch - now) : "—";
+    const inFlight = (data.returns_epochs || []).filter(e => e > now).length;
+
+    if (live) {
+        live.innerHTML =
+            `<span class="exp-metric">Slots: <b>${data.active_expe_slots ?? 0}/${data.total_expe_slots ?? 0}</b></span>` +
+            `<span class="exp-metric">En vuelo: <b>${inFlight}</b></span>` +
+            `<span class="exp-metric">Próxima vuelta: <span class="exp-eta">${eta}</span></span>` +
+            (data.rotate_systems ? `<span class="exp-metric">Rotación: <b>±${data.system_range}</b> sist. (idx ${data.rotation_index})</span>` : "");
+    }
+    if (preview) {
+        if (data.auto_ships) {
+            preview.innerHTML =
+                `Top-1 universo: <b>${(data.top1_points || 0).toLocaleString("es")}</b> pts · ` +
+                `Botín máx: <b>${(data.max_find_units || 0).toLocaleString("es")}</b> u · ` +
+                `Óptimo: <b>${data.optimal_cargo || 0}</b> ${data.cargo_ship || ""} · ` +
+                `Enviando <b>${data.cargo_per_expedition || 0}</b>/expedición`;
+        } else {
+            preview.textContent = "Activa el auto-cálculo para ver el dimensionado en vivo.";
+        }
+    }
 }
 
 // --------------------------------------------------------------------------

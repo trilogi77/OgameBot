@@ -937,6 +937,28 @@ class GameClient:
             "ocupada" if planet.lifeform_in_progress else "libre",
         )
 
+    def read_planet_light(self, planet: Planet) -> None:
+        """
+        Lectura LIGERA: solo lo que cambia en vivo cada ciclo -> recursos, cola de
+        construcción (con su tiempo restante) y naves. NO lee edificios/defensas:
+        esos los aporta la caché de niveles del cerebro. Mucho menos navegación.
+        """
+        self._goto("overview", planet)
+        planet.resources = self.read_resources()
+        planet.building_in_progress = self._is_build_queue_active_from_overview()
+        planet.building_remaining_seconds = self._get_build_queue_remaining_seconds() if planet.building_in_progress else 0
+        planet.building_queue = self._get_build_queue() if planet.building_in_progress else []
+
+        ships_data = self._read_tech_page("shipyard", planet)
+        planet.ships.update(ships_data)
+
+        self.log.info(
+            "Ubicación %s (ligero): M=%.0f C=%.0f D=%.0f | cola=%s",
+            planet.coords,
+            planet.resources.metal, planet.resources.crystal, planet.resources.deut,
+            f"ocupada ({', '.join(planet.building_queue)} - {planet.building_remaining_seconds}s)" if planet.building_in_progress else "libre",
+        )
+
     def read_research(self) -> Dict[str, int]:
         """Lee niveles de investigación actuales."""
         return self._read_tech_page("research")

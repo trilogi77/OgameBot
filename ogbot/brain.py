@@ -1656,7 +1656,11 @@ class Brain:
         send = Resources(min(avail.metal, need.metal),
                          min(avail.crystal, need.crystal),
                          min(avail.deut, need.deut))
-        if send.total() < getattr(self.cfg, "feed_min_send", 5000):
+        floor = getattr(self.cfg, "feed_min_send", 5000)
+        if send.total() < floor:
+            self.log.info("Alimentación: %s -> %s omitido: solo %d enviables (< feed_min_send=%d). "
+                          "El destino lo cubrirá con su producción, o baja feed_min_send.",
+                          src.coords, dst.coords, int(send.total()), floor)
             return None
 
         ships = fleet_mod.pick_cargo_ships(src.ships, send.total())

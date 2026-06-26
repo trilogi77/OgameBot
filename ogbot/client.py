@@ -79,6 +79,58 @@ TECH_IDS: Dict[str, int] = {
 # Inverso: tech_id str → name
 _ID_TO_NAME = {str(v): k for k, v in TECH_IDS.items()}
 
+# Nombres de naves tal como salen en los tooltips de movimientos del juego → clave
+# interna. Solo naves que vuelan (los recursos de la carga se descartan al no estar aquí).
+# ponytail: tabla ES+EN; si tus tooltips salen en otro idioma, añade sus nombres aquí.
+_SHIP_NAME_ALIASES = {
+    # Español
+    "nave pequena de carga": "small_cargo",
+    "nave grande de carga": "large_cargo",
+    "gran nave de carga": "large_cargo",
+    "cazador ligero": "light_fighter",
+    "cazador pesado": "heavy_fighter",
+    "crucero": "cruiser",
+    "nave de batalla": "battleship",
+    "nave colonizadora": "colony_ship",
+    "reciclador": "recycler",
+    "sonda de espionaje": "espionage_probe",
+    "bombardero": "bomber",
+    "satelite solar": "solar_satellite",
+    "destructor": "destroyer",
+    "estrella de la muerte": "deathstar",
+    "acorazado": "battlecruiser",
+    "segador": "reaper",
+    "explorador": "pathfinder",
+    # English
+    "small cargo": "small_cargo",
+    "large cargo": "large_cargo",
+    "light fighter": "light_fighter",
+    "heavy fighter": "heavy_fighter",
+    "cruiser": "cruiser",
+    "battleship": "battleship",
+    "colony ship": "colony_ship",
+    "recycler": "recycler",
+    "espionage probe": "espionage_probe",
+    "bomber": "bomber",
+    "solar satellite": "solar_satellite",
+    "destroyer": "destroyer",
+    "deathstar": "deathstar",
+    "death star": "deathstar",
+    "battlecruiser": "battlecruiser",
+    "reaper": "reaper",
+    "pathfinder": "pathfinder",
+}
+
+_ACCENTS = str.maketrans("áéíóúüñ", "aeiouun")
+
+
+def _ship_name_to_key(name: str) -> Optional[str]:
+    """Normaliza el nombre de una nave del juego (ES/EN) a su clave interna, o None."""
+    if not name:
+        return None
+    norm = " ".join(name.strip().lower().translate(_ACCENTS).split())
+    return _SHIP_NAME_ALIASES.get(norm)
+
 # Misiones OGame: nombre interno → código numérico
 MISSION_CODES: Dict[str, int] = {
     "attack": 1, "group_attack": 2, "transport": 3, "deploy": 4,
@@ -254,6 +306,36 @@ _JS_READ_MOVEMENTS = """() => {
             mv.is_hostile = row.classList.contains('hostile') ||
                             !!row.querySelector('.hostile') ||
                             (row.className && row.className.includes('hostile'));
+
+            // 8. Composición de naves (tabla de detalles en línea o tooltip)
+            mv.ships = {};
+            (function(){
+                let table = row.querySelector('.fleetinfos table, table.fleetinfo, .fleetinfo');
+                if (!table) {
+                    const tip = row.querySelector('[title*="fleetinfo"], [title*="<table"], .tooltip[title], .detailsFleet [title]');
+                    if (tip) {
+                        const html = tip.getAttribute('title') || '';
+                        if (html.indexOf('<') !== -1) {
+                            const tmp = document.createElement('div');
+                            tmp.innerHTML = html;
+                            table = tmp.querySelector('table');
+                        }
+                    }
+                }
+                if (!table) return;
+                table.querySelectorAll('tr').forEach(tr => {
+                    const tds = tr.querySelectorAll('td');
+                    if (tds.length < 2) return;
+                    const a = tds[0].textContent.trim();
+                    const b = tds[1].textContent.trim();
+                    let name, valStr;
+                    if (/^[\\d.,\\s]+$/.test(a)) { valStr = a; name = b; }
+                    else { name = a; valStr = b; }
+                    name = name.replace(/:$/, '').trim();
+                    const val = parseInt(valStr.replace(/[^0-9]/g, '')) || 0;
+                    if (name && val > 0) mv.ships[name] = (mv.ships[name] || 0) + val;
+                });
+            })();
 
             if (mv.origin || mv.destination) results.push(mv);
         } catch(e) {}

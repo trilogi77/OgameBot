@@ -446,6 +446,56 @@ class Brain:
                 count += 1
         return count
 
+    def _aggregate_ships_in_motion(self, movements: List[dict], planets: List) -> Dict[str, int]:
+        """Suma las naves de nuestras flotas en vuelo (salientes y de regreso).
+
+        Las naves en tránsito no están en ningún planeta, así que sin esto el inventario
+        imperial las da por desaparecidas. Excluye ataques enemigos entrantes y deduplica
+        filas repetidas del DOM (mismo origen/destino/misión/llegada = una sola flota).
+        """
+        from .client import _ship_name_to_key
+
+        our_coords = set()
+        for p in planets:
+            c = p.coords
+            our_coords.add(f"{c.galaxy}:{c.system}:{c.position}")
+            moon = getattr(p, "moon", None)
+            if moon is not None and getattr(moon, "coords", None) is not None:
+                mc = moon.coords
+                our_coords.add(f"{mc.galaxy}:{mc.system}:{mc.position}")
+
+        seen = set()
+        totals: Dict[str, int] = {}
+        for m in movements:
+            if m.get("is_hostile"):
+                continue
+            origin = m.get("origin", "").replace("[", "").replace("]", "").strip()
+            dest = m.get("destination", "").replace("[", "").replace("]", "").strip()
+            is_return = bool(m.get("is_return", False))
+
+            ident = (origin, dest, m.get("mission", ""), m.get("arrival_text", ""), is_return)
+            if ident in seen:
+                continue
+
+            mine = (origin in our_coords) if not is_return else (dest in our_coords)
+            if not mine:
+                continue
+            seen.add(ident)
+
+            for raw_name, cnt in (m.get("ships") or {}).items():
+                key = _ship_name_to_key(raw_name)
+                if not key:
+                    continue
+                try:
+                    totals[key] = totals.get(key, 0) + int(cnt)
+                except (TypeError, ValueError):
+                    continue
+
+        if totals:
+            self.log.info("Naves en vuelo: %s",
+                          ", ".join(f"{k}:{v}" for k, v in totals.items()))
+        return totals
+
     def _has_free_expe_slots(self) -> bool:
         total = self.total_expe_slots if self.total_expe_slots > 0 else 1
         return self.active_expe_slots < total
@@ -483,6 +533,10 @@ class Brain:
             return
 
         slot_info = self.client.read_fleet_slots()
+        # Leemos movimientos siempre: sirven de fallback para el conteo de slots y, sobre
+        # todo, para sumar las naves en vuelo al inventario imperial de la GUI.
+        # ponytail: una navegación extra a event_list por ciclo; es barata.
+        mvs = self.client.read_movements()
         if slot_info:
             self.active_slots = slot_info.get("fleet_used", 0)
             self.total_fleet_slots = slot_info.get("fleet_total", 0)
@@ -492,12 +546,13 @@ class Brain:
                           self.active_slots, self.total_fleet_slots,
                           self.active_expe_slots, self.total_expe_slots)
         else:
-            mvs = self.client.read_movements()
             self.active_slots = self._count_our_active_fleets(mvs, planets)
             self.active_expe_slots = self._count_our_active_expeditions(mvs)
             self.total_expe_slots = int(self.research_levels.get("astrophysics", 0) ** 0.5)
             self.log.info("Slots de flota (fallback movimientos): %d activos, Expediciones %d/%d",
                           self.active_slots, self.active_expe_slots, self.total_expe_slots)
+
+        ships_in_motion = self._aggregate_ships_in_motion(mvs, planets)
 
         # Leer estado de cada planeta y luna usando la memoria/caché (escaneo completo
         # solo al inicio o en el resync; el resto de ciclos, lectura ligera).
@@ -539,6 +594,8 @@ class Brain:
                 planets_data.append(p_data)
             with open("planets_cache.json", "w", encoding="utf-8") as f:
                 json.dump(planets_data, f, indent=2)
+            with open("fleet_in_motion.json", "w", encoding="utf-8") as f:
+                json.dump(ships_in_motion, f, indent=2)
         except Exception as e:
             self.log.debug("No se pudo guardar planets_cache.json: %s", e)
 

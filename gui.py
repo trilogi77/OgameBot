@@ -292,6 +292,8 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.get_logs(account)
         elif path == "/api/planets":
             self.get_planets(account)
+        elif path == "/api/fleet_motion":
+            self._send_json_file(account, "fleet_in_motion.json", {})
         elif path == "/api/stats":
             self.get_stats(account)
         elif path == "/api/expedition":

@@ -1021,6 +1021,14 @@ body {
     font-weight: 500;
 }
 
+.ship-flying-note {
+    color: var(--accent-secondary);
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 4px;
+    opacity: 0.85;
+}
+
 .inventory-ship-qty {
     background: rgba(0, 210, 255, 0.15);
     color: var(--accent-secondary);

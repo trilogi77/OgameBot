@@ -4,6 +4,7 @@
 
 let globalConfig = {};
 let planetsCache = [];
+let fleetInMotionCache = {};   // naves en vuelo (flotas en movimiento)
 let localPlanetsConfig = {};
 let researchPriorityList = [];
 let configLoaded = false;
@@ -601,7 +602,7 @@ function loadPlanets() {
                 planetsCache = data.planets;
                 planetAlert.style.display = "none";
                 renderPlanetsList();
-                updateFleetInventory();
+                loadFleetMotion();   // refresca naves en vuelo y re-renderiza inventario
                 populateDefensePlanetSelect();
                 populateFacilitiesPlanetSelect();
             } else {
@@ -613,6 +614,14 @@ function loadPlanets() {
                 `;
             }
         });
+}
+
+function loadFleetMotion() {
+    fetch(api("/api/fleet_motion"))
+        .then(res => res.json())
+        .then(data => { fleetInMotionCache = data || {}; })
+        .catch(() => { fleetInMotionCache = {}; })
+        .finally(() => updateFleetInventory());
 }
 
 function forceRerenderPlanets() {
@@ -972,12 +981,21 @@ function renderShipsFound(ships) {
 }
 
 function updateFleetInventory() {
-    // Sumar todas las naves de todos los planetas
-    const totals = {};
+    // Naves paradas en planetas/lunas
+    const onPlanet = {};
     planetsCache.forEach(p => {
         const ships = p.ships || {};
         Object.keys(ships).forEach(ship => {
-            totals[ship] = (totals[ship] || 0) + (ships[ship] || 0);
+            onPlanet[ship] = (onPlanet[ship] || 0) + (ships[ship] || 0);
+        });
+    });
+
+    // Naves en vuelo (flotas en movimiento) + total combinado
+    const inMotion = fleetInMotionCache || {};
+    const totals = {};
+    [onPlanet, inMotion].forEach(src => {
+        Object.keys(src).forEach(ship => {
+            totals[ship] = (totals[ship] || 0) + (src[ship] || 0);
         });
     });
 
@@ -987,7 +1005,8 @@ function updateFleetInventory() {
         const span = document.getElementById(`current_qty_${ship}`);
         if (span) {
             const qty = totals[ship] || 0;
-            span.innerText = `(Actual: ${qty})`;
+            const flying = inMotion[ship] || 0;
+            span.innerText = flying > 0 ? `(Actual: ${qty} · ${flying} en vuelo)` : `(Actual: ${qty})`;
         }
     });
 
@@ -1005,10 +1024,11 @@ function updateFleetInventory() {
     keys.forEach(key => {
         const name = SHIP_TRANSLATIONS[key] || key;
         const count = totals[key];
+        const flying = inMotion[key] || 0;
         const tag = document.createElement("div");
         tag.className = "inventory-ship-tag";
         tag.innerHTML = `
-            <span class="inventory-ship-name">${name}</span>
+            <span class="inventory-ship-name">${name}${flying > 0 ? ` <span class="ship-flying-note" title="${flying} en vuelo">✈ ${flying}</span>` : ""}</span>
             <span class="inventory-ship-qty">${count}</span>
         `;
         container.appendChild(tag);

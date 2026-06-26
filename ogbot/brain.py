@@ -701,7 +701,7 @@ class Brain:
                 self._defense_step(p)
                 self._lifeforms_step(p)
                 self._facilities_step(p)
-            self._feed_step(planets)   # alimentar planetas-objetivo desde fuentes marcadas
+            self._feed_step(planets, mvs)   # alimentar planetas-objetivo desde fuentes marcadas
             self._research_step(planets)
             self._fleet_step(planets)
 
@@ -1562,7 +1562,7 @@ class Brain:
     # ------------------------------------------------------------------ #
     # Alimentación de recursos entre planetas (transporte para construir)
     # ------------------------------------------------------------------ #
-    def _feed_step(self, planets):
+    def _feed_step(self, planets, movements=None):
         """Manda el excedente de los planetas-fuente a los planetas-destino que no
         pueden pagar su próxima construcción (p.ej. lab a 12). Destino y fuentes se
         marcan a mano en la pestaña 'Por Planeta'."""
@@ -1571,7 +1571,24 @@ class Brain:
         if not destinos or not fuentes:
             return
 
+        # Destinos que YA tienen recursos en camino (transporte/deploy entrante): no
+        # volvemos a alimentarlos hasta que lleguen, para no mandar de más antes de tiempo.
+        inbound = set()
+        for m in (movements or []):
+            if m.get("is_hostile") or m.get("is_return"):
+                continue
+            mission = str(m.get("mission", "")).lower()
+            if mission in ("3", "4") or "transport" in mission or "deploy" in mission:
+                d = m.get("destination", "").replace("[", "").replace("]", "").strip()
+                if d:
+                    inbound.add(d)
+
         for dst in destinos:
+            dst_key = f"{dst.coords.galaxy}:{dst.coords.system}:{dst.coords.position}"
+            if dst_key in inbound:
+                self.log.info("Alimentación: %s ya tiene un transporte en camino; espero a que llegue.",
+                              dst.coords)
+                continue
             need = self._feed_deficit(dst)
             if not need:
                 continue

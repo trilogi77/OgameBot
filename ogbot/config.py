@@ -172,6 +172,12 @@ class Config:
     max_saving_hours_research: float = 6.0   # horas máx a ahorrar para investigación
     max_saving_hours_economy: float = 4.0    # horas máx a ahorrar para economía
 
+    # --- Alimentación de recursos entre planetas (transporte para construir) ---
+    # Se activa marcando planetas como "Recibe recursos" (destino) y "Cede recursos"
+    # (fuente) en la pestaña "Por Planeta". El destino usa sus objetivos de
+    # instalaciones/economía (p.ej. lab a 12) y las fuentes le mandan su excedente.
+    feed_min_send: int = 5000                # no mandar transportes de alimentación menores que esto
+
     # --- Estilo de Juego (ofensivo / defensivo) ---
     server_playstyle: str = "defensive"      # "offensive" (prioriza flotas) o "defensive" (prioriza defensas)
 

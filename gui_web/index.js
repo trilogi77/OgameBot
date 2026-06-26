@@ -562,6 +562,10 @@ function saveChanges() {
         localPlanetsConfig[coords].enable_recycling = card.querySelector(".planet-recycling").checked;
         const _ns = card.querySelector(".planet-night-sweep");
         if (_ns) localPlanetsConfig[coords].enable_night_sweep = _ns.checked;
+        const _ft = card.querySelector(".planet-feed-target");
+        if (_ft) localPlanetsConfig[coords].feed_target = _ft.checked;
+        const _fs = card.querySelector(".planet-feed-source");
+        if (_fs) localPlanetsConfig[coords].feed_source = _fs.checked;
 
         // Eliminar ratios de defensa obsoletos
         delete localPlanetsConfig[coords].defense_rockets_per_mine;
@@ -653,6 +657,8 @@ function renderPlanetsList() {
         const isFarming = config.enable_farming !== undefined ? config.enable_farming : globalConfig.enable_farming !== false;
         const isRecycling = config.enable_recycling !== undefined ? config.enable_recycling : globalConfig.enable_recycling !== false;
         const isNightSweep = config.enable_night_sweep === true;  // opt-in por planeta
+        const isFeedTarget = config.feed_target === true;         // recibe recursos para construir
+        const isFeedSource = config.feed_source === true;         // cede su excedente
 
         const card = document.createElement("div");
         card.className = "planet-card";
@@ -702,6 +708,14 @@ function renderPlanetsList() {
                 <label class="planet-toggle">
                     <input type="checkbox" class="planet-night-sweep" ${isNightSweep ? "checked" : ""}>
                     <span>Barrido nocturno</span>
+                </label>
+                <label class="planet-toggle" title="Recibe recursos de los planetas-fuente para pagar sus objetivos de construcción (p.ej. lab a 12).">
+                    <input type="checkbox" class="planet-feed-target" ${isFeedTarget ? "checked" : ""}>
+                    <span>Recibe recursos</span>
+                </label>
+                <label class="planet-toggle" title="Cede su excedente (dejando el buffer) a los planetas marcados como 'Recibe recursos'.">
+                    <input type="checkbox" class="planet-feed-source" ${isFeedSource ? "checked" : ""}>
+                    <span>Cede recursos</span>
                 </label>
             </div>
         `;

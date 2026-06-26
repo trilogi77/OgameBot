@@ -21,6 +21,28 @@ def cargos_needed(loot: Resources, ship: str = "large_cargo") -> int:
     return max(1, math.ceil(loot.total() / cap))
 
 
+def pick_cargo_ships(available: Dict[str, int], cargo_needed: float) -> Dict[str, int]:
+    """Elige cuántos cargueros (de los disponibles) llevan 'cargo_needed' de capacidad.
+
+    Prioriza grandes y usa pequeños como complemento. Si no hay capacidad suficiente,
+    devuelve todos los cargueros disponibles (envío parcial). {} si no hay cargueros.
+    """
+    out: Dict[str, int] = {}
+    remaining = cargo_needed
+    for ship in ("large_cargo", "small_cargo"):
+        have = available.get(ship, 0)
+        cap = gd.SHIPS[ship].cargo if ship in gd.SHIPS else 0
+        if have <= 0 or cap <= 0:
+            continue
+        use = min(have, math.ceil(remaining / cap)) if remaining > 0 else 0
+        if use > 0:
+            out[ship] = use
+            remaining -= use * cap
+        if remaining <= 0:
+            break
+    return out
+
+
 def size_attack_fleet(loot: Resources, template: Dict[str, int]) -> Dict[str, int]:
     """Ajusta el nº de cargueros del template para llevar todo el loot."""
     fleet = dict(template)

@@ -701,6 +701,7 @@ class Brain:
                 self._defense_step(p)
                 self._lifeforms_step(p)
                 self._facilities_step(p)
+            self._feed_step(planets)   # alimentar planetas-objetivo desde fuentes marcadas
             self._research_step(planets)
             self._fleet_step(planets)
 
@@ -1557,6 +1558,110 @@ class Brain:
                     self.log.info("%s: ahorrando para instalaciones: %s (tiempo estimado: %.1fh)", 
                                   planet.coords, name, t)
                     planet.building_in_progress = True
+
+    # ------------------------------------------------------------------ #
+    # Alimentación de recursos entre planetas (transporte para construir)
+    # ------------------------------------------------------------------ #
+    def _feed_step(self, planets):
+        """Manda el excedente de los planetas-fuente a los planetas-destino que no
+        pueden pagar su próxima construcción (p.ej. lab a 12). Destino y fuentes se
+        marcan a mano en la pestaña 'Por Planeta'."""
+        destinos = [p for p in planets if self._get_planet_setting(p, "feed_target", False)]
+        fuentes = [p for p in planets if self._get_planet_setting(p, "feed_source", False)]
+        if not destinos or not fuentes:
+            return
+
+        for dst in destinos:
+            need = self._feed_deficit(dst)
+            if not need:
+                continue
+            for src in fuentes:
+                if src.coords.tuple() == dst.coords.tuple():
+                    continue
+                if not self._has_free_slots_for_mission():
+                    self.log.info("Alimentación: sin slots de flota libres; sigo el próximo ciclo.")
+                    return
+                sent = self._feed_transport(src, dst, need)
+                if sent:
+                    self.active_slots += 1   # el transporte ocupa un slot hasta que vuelve
+                    need = Resources(max(0.0, need.metal - sent.metal),
+                                     max(0.0, need.crystal - sent.crystal),
+                                     max(0.0, need.deut - sent.deut))
+                if need.total() <= 0:
+                    break
+
+    def _target_next_build(self, planet):
+        """(nombre, coste) de lo próximo que el planeta-destino quiere construir, o None.
+        Prioriza los objetivos de instalaciones (lab, astillero...) y, si no hay,
+        usa la siguiente construcción que pediría la economía (minas/energía)."""
+        from .prereqs import resolve_prerequisites
+        for facility in ("robotics_factory", "shipyard", "research_lab", "nanite_factory"):
+            target_val = self._get_planet_setting(planet, f"target_{facility}", 0)
+            if planet.lvl(facility) < target_val:
+                res = resolve_prerequisites("building", facility, planet.lvl(facility) + 1,
+                                            planet, self.research_levels)
+                if res and res[0] == "building":
+                    return res[1], gd.building_cost(res[1], res[2])
+        plasma = self.research_levels.get("plasma_tech", 0)
+        return economy.next_build(planet, self.cfg, plasma=plasma,
+                                  research_levels=self.research_levels)
+
+    def _feed_deficit(self, planet):
+        """Resources que le faltan al destino para pagar su próxima construcción, o None."""
+        choice = self._target_next_build(planet)
+        if not choice:
+            return None
+        name, cost = choice
+        avail = planet.resources
+        need = Resources(max(0.0, cost.metal - avail.metal),
+                         max(0.0, cost.crystal - avail.crystal),
+                         max(0.0, cost.deut - avail.deut))
+        if need.total() <= 0:
+            return None   # ya puede pagarlo; lo construye el paso normal
+        self.log.info("Alimentación: %s quiere %s (coste M:%d C:%d D:%d); le faltan M:%d C:%d D:%d",
+                      planet.coords, name, int(cost.metal), int(cost.crystal), int(cost.deut),
+                      int(need.metal), int(need.crystal), int(need.deut))
+        return need
+
+    def _feed_transport(self, src, dst, need):
+        """Envía el excedente de 'src' hacia 'dst' (lo que falte y quepa). Devuelve los
+        Resources realmente enviados, o None."""
+        buf = 1 - self.cfg.keep_resources_buffer
+        avail = Resources(src.resources.metal * buf,
+                          src.resources.crystal * buf,
+                          src.resources.deut * buf)
+        send = Resources(min(avail.metal, need.metal),
+                         min(avail.crystal, need.crystal),
+                         min(avail.deut, need.deut))
+        if send.total() < getattr(self.cfg, "feed_min_send", 5000):
+            return None
+
+        ships = fleet_mod.pick_cargo_ships(src.ships, send.total())
+        if not ships:
+            self.log.info("Alimentación: %s no tiene cargueros para alimentar a %s.",
+                          src.coords, dst.coords)
+            return None
+
+        # No sobrecargar: limitar lo enviado a la capacidad real de los cargueros elegidos.
+        cap = tgt.cargo_capacity(ships)
+        total = send.total()
+        if total > cap and total > 0:
+            f = cap / total
+            send = Resources(send.metal * f, send.crystal * f, send.deut * f)
+
+        if self._guard():
+            ok = self.client.send_fleet(src.coords, dst.coords, ships,
+                                        mission="transport", resources=send)
+            if ok:
+                self.log.info("Alimentación: %s -> %s transporta M:%d C:%d D:%d (%s)",
+                              src.coords, dst.coords, int(send.metal), int(send.crystal),
+                              int(send.deut), ships)
+                # Descontar de la caché local para no reenviar lo mismo en este ciclo.
+                src.resources.metal -= send.metal
+                src.resources.crystal -= send.crystal
+                src.resources.deut -= send.deut
+                return send
+        return None
 
     def _fleetsave_all(self, offline_hours: float):
         if not self.cfg.enable_fleetsave:

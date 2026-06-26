@@ -1584,6 +1584,12 @@ class Brain:
                     inbound.add(d)
 
         for dst in destinos:
+            # Si ya está construyendo algo, lo que pediría está en cola y pagado: no
+            # mandar recursos para una subida en curso (evita mandar de más).
+            if getattr(dst, "building_in_progress", False):
+                self.log.info("Alimentación: %s ya está construyendo algo; espero a que termine.",
+                              dst.coords)
+                continue
             dst_key = f"{dst.coords.galaxy}:{dst.coords.system}:{dst.coords.position}"
             if dst_key in inbound:
                 self.log.info("Alimentación: %s ya tiene un transporte en camino; espero a que llegue.",

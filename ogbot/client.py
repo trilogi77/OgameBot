@@ -2057,6 +2057,44 @@ class GameClient:
             self.log.warning("OGame reportó error enviando flota %s->%s.", origin, destination)
             return False
 
+        # Confirmar que la flota SALIÓ de verdad. Un envío correcto abandona la pantalla
+        # de despacho (OGame navega a 'movement'); si seguimos viendo #sendFleet visible,
+        # no salió (slot lleno, combustible, recálculo o error inline) aunque el clic
+        # "funcionara". Evita el falso "Flota enviada".
+        time.sleep(1.0)
+        try:
+            still_on_dispatch = self.page.evaluate("""() => {
+                const btn = document.querySelector('#sendFleet');
+                return !!(btn && btn.offsetParent !== null);
+            }""")
+        except Exception:
+            still_on_dispatch = False
+
+        if still_on_dispatch:
+            err_txt = ""
+            try:
+                err_txt = self.page.evaluate("""() => {
+                    const sel = '#fleetStatusBar, .fleetStatusBar, .error_text, .fleetError, ' +
+                                '.error_box, #errorBoxDecision, .alert_box, .noships, .fleet_error';
+                    for (const e of document.querySelectorAll(sel)) {
+                        const t = (e.textContent || '').trim();
+                        if (t) return t.slice(0, 200);
+                    }
+                    return '';
+                }""") or ""
+            except Exception:
+                pass
+            self.log.warning("send_fleet: se hizo clic en enviar pero la flota %s->%s NO salió "
+                             "(seguimos en la pantalla de despacho). %s",
+                             origin, destination,
+                             ("Motivo: " + err_txt) if err_txt else "(sin mensaje inline visible)")
+            try:
+                os.makedirs("errors", exist_ok=True)
+                self.page.screenshot(path=f"errors/fleet_not_sent_{int(time.time())}.png")
+            except Exception:
+                pass
+            return False
+
         self.log.info("Flota enviada: %s -> %s (%s)", origin, destination, mission)
         return True
 

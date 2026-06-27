@@ -158,6 +158,9 @@ class Config:
     # Vigilancia de espionaje entrante (misión 6): avisa por Telegram cuando te sondean.
     enable_spy_watch: bool = True
     spy_watch_cooldown_mins: int = 30   # no re-avisar del mismo origen dentro de este tiempo
+    # Además, rescatar sondeos vía los mensajes de contraespionaje ("se ha detectado una
+    # flota...") que el polling de movimientos no pilló (fueron y volvieron entre chequeos).
+    spy_watch_messages: bool = True
     fleetsave_mission: str = "deploy"        # deploy/transport/expedition
     fleetsave_carry_resources: bool = True   # llevarse los recursos del planeta en el fleetsave
     fleetsave_recall_halfway: bool = False   # retornar despliegues a mitad del descanso

@@ -2119,7 +2119,9 @@ class Brain:
             }
         }
 
-        tabs = [21, 22, 24]
+        # Tab 20 = espionaje: lo incluimos para marcar como vistos los avisos de
+        # contraespionaje ya existentes y no soltar un alud de alertas al arrancar.
+        tabs = [20, 21, 22, 24]
         for tab_id in tabs:
             try:
                 msgs = self.client.read_message_reports(tab_id)
@@ -2403,6 +2405,42 @@ class Brain:
                 parsed_set.add(msg_id)
                 stats["parsed_messages"].append(msg_id)
                 changed = True
+
+        # Avisos de contraespionaje (tab 20): "Se ha detectado una flota del planeta X
+        # cerca de tu planeta Y". Rescata sondeos que el polling de movimientos no pilló.
+        if getattr(self.cfg, "enable_spy_watch", True) and getattr(self.cfg, "spy_watch_messages", True) \
+           and getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""):
+            try:
+                for m in self.client.read_message_reports(20):
+                    msg_id = f"20-{m['id']}"
+                    if msg_id in parsed_set:
+                        continue
+                    parsed_set.add(msg_id)
+                    stats["parsed_messages"].append(msg_id)
+                    changed = True
+                    text = m.get("text", "") or ""
+                    tl = text.lower()
+                    # Solo las notificaciones de "me han espiado", no mis propios informes.
+                    if ("se ha detectado una flota" not in tl and "cerca de tu planeta" not in tl
+                            and "near your planet" not in tl):
+                        continue
+                    coords = re.findall(r'\[(\d+:\d+:\d+)\]', text)
+                    origin = coords[0] if coords else "?"
+                    mine = coords[-1] if len(coords) > 1 else "?"
+                    ce = re.search(r'contra-?espionaje[^\d]*(\d+)\s*%', tl)
+                    ce_txt = f"{ce.group(1)}%" if ce else "?"
+                    alert = (
+                        f"🔍 <b>¡Te han espiado en OGame!</b> (detectado)\n\n"
+                        f"• <b>Desde:</b> [{origin}]\n"
+                        f"• <b>Tu ubicación:</b> [{mine}]\n"
+                        f"• <b>Prob. contraespionaje:</b> {ce_txt}\n\n"
+                        f"<i>Un sondeo suele preceder a un ataque.</i>"
+                    )
+                    self.log.info("Vigilancia de espionaje (mensaje): %s -> %s", origin, mine)
+                    utils.send_telegram_message(self.cfg.telegram_token,
+                                                self.cfg.telegram_chat_id, alert, logger=self.log)
+            except Exception as e:
+                self.log.debug("Error leyendo avisos de espionaje (tab 20): %s", e)
 
         if changed:
             try:

@@ -304,6 +304,7 @@ class Brain:
                     # Esperar al siguiente ciclo en pequeños intervalos
                     start_sleep = time.time()
                     last_attack_check = time.time()  # Ya comprobamos justo antes de entrar al ciclo
+                    next_attack_delay = self._attack_check_interval()
                     while self.running and (time.time() - start_sleep) < sleep_s:
                         if not utils.within_active_hours(self.cfg.active_hours):
                             break
@@ -315,11 +316,13 @@ class Brain:
                                 self.next_expedition_event = 0.0
                                 break
 
-                        # Comprobación periódica de ataques hostiles si está habilitado
+                        # Comprobación periódica de ataques hostiles si está habilitado.
+                        # El intervalo se re-sortea en cada comprobación (rango aleatorio).
                         if getattr(self.cfg, "enable_attack_escape", True):
                             now = time.time()
-                            if now - last_attack_check >= getattr(self.cfg, "attack_check_interval_s", 300):
+                            if now - last_attack_check >= next_attack_delay:
                                 last_attack_check = now
+                                next_attack_delay = self._attack_check_interval()
                                 try:
                                     self._check_and_escape_attacks()
                                 except Exception as e:
@@ -1444,6 +1447,7 @@ class Brain:
         # No extendemos más allá del intervalo de ciclo mínimo configurado
         deadline = time.time() + self.cfg.cycle_interval_min_s
         last_attack_check = time.time()  # ya se comprobó justo antes del ciclo
+        next_attack_delay = self._attack_check_interval()
 
         while time.time() < deadline:
             still_busy = [p for p in planets
@@ -1463,8 +1467,9 @@ class Brain:
             # Comprobar ataques hostiles también mientras esperamos construcciones:
             # reduce la latencia de detección en el hueco largo entre ciclos.
             if getattr(self.cfg, "enable_attack_escape", True) and \
-               time.time() - last_attack_check >= getattr(self.cfg, "attack_check_interval_s", 300):
+               time.time() - last_attack_check >= next_attack_delay:
                 last_attack_check = time.time()
+                next_attack_delay = self._attack_check_interval()
                 try:
                     self._check_and_escape_attacks()
                 except Exception as e:
@@ -1830,6 +1835,15 @@ class Brain:
                 if loc.coords.tuple() == coords.tuple() and loc.coords.type == coords.type:
                     return getattr(loc, "ships", {}) or {}
         return {}
+
+    def _attack_check_interval(self) -> float:
+        """Segundos hasta la próxima comprobación de ataque: aleatorio en [min,max]
+        para no dar un patrón fijo de sondeo que delate el bot."""
+        lo = float(getattr(self.cfg, "attack_check_interval_min_s", 300))
+        hi = float(getattr(self.cfg, "attack_check_interval_max_s", 780))
+        if hi < lo:
+            lo, hi = hi, lo
+        return random.uniform(lo, hi)
 
     def _check_and_escape_attacks(self):
         if not getattr(self.cfg, "enable_attack_escape", True):

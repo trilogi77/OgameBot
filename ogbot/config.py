@@ -151,7 +151,10 @@ class Config:
     # --- Seguridad / fleetsave / humanización ---
     enable_fleetsave: bool = True
     enable_attack_escape: bool = True       # Huir de ataques enemigos de forma automática
-    attack_check_interval_s: int = 300       # Intervalo en segundos para comprobar ataques en standby
+    # Intervalo entre comprobaciones de ataque: aleatorio en [min,max] segundos para
+    # no dar un patrón fijo de sondeo que delate el bot (5-13 min por defecto).
+    attack_check_interval_min_s: int = 300
+    attack_check_interval_max_s: int = 780
     fleetsave_mission: str = "deploy"        # deploy/transport/expedition
     fleetsave_carry_resources: bool = True   # llevarse los recursos del planeta en el fleetsave
     fleetsave_recall_halfway: bool = False   # retornar despliegues a mitad del descanso

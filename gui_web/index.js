@@ -84,12 +84,15 @@ function switchAccount(id) {
     configLoaded = false;
     messagesCache = [];
     lastMessagesSig = "";
+    flightsCache = [];
+    lastFlightsSig = "";
     renderAccountSelect();
     renderAccountsTab();
     loadConfig();
     loadPlanets();
     loadStats();
     loadMessages();
+    loadFlights();
     loadLogs();
     checkBotStatus();
     loadExpeditionStatus();
@@ -168,11 +171,23 @@ window.addEventListener("DOMContentLoaded", () => {
         loadLogs();
         loadStats();
         loadMessages();
+        loadFlights();
         loadExpeditionStatus();
         loadBuildStatus();
     });
     const msgFilter = document.getElementById("messages_filter");
     if (msgFilter) msgFilter.addEventListener("change", renderMessages);
+
+    const fixLoc = document.getElementById("fix_location");
+    if (fixLoc) fixLoc.addEventListener("change", populateFixBuildings);
+    const fixBld = document.getElementById("fix_building");
+    if (fixBld) fixBld.addEventListener("change", syncFixLevel);
+    const btnFix = document.getElementById("btnFixLevel");
+    if (btnFix) btnFix.addEventListener("click", submitLevelFix);
+    const btnResync = document.getElementById("btnForceResync");
+    if (btnResync) btnResync.addEventListener("click", forceResync);
+    const btnResyncAll = document.getElementById("btnForceResyncAll");
+    if (btnResyncAll) btnResyncAll.addEventListener("click", forceResyncAll);
     initColonyLocator();
     
     const defSelect = document.getElementById("defense_planet_select");
@@ -210,6 +225,8 @@ window.addEventListener("DOMContentLoaded", () => {
     setInterval(loadPlanets, 5000); // Recargar planetas si se detectan nuevos en vivo
     setInterval(loadStats, 4000);
     setInterval(loadMessages, 4000);
+    setInterval(loadFlights, 4000);
+    setInterval(updateFlightTimers, 1000);   // contador en vivo sin repintar la lista
     setInterval(loadExpeditionStatus, 2000);
     setInterval(loadBuildStatus, 2000);
     setInterval(loadAccounts, 4000);
@@ -667,6 +684,7 @@ function loadPlanets() {
                 loadFleetMotion();   // refresca naves en vuelo y re-renderiza inventario
                 populateDefensePlanetSelect();
                 populateFacilitiesPlanetSelect();
+                populateLevelFix();
             } else {
                 planetsListContainer.innerHTML = `
                     <div class="text-center text-muted" style="padding: 40px 0;">
@@ -691,6 +709,103 @@ function forceRerenderPlanets() {
         planetsListContainer.innerHTML = "";
         renderPlanetsList();
     }
+}
+
+// --------------------------------------------------------------------------
+// Corrección manual de niveles registrados + re-lectura forzada
+// --------------------------------------------------------------------------
+let fixLocations = [];
+let lastFixLocSig = "";
+
+function populateLevelFix() {
+    const locSel = document.getElementById("fix_location");
+    if (!locSel) return;
+    const locs = [];
+    planetsCache.forEach(p => {
+        locs.push({ label: `🪐 ${p.name} [${p.coords}]`, coords: p.coords, is_moon: false, buildings: p.buildings || {} });
+        if (p.moon && p.moon.coords) {
+            locs.push({ label: `🌙 Luna [${p.moon.coords}]`, coords: p.moon.coords, is_moon: true, buildings: p.moon.buildings || {} });
+        }
+    });
+    fixLocations = locs;
+    const sig = locs.map(l => l.coords + (l.is_moon ? "m" : "p")).join(",");
+    // Solo reconstruimos el desplegable si cambió el conjunto (no perder la selección).
+    if (sig === lastFixLocSig && locSel.options.length) return;
+    lastFixLocSig = sig;
+    locSel.innerHTML = locs.map((l, i) => `<option value="${i}">${l.label}</option>`).join("");
+    populateFixBuildings();
+}
+
+function populateFixBuildings() {
+    const locSel = document.getElementById("fix_location");
+    const bSel = document.getElementById("fix_building");
+    if (!locSel || !bSel) return;
+    const loc = fixLocations[locSel.value];
+    const names = loc ? Object.keys(loc.buildings).sort() : [];
+    bSel.innerHTML = names.length
+        ? names.map(n => `<option value="${n}">${(BUILDING_TRANSLATIONS[n] || n)} (registrado: ${loc.buildings[n]})</option>`).join("")
+        : `<option value="">(sin datos; ejecuta el bot un ciclo)</option>`;
+    syncFixLevel();
+}
+
+function syncFixLevel() {
+    const loc = fixLocations[document.getElementById("fix_location").value];
+    const name = document.getElementById("fix_building").value;
+    const lvlInput = document.getElementById("fix_level");
+    if (loc && name && loc.buildings[name] !== undefined) lvlInput.value = loc.buildings[name];
+}
+
+function fixStatus(msg, ok) {
+    const el = document.getElementById("fix_status");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = ok === undefined ? "" : (ok ? "var(--accent-success, #22c55e)" : "var(--accent-danger, #ef4444)");
+}
+
+function submitLevelFix() {
+    const loc = fixLocations[document.getElementById("fix_location").value];
+    const name = document.getElementById("fix_building").value;
+    const level = parseInt(document.getElementById("fix_level").value);
+    if (!loc || !name) { fixStatus("Selecciona planeta y edificio.", false); return; }
+    if (isNaN(level) || level < 0) { fixStatus("Nivel inválido.", false); return; }
+    fetch(api("/api/state_override"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "building", coords: loc.coords, is_moon: loc.is_moon, name, level })
+    })
+        .then(r => r.json())
+        .then(d => {
+            if (d.error) { fixStatus("Error: " + d.error, false); showToast("Error: " + d.error, "danger"); }
+            else {
+                fixStatus(`✅ Guardado. Se aplicará en el próximo ciclo del bot.`, true);
+                showToast("Corrección de nivel guardada", "success");
+            }
+        })
+        .catch(e => fixStatus("Error de red: " + e, false));
+}
+
+function postResync(body, okMsg) {
+    fetch(api("/api/resync"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+    })
+        .then(r => r.json())
+        .then(d => {
+            if (d.error) { fixStatus("Error: " + d.error, false); showToast("Error: " + d.error, "danger"); }
+            else { fixStatus(okMsg, true); showToast("Re-lectura solicitada", "success"); }
+        })
+        .catch(e => fixStatus("Error de red: " + e, false));
+}
+
+function forceResync() {
+    const loc = fixLocations[document.getElementById("fix_location").value];
+    if (!loc) { fixStatus("Selecciona un planeta o luna.", false); return; }
+    postResync({ coords: loc.coords, is_moon: loc.is_moon },
+        `🔄 El bot releerá ${loc.label} en el próximo ciclo.`);
+}
+
+function forceResyncAll() {
+    postResync({ all: true },
+        "🔄 El bot releerá TODOS los niveles del juego en el próximo ciclo.");
 }
 
 function renderPlanetsList() {
@@ -999,6 +1114,137 @@ function loadStats() {
             renderSessionActions(data.session_actions || null);
         })
         .catch(err => console.error("Error al cargar estadísticas:", err));
+}
+
+// --------------------------------------------------------------------------
+// Pestaña de vuelos (flotas en movimiento)
+// --------------------------------------------------------------------------
+let flightsCache = [];
+let lastFlightsSig = "";
+const MISSION_COLORS = {
+    "Ataque": "#ef4444", "Ataque (ACS)": "#ef4444", "Destruir luna": "#ef4444",
+    "Transporte": "#38bdf8", "Despliegue": "#22c55e", "Defensa (ACS)": "#22c55e",
+    "Espionaje": "#a78bfa", "Colonización": "#22c55e", "Reciclaje": "#fbbf24",
+    "Expedición": "#f472b6"
+};
+
+function loadFlights() {
+    fetch(api("/api/flights"))
+        .then(res => res.json())
+        .then(data => {
+            const flights = data.flights || [];
+            // Firma por IDENTIDAD de vuelos (no por 'updated'/arrival_epoch, que cambian en
+            // cada escritura): así solo repintamos cuando entra/sale un vuelo, no cada poll.
+            const sig = flights.map(f =>
+                `${f.mission_code}|${f.origin}>${f.destination}|${f.is_return ? "r" : "o"}`).sort().join(";");
+            if (sig === lastFlightsSig) return;   // mismo conjunto de vuelos: no repintamos
+            lastFlightsSig = sig;
+            flightsCache = flights;
+            renderFlights();
+            const upd = document.getElementById("flights_updated");
+            if (upd) upd.textContent = data.updated ? ("Actualizado " + new Date(data.updated * 1000).toLocaleTimeString()) : "";
+        })
+        .catch(() => {});
+}
+
+function flightLocIcon(type) {
+    return type === "moon" ? "🌙" : (type === "debris" ? "💥" : "🪐");
+}
+
+function flightCargoText(cargo) {
+    if (!cargo) return "";
+    const parts = [];
+    if (cargo.metal) parts.push("M " + formatNumber(cargo.metal));
+    if (cargo.crystal) parts.push("C " + formatNumber(cargo.crystal));
+    if (cargo.deut) parts.push("D " + formatNumber(cargo.deut));
+    return parts.join(" · ");
+}
+
+function renderFlights() {
+    const listEl = document.getElementById("flights_list");
+    if (!listEl) return;
+    const countEl = document.getElementById("flights_count");
+    const flights = flightsCache.slice().sort((a, b) => {
+        const ka = a.arrival_epoch || Infinity, kb = b.arrival_epoch || Infinity;
+        return ka === kb ? 0 : ka - kb;   // evita Infinity-Infinity = NaN
+    });
+    if (countEl) countEl.innerText = flights.length;
+
+    if (!flights.length) {
+        listEl.innerHTML = `<div class="text-muted" style="font-size:13px; padding:4px;">No hay vuelos en curso.</div>`;
+        return;
+    }
+
+    listEl.innerHTML = "";
+    flights.forEach(fl => {
+        const item = document.createElement("div");
+        item.className = "session-list-item";
+        item.style.flexDirection = "column";
+        item.style.alignItems = "stretch";
+        item.style.borderLeftColor = fl.is_hostile ? "#ef4444" : (MISSION_COLORS[fl.mission] || "var(--accent-primary, #8a2be2)");
+
+        const head = document.createElement("div");
+        head.style.cssText = "display:flex; justify-content:space-between; gap:8px; align-items:center; margin-bottom:4px;";
+        const left = document.createElement("span");
+        left.className = "session-item-name";
+        left.textContent = (fl.is_hostile ? "⚠️ " : "") + (fl.mission || "?") + (fl.is_return ? " (vuelta)" : "");
+        const eta = document.createElement("span");
+        eta.className = "session-item-time flight-eta";
+        if (fl.arrival_epoch) eta.dataset.arrival = fl.arrival_epoch;
+        eta.textContent = fl.arrival_text || "";
+        head.appendChild(left);
+        head.appendChild(eta);
+        item.appendChild(head);
+
+        const route = document.createElement("div");
+        route.style.cssText = "font-size:12px; color: var(--text-secondary, #9aa); margin-bottom:4px;";
+        route.textContent = `${flightLocIcon(fl.origin_type)} [${fl.origin || "?"}]  →  ${flightLocIcon(fl.dest_type)} [${fl.destination || "?"}]`;
+        item.appendChild(route);
+
+        if (fl.arrival_epoch) {
+            const arr = document.createElement("div");
+            arr.style.cssText = "font-size:11px; color: var(--text-muted, #8b949e); margin-bottom:4px;";
+            arr.textContent = "Llegada " + new Date(fl.arrival_epoch * 1000).toLocaleTimeString();
+            item.appendChild(arr);
+        }
+
+        const cargoTxt = flightCargoText(fl.cargo);
+        if (cargoTxt) {
+            const cargo = document.createElement("div");
+            cargo.style.cssText = "font-size:12px; margin-bottom:4px;";
+            cargo.textContent = "📦 " + cargoTxt;
+            item.appendChild(cargo);
+        }
+
+        const shipNames = Object.keys(fl.ships || {});
+        if (shipNames.length) {
+            const ships = document.createElement("div");
+            ships.style.cssText = "display:flex; flex-wrap:wrap; gap:6px;";
+            shipNames.forEach(n => {
+                const chip = document.createElement("span");
+                chip.className = "session-item-planet";
+                chip.textContent = `${n}: ${formatNumber(fl.ships[n])}`;
+                ships.appendChild(chip);
+            });
+            item.appendChild(ships);
+        }
+
+        listEl.appendChild(item);
+    });
+    updateFlightTimers();
+}
+
+function updateFlightTimers() {
+    const now = Date.now();
+    document.querySelectorAll("#flights_list .flight-eta").forEach(el => {
+        const arrival = parseInt(el.dataset.arrival || "0");
+        if (!arrival) return;
+        const rem = Math.max(0, Math.round(arrival - now / 1000));
+        const pad = n => String(n).padStart(2, "0");
+        el.textContent = rem > 0
+            ? `${Math.floor(rem / 3600)}:${pad(Math.floor((rem % 3600) / 60))}:${pad(rem % 60)}`
+            : "Llegó";
+    });
 }
 
 // --------------------------------------------------------------------------

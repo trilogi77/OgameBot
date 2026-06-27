@@ -72,6 +72,93 @@ def parse_found_ships(text: str) -> dict:
     return found
 
 
+# Misiones de OGame -> nombre legible (código numérico y alias de texto).
+MISSION_NAMES_ES = {
+    "1": "Ataque", "2": "Ataque (ACS)", "3": "Transporte", "4": "Despliegue",
+    "5": "Defensa (ACS)", "6": "Espionaje", "7": "Colonización",
+    "8": "Reciclaje", "9": "Destruir luna", "15": "Expedición",
+    "attack": "Ataque", "transport": "Transporte", "deploy": "Despliegue",
+    "espionage": "Espionaje", "colonize": "Colonización", "harvest": "Reciclaje",
+    "expedition": "Expedición", "destroy": "Destruir luna",
+}
+
+# Nombres de recurso (es/en) tal como aparecen en el tooltip de la flota.
+_CARGO_NAMES = {
+    "metal": ["metal"],
+    "crystal": ["cristal", "crystal"],
+    "deut": ["deuterio", "deuterium", "deut"],
+}
+
+
+def _split_ships_cargo(ships_raw: dict):
+    """Separa el tooltip de la flota en naves y carga (Metal/Cristal/Deuterio)."""
+    ships, cargo = {}, {"metal": 0, "crystal": 0, "deut": 0}
+    for name, val in (ships_raw or {}).items():
+        low = str(name).strip().lower()
+        matched = next((ck for ck, variants in _CARGO_NAMES.items() if low in variants), None)
+        if matched:
+            cargo[matched] += val
+        elif name:
+            ships[name] = ships.get(name, 0) + val
+    return ships, cargo
+
+
+def _flight_sig(f):
+    # Incluye un bucket de llegada (minuto) para no confundir dos flotas distintas en la
+    # MISMA ruta/misión (p.ej. dos expediciones a la misma posición). El epoch apenas
+    # deriva entre la escritura del ciclo y la del chequeo de ataques, así que el bucket
+    # casa el mismo vuelo físico; si justo cruza un minuto, las naves se mostrarán vacías
+    # (mejor que mostrar las de otra flota).
+    return (str(f.get("mission_code", "")), f.get("origin", ""),
+            f.get("destination", ""), bool(f.get("is_return")),
+            int(f.get("arrival_epoch", 0)) // 60)
+
+
+def build_flights(mvs, now, prev=None):
+    """Convierte movimientos crudos de read_movements() en vuelos para la GUI.
+
+    Excluye flotas hostiles entrantes (los ataques los gestiona el escape/Telegram): así
+    las dos fuentes —la página de movimientos del ciclo y el event_list del chequeo de
+    ataques— producen el MISMO conjunto (solo tus flotas) y no parpadean filas.
+
+    prev: vuelos del fichero anterior. Si la fuente actual no trae naves/carga (el
+    event_list no las trae), se conservan del vuelo previo equivalente (escrito por el
+    ciclo con datos completos).
+    """
+    prev_by_sig = {}
+    for pf in (prev or []):
+        prev_by_sig.setdefault(_flight_sig(pf), pf)
+    flights = []
+    for mv in mvs:
+        if mv.get("is_hostile"):
+            continue
+        ships, cargo = _split_ships_cargo(mv.get("ships", {}))
+        arrival_text = (mv.get("arrival_text", "") or "").strip()
+        secs = parse_time_to_seconds(arrival_text)
+        mcode = str(mv.get("mission", ""))
+        f = {
+            "mission": MISSION_NAMES_ES.get(mcode, mcode or "?"),
+            "mission_code": mcode,
+            "origin": mv.get("origin", ""),
+            "origin_type": mv.get("origin_type", "planet"),
+            "destination": mv.get("destination", ""),
+            "dest_type": mv.get("dest_type", "planet"),
+            "is_return": bool(mv.get("is_return")),
+            "is_hostile": False,
+            "arrival_text": arrival_text,
+            "arrival_epoch": round(now + secs) if secs is not None else 0,
+            "ships": ships,
+            "cargo": cargo,
+        }
+        if not ships and not any(cargo.values()):
+            pf = prev_by_sig.get(_flight_sig(f))
+            if pf:
+                f["ships"] = pf.get("ships", {}) or {}
+                f["cargo"] = pf.get("cargo", {}) or {"metal": 0, "crystal": 0, "deut": 0}
+        flights.append(f)
+    return flights
+
+
 class Brain:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -104,6 +191,8 @@ class Brain:
         self._load_state()
         # Memoria de estado (niveles de edificios/investigación/defensas)
         self.state_cache = {"research": {}, "planets": {}}
+        self._force_resync = False        # GUI: releer TODOS los niveles del juego
+        self._resync_targets = set()      # GUI: releer solo estas ubicaciones (loc_key)
         self._load_state_cache()
 
     def _load_state(self):
@@ -186,6 +275,62 @@ class Brain:
         except Exception as e:
             self.log.debug("No se pudo guardar game_state_cache.json: %s", e)
 
+    def _apply_pending_gui_requests(self):
+        """Aplica peticiones dejadas por la GUI como ficheros: corrección manual de
+        niveles (state_overrides.json) y re-lectura forzada (force_resync.json)."""
+        import json
+        import os
+        # 1) Correcciones manuales de nivel.
+        if os.path.exists("state_overrides.json"):
+            try:
+                with open("state_overrides.json", "r", encoding="utf-8") as f:
+                    overrides = json.load(f) or []
+                for ov in overrides:
+                    name = (ov.get("name") or "").strip()
+                    if not name:
+                        continue
+                    try:
+                        level = int(ov.get("level"))
+                    except (TypeError, ValueError):
+                        continue
+                    if ov.get("kind") == "research":
+                        self.state_cache.setdefault("research", {}).setdefault("levels", {})[name] = level
+                        self.log.info("Corrección manual (GUI): investigación %s -> nivel %d", name, level)
+                    else:
+                        coords = (ov.get("coords") or "").strip()
+                        key = f"{coords}:{'moon' if ov.get('is_moon') else 'planet'}"
+                        entry = self.state_cache["planets"].get(key)
+                        if entry is not None:
+                            entry.setdefault("buildings", {})[name] = level
+                            self.log.info("Corrección manual (GUI): %s %s -> nivel %d", key, name, level)
+                        else:
+                            self.log.info("Corrección manual (GUI) ignorada: %s aún no está en caché.", key)
+                self._save_state_cache()
+            except Exception as e:
+                self.log.debug("No se pudieron aplicar state_overrides.json: %s", e)
+            try:
+                os.remove("state_overrides.json")
+            except Exception:
+                pass
+        # 2) Re-lectura forzada (toda la cuenta o solo ciertas ubicaciones).
+        if os.path.exists("force_resync.json"):
+            try:
+                with open("force_resync.json", "r", encoding="utf-8") as f:
+                    req = json.load(f)
+            except Exception:
+                req = {}
+            if isinstance(req, dict):
+                if req.get("all"):
+                    self._force_resync = True
+                    self.log.info("Re-lectura forzada de TODOS los niveles (GUI).")
+                for k in req.get("targets", []) or []:
+                    self._resync_targets.add(k)
+                    self.log.info("Re-lectura forzada de %s (GUI).", k)
+            try:
+                os.remove("force_resync.json")
+            except Exception:
+                pass
+
     def _cache_store_location(self, loc):
         self.state_cache["planets"][self._loc_key(loc.coords)] = {
             "buildings": dict(loc.buildings),
@@ -221,7 +366,8 @@ class Brain:
         key = self._loc_key(loc.coords)
         entry = self.state_cache["planets"].get(key)
         resync_s = float(getattr(self.cfg, "state_resync_hours", 6.0)) * 3600
-        needs_full = (entry is None) or (time.time() - entry.get("scanned_at", 0.0) >= resync_s)
+        needs_full = (self._force_resync or key in self._resync_targets or entry is None
+                      or (time.time() - entry.get("scanned_at", 0.0) >= resync_s))
 
         if needs_full:
             self.client.read_planet_state(loc)
@@ -254,7 +400,8 @@ class Brain:
         r = self.state_cache.setdefault("research", {})
         levels = r.get("levels") or {}
         resync_s = float(getattr(self.cfg, "state_resync_hours", 6.0)) * 3600
-        needs_full = (not levels) or (time.time() - r.get("scanned_at", 0.0) >= resync_s)
+        needs_full = (self._force_resync or not levels
+                      or (time.time() - r.get("scanned_at", 0.0) >= resync_s))
         finish = r.get("finish_epoch", 0.0)
         if finish and time.time() >= finish:
             needs_full = True
@@ -576,6 +723,9 @@ class Brain:
         except Exception as e:
             self.log.warning("No se pudo recargar la configuración desde el disco: %s", e)
 
+        # Correcciones de nivel / re-lectura forzada pedidas desde la GUI.
+        self._apply_pending_gui_requests()
+
         planets = self.client.read_planets()
         if not planets:
             self.log.warning("Sin planetas legibles; revisa selectores.")
@@ -647,11 +797,17 @@ class Brain:
                 json.dump(planets_data, f, indent=2)
             with open("fleet_in_motion.json", "w", encoding="utf-8") as f:
                 json.dump(ships_in_motion, f, indent=2)
+            # Lista de vuelos para la pestaña "Vuelos" (datos completos: naves y carga).
+            with open("fleet_flights.json", "w", encoding="utf-8") as f:
+                json.dump({"flights": build_flights(mvs, time.time()),
+                           "updated": time.time()}, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.log.debug("No se pudo guardar planets_cache.json: %s", e)
 
         # Niveles de investigación: desde la caché (solo re-lee en resync o al terminar una)
         self.research_levels = self._read_research_smart()
+        self._force_resync = False        # ya se aplicó esta ronda (edificios + investigación)
+        self._resync_targets = set()      # las ubicaciones pedidas ya se releyeron
         if self.research_levels:
             self.my_tech.weapons = self.research_levels.get("weapons_tech", 0)
             self.my_tech.shielding = self.research_levels.get("shielding_tech", 0)
@@ -1925,6 +2081,21 @@ class Brain:
         if not getattr(self.cfg, "enable_attack_escape", True):
             return
         mvs = self.client.read_movements()
+        # Refrescar la pestaña "Vuelos" aprovechando esta lectura (corre más a menudo que el
+        # ciclo). El event_list no trae el desglose de naves, así que lo conservamos del
+        # fichero previo (que escribe el ciclo con datos completos).
+        try:
+            import json
+            import os
+            prev = []
+            if os.path.exists("fleet_flights.json"):
+                with open("fleet_flights.json", "r", encoding="utf-8") as f:
+                    prev = json.load(f).get("flights", [])
+            with open("fleet_flights.json", "w", encoding="utf-8") as f:
+                json.dump({"flights": build_flights(mvs, time.time(), prev=prev),
+                           "updated": time.time()}, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.log.debug("No se pudo refrescar fleet_flights.json: %s", e)
         planets = self.client.read_planets()
         if not planets:
             return

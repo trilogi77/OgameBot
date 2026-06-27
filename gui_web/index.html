@@ -65,6 +65,7 @@
                     <button class="tab-btn" data-tab="tab-planets">Por Planeta</button>
                     <button class="tab-btn" data-tab="tab-targets">Objetivos</button>
                     <button class="tab-btn" data-tab="tab-stats">Estadísticas</button>
+                    <button class="tab-btn" data-tab="tab-flights">Vuelos</button>
                     <button class="tab-btn" data-tab="tab-messages">Mensajes</button>
                     <button class="tab-btn" data-tab="tab-session">Resumen de Sesión</button>
                     <button class="tab-btn" data-tab="tab-locator">Localizador</button>
@@ -620,6 +621,28 @@
                         <div class="exp-live" id="buildStatusPanel" style="margin-bottom:16px;">
                             Inicia el bot para ver los tiempos restantes de construcciones e investigación.
                         </div>
+                        <div class="section-title" style="margin-top:4px;">🛠️ Corregir niveles registrados</div>
+                        <div class="exp-live" id="levelFixPanel" style="margin-bottom:16px;">
+                            <p class="text-muted" style="font-size:12px; margin-top:0;">Si el bot tiene un nivel mal registrado (porque subiste algo a mano y aún no lo ha releído), corrígelo aquí, o pídele que vuelva a leer todos los niveles del juego. Se aplica en el próximo ciclo del bot.</p>
+                            <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+                                <div>
+                                    <label style="display:block; font-size:11px; color:var(--text-muted);">Planeta / Luna</label>
+                                    <select id="fix_location" class="form-control" style="min-width:200px; padding:8px; border-radius:8px; background: rgba(0,0,0,0.3); color:#fff; border:1px solid var(--panel-border);"></select>
+                                </div>
+                                <div>
+                                    <label style="display:block; font-size:11px; color:var(--text-muted);">Edificio</label>
+                                    <select id="fix_building" class="form-control" style="min-width:220px; padding:8px; border-radius:8px; background: rgba(0,0,0,0.3); color:#fff; border:1px solid var(--panel-border);"></select>
+                                </div>
+                                <div>
+                                    <label style="display:block; font-size:11px; color:var(--text-muted);">Nivel correcto</label>
+                                    <input type="number" id="fix_level" min="0" class="form-control" style="width:110px; padding:8px; border-radius:8px; background: rgba(0,0,0,0.3); color:#fff; border:1px solid var(--panel-border);">
+                                </div>
+                                <button type="button" id="btnFixLevel" class="btn btn-secondary">Guardar corrección</button>
+                                <button type="button" id="btnForceResync" class="btn btn-secondary">🔄 Releer este planeta</button>
+                                <button type="button" id="btnForceResyncAll" class="btn btn-secondary">Releer todos</button>
+                            </div>
+                            <span id="fix_status" class="text-muted" style="font-size:12px; display:block; margin-top:8px;"></span>
+                        </div>
                         <div class="planets-list" id="planetsListContainer">
                             <!-- Inyectado dinámicamente por JS -->
                         </div>
@@ -884,6 +907,23 @@
                                 <div class="ships-found-container" id="stats_ships_found">
                                     <div class="text-muted" style="font-size: 13px;">Aún no se han encontrado naves.</div>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TAB: VUELOS / FLOTAS EN MOVIMIENTO -->
+                    <div class="tab-pane" id="tab-flights">
+                        <div class="stats-container">
+                            <div class="stats-summary-card">
+                                <h3>Vuelos en Curso</h3>
+                                <p class="text-muted" style="font-size: 12px; margin-top: -6px;">Flotas en movimiento: origen → destino, llegada y tiempo restante (en vivo), carga y naves. Se actualiza cada ciclo y en cada comprobación de ataques.</p>
+                            </div>
+                            <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
+                                <span class="badge" id="flights_count" style="background: rgba(255,255,255,0.1); padding: 2px 8px; border-radius: 4px; font-size: 11px;">0</span>
+                                <span class="text-muted" id="flights_updated" style="font-size: 11px;"></span>
+                            </div>
+                            <div class="session-list" id="flights_list" style="max-height: 64vh; overflow-y: auto;">
+                                <div class="text-muted" style="font-size: 13px; padding: 4px;">No hay vuelos en curso (o el bot aún no ha leído los movimientos).</div>
                             </div>
                         </div>
                     </div>

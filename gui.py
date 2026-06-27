@@ -294,6 +294,8 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.get_planets(account)
         elif path == "/api/fleet_motion":
             self._send_json_file(account, "fleet_in_motion.json", {})
+        elif path == "/api/flights":
+            self._send_json_file(account, "fleet_flights.json", {"flights": []})
         elif path == "/api/stats":
             self.get_stats(account)
         elif path == "/api/messages":
@@ -329,6 +331,10 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.run_locator(account)
         elif path == "/api/telegram/test":
             self.test_telegram(account)
+        elif path == "/api/resync":
+            self.force_resync(account)
+        elif path == "/api/state_override":
+            self.add_state_override(account)
         elif path == "/api/live/click":
             self.handle_live_click(account)
         elif path == "/api/live/type":
@@ -631,6 +637,82 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.send_json(200, {"error": f"Telegram rechazó el envío ({e.code}): {detail or e.reason}"})
         except Exception as e:
             self.send_json(200, {"error": f"No se pudo contactar con Telegram: {e}"})
+
+    # ------------------------------------------------- corrección de niveles --
+    def force_resync(self, account):
+        """Marca para que el bot relea niveles en el próximo ciclo: una ubicación
+        concreta ({coords,is_moon}) o toda la cuenta ({all:true})."""
+        if not account:
+            return self.send_json(400, {"error": "Falta la cuenta"})
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b"{}")
+        except Exception:
+            body = {}
+        path = acc_path(account, "force_resync.json")
+        try:
+            req = {"all": False, "targets": []}
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        req = loaded
+            req.setdefault("targets", [])
+            if body.get("all"):
+                req["all"] = True
+            else:
+                coords = (body.get("coords") or "").strip()
+                if not coords:
+                    return self.send_json(400, {"error": "Falta el planeta a releer"})
+                key = f"{coords}:{'moon' if body.get('is_moon') else 'planet'}"
+                if key not in req["targets"]:
+                    req["targets"].append(key)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(req, f)
+            self.send_json(200, {"status": "ok"})
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+    def add_state_override(self, account):
+        """Apila una corrección manual de nivel que el bot aplicará en el próximo ciclo."""
+        if not account:
+            return self.send_json(400, {"error": "Falta la cuenta"})
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b"{}")
+        except Exception:
+            body = {}
+        name = (body.get("name") or "").strip()
+        if not name:
+            return self.send_json(400, {"error": "Falta el edificio/tecnología"})
+        try:
+            level = int(body.get("level"))
+        except (TypeError, ValueError):
+            return self.send_json(400, {"error": "Nivel inválido"})
+        if level < 0:
+            return self.send_json(400, {"error": "El nivel no puede ser negativo"})
+        ov = {
+            "kind": body.get("kind", "building"),
+            "coords": (body.get("coords") or "").strip(),
+            "is_moon": bool(body.get("is_moon")),
+            "name": name,
+            "level": level,
+        }
+        path = acc_path(account, "state_overrides.json")
+        try:
+            data = []
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f) or []
+            # Sustituir una corrección previa del mismo objetivo si la hubiera.
+            data = [o for o in data if not (o.get("kind") == ov["kind"]
+                                            and o.get("coords") == ov["coords"]
+                                            and bool(o.get("is_moon")) == ov["is_moon"]
+                                            and o.get("name") == ov["name"])]
+            data.append(ov)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            self.send_json(200, {"status": "ok"})
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
 
     # --------------------------------------------------------- visor vivo --
     def _set_live_target(self, account):

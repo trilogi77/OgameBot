@@ -42,6 +42,7 @@ cfg_spy = types.SimpleNamespace(enable_spy_watch=True, spy_watch_messages=True,
 msgs = run({20: [{"id": "5", "text": "Se ha detectado una flota del planeta [1:2:3] cerca de tu planeta [4:5:6]", "raw": {}}]},
            cfg_spy, tempfile.mkdtemp())
 assert "20-5" in msgs and msgs["20-5"]["category"] == "Espionaje", msgs
-assert "Te han espiado" in msgs["20-5"]["summary"] and "Telegram" not in msgs["20-5"]["summary"]
+assert "Te han espiado" in msgs["20-5"]["summary"], msgs["20-5"]["summary"]
+assert "no configurado" in msgs["20-5"]["summary"], msgs["20-5"]["summary"]
 
 print("OK")

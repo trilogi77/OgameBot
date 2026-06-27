@@ -1764,9 +1764,11 @@ class Brain:
                 t = economy.time_to_accumulate(cost, planet, self.cfg, plasma)
                 max_wait = getattr(self.cfg, "max_saving_hours_economy", 4.0)
                 if t <= max_wait:
-                    self.log.info("%s: ahorrando para instalaciones: %s (tiempo estimado: %.1fh)", 
+                    # No marcamos building_in_progress: nada se está construyendo aún. Si lo
+                    # marcáramos, _feed_step se saltaría este planeta-objetivo y nunca lo
+                    # alimentaría. El próximo ciclo reevalúa con el estado real del juego.
+                    self.log.info("%s: ahorrando para instalaciones: %s (tiempo estimado: %.1fh)",
                                   planet.coords, name, t)
-                    planet.building_in_progress = True
 
     # ------------------------------------------------------------------ #
     # Alimentación de recursos entre planetas (transporte para construir)
@@ -1853,12 +1855,19 @@ class Brain:
         if not choice:
             return None
         name, cost = choice
+        # El paso de construcción exige recursos*(1-buffer) >= coste, así que hay que
+        # alimentar hasta coste/(1-buffer); si solo llegáramos al coste exacto, el destino
+        # quedaría ~buffer% corto y nunca construiría (y el déficit caería a 0, en bucle).
+        buf = 1 - self.cfg.keep_resources_buffer
+        if buf <= 0:
+            buf = 1.0
+        target = Resources(cost.metal / buf, cost.crystal / buf, cost.deut / buf)
         avail = planet.resources
-        need = Resources(max(0.0, cost.metal - avail.metal),
-                         max(0.0, cost.crystal - avail.crystal),
-                         max(0.0, cost.deut - avail.deut))
+        need = Resources(max(0.0, target.metal - avail.metal),
+                         max(0.0, target.crystal - avail.crystal),
+                         max(0.0, target.deut - avail.deut))
         if need.total() <= 0:
-            return None   # ya puede pagarlo; lo construye el paso normal
+            return None   # ya puede pagarlo (con su colchón); lo construye el paso normal
         self.log.info("Alimentación: %s quiere %s (coste M:%d C:%d D:%d); le faltan M:%d C:%d D:%d",
                       planet.coords, name, int(cost.metal), int(cost.crystal), int(cost.deut),
                       int(need.metal), int(need.crystal), int(need.deut))
@@ -2316,6 +2325,7 @@ class Brain:
             "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
             "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}},
             "parsed_messages": [],
+            "spy_seen_at_boot": [],
             "session_actions": {
                 "buildings": {},
                 "research": [],
@@ -2328,9 +2338,11 @@ class Brain:
             }
         }
 
-        # Tab 20 = espionaje: lo incluimos para marcar como vistos los avisos de
-        # contraespionaje ya existentes y no soltar un alud de alertas al arrancar.
-        tabs = [20, 21, 22, 24]
+        # Combate/expedición/reciclaje: marcamos los previos como vistos (no contabilizamos
+        # loot antiguo). El espionaje (tab 20) va aparte: guardamos los avisos YA presentes
+        # en 'spy_seen_at_boot' para no soltar un alud al arrancar, pero SIN marcarlos
+        # 'parsed', de modo que cualquier aviso NUEVO sí dispare el Telegram.
+        tabs = [21, 22, 24]
         for tab_id in tabs:
             try:
                 msgs = self.client.read_message_reports(tab_id)
@@ -2340,6 +2352,13 @@ class Brain:
                         stats["parsed_messages"].append(msg_id)
             except Exception as e:
                 self.log.warning("No se pudieron leer mensajes previos del tab %d durante la inicialización: %s", tab_id, e)
+        try:
+            for m in self.client.read_message_reports(20):
+                sid = f"20-{m['id']}"
+                if sid not in stats["spy_seen_at_boot"]:
+                    stats["spy_seen_at_boot"].append(sid)
+        except Exception as e:
+            self.log.warning("No se pudieron leer avisos de espionaje previos al inicializar: %s", e)
 
         try:
             with open(stats_file, "w", encoding="utf-8") as f:
@@ -2455,6 +2474,7 @@ class Brain:
                 pass
 
         parsed_set = set(stats.get("parsed_messages", []))
+        spy_seen_at_boot = set(stats.get("spy_seen_at_boot", []))
         changed = False
 
         # --- Visor de mensajes leídos (lo consume la GUI vía /api/messages) ---
@@ -2678,9 +2698,15 @@ class Brain:
                     mine = coords[-1] if len(coords) > 1 else "?"
                     ce = re.search(r'contra-?espionaje[^\d]*(\d+)\s*%', tl)
                     ce_txt = f"{ce.group(1)}%" if ce else "?"
-                    entry["summary"] = f"🔍 Te han espiado desde [{origin}]" + (" (avisado por Telegram)" if tg_ok else "")
-                    self.log.info("Vigilancia de espionaje (mensaje): %s -> %s", origin, mine)
-                    if tg_ok:
+                    # No avisar del backlog que ya estaba al arrancar (evita el alud); sí de
+                    # cualquier aviso nuevo aparecido mientras el bot corre.
+                    is_backlog = msg_id in spy_seen_at_boot
+                    self.log.info("Vigilancia de espionaje (mensaje): %s -> %s%s",
+                                  origin, mine, " [previo al arranque, no aviso]" if is_backlog else "")
+                    if is_backlog:
+                        entry["summary"] = f"🔍 Te han espiado desde [{origin}] (ya estaba al arrancar)"
+                    elif tg_ok:
+                        entry["summary"] = f"🔍 Te han espiado desde [{origin}] (avisado por Telegram)"
                         alert = (
                             f"🔍 <b>¡Te han espiado en OGame!</b> (detectado)\n\n"
                             f"• <b>Desde:</b> [{origin}]\n"
@@ -2690,6 +2716,8 @@ class Brain:
                         )
                         utils.send_telegram_message(self.cfg.telegram_token,
                                                     self.cfg.telegram_chat_id, alert, logger=self.log)
+                    else:
+                        entry["summary"] = f"🔍 Te han espiado desde [{origin}] (Telegram no configurado)"
             except Exception as e:
                 self.log.debug("Error leyendo avisos de espionaje (tab 20): %s", e)
 

@@ -494,6 +494,9 @@ class Brain:
         if totals:
             self.log.info("Naves en vuelo: %s",
                           ", ".join(f"{k}:{v}" for k, v in totals.items()))
+        elif movements:
+            self.log.debug("Naves en vuelo: 0 sumadas de %d movimientos "
+                           "(¿sin desglose de naves en el tooltip?)", len(movements))
         return totals
 
     def _has_free_expe_slots(self) -> bool:
@@ -535,8 +538,10 @@ class Brain:
         slot_info = self.client.read_fleet_slots()
         # Leemos movimientos siempre: sirven de fallback para el conteo de slots y, sobre
         # todo, para sumar las naves en vuelo al inventario imperial de la GUI.
-        # ponytail: una navegación extra a event_list por ciclo; es barata.
-        mvs = self.client.read_movements()
+        # detailed=True -> página de movimientos, que trae el desglose por nave de cada flota
+        # propia. Sin esto las expediciones (miles de cargueros) no se sumaban al "en vuelo".
+        # ponytail: una sola navegación por ciclo; misma que antes, solo que a 'movement'.
+        mvs = self.client.read_movements(detailed=True)
         if slot_info:
             self.active_slots = slot_info.get("fleet_used", 0)
             self.total_fleet_slots = slot_info.get("fleet_total", 0)

@@ -2190,12 +2190,19 @@ class GameClient:
     # ------------------------------------------------------------------
     #  Movimientos y escombros
     # ------------------------------------------------------------------
-    def read_movements(self) -> List[dict]:
-        """Lee movimientos de flota activos."""
-        self._goto("event_list")
+    def read_movements(self, detailed: bool = False) -> List[dict]:
+        """Lee movimientos de flota activos.
+
+        detailed=True usa la página de movimientos (component=movement), que SÍ trae el
+        desglose por nave de cada flota propia en su tooltip — imprescindible para sumar las
+        naves en vuelo (sobre todo expediciones, miles de cargueros). event_list es más
+        ligero y muestra los ataques entrantes (lo usamos para el escape), pero no incluye
+        esa composición, así que con él las expediciones cuentan 0 naves.
+        """
+        self._goto("movement" if detailed else "event_list")
         try:
             self.page.wait_for_selector(
-                ".eventFleet, tr.flightEventRow",
+                ".eventFleet, tr.flightEventRow, .fleetDetails, .fleet_row",
                 timeout=5000,
             )
         except Exception:

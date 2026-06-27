@@ -33,6 +33,44 @@ from . import combat
 from .models import Coords, Resources, Planet
 from . import utils
 
+import re as _re
+
+# Nombres EXACTOS de naves como los muestra OGame (es/en) en las "Naves
+# encontradas" de un informe de expedición. El informe lista "Nombre <n>"
+# (nombre y luego la cifra). \b evita que "cruiser" cace dentro de
+# "battlecruiser" o "carga" en otra nave.
+EXPEDITION_SHIP_NAMES = [
+    ("large_cargo", ["nave grande de carga", "large cargo"]),
+    ("small_cargo", ["nave pequeña de carga", "small cargo"]),
+    ("light_fighter", ["cazador ligero", "light fighter"]),
+    ("heavy_fighter", ["cazador pesado", "heavy fighter"]),
+    ("cruiser", ["crucero", "cruiser"]),
+    ("battleship", ["nave de batalla", "battleship"]),
+    ("battlecruiser", ["acorazado", "battlecruiser"]),
+    ("bomber", ["bombardero", "bomber"]),
+    ("destroyer", ["destructor", "destroyer"]),
+    ("deathstar", ["estrella de la muerte", "deathstar"]),
+    ("reaper", ["segador", "reaper"]),
+    ("pathfinder", ["explorador", "pathfinder"]),
+    ("recycler", ["reciclador", "recycler"]),
+    ("espionage_probe", ["sonda de espionaje", "espionage probe"]),
+]
+
+
+def parse_found_ships(text: str) -> dict:
+    """{ship_key: cantidad} de las naves encontradas en un informe de expedición."""
+    found = {}
+    for ship_key, variants in EXPEDITION_SHIP_NAMES:
+        for variant in variants:
+            m = _re.search(r'\b' + _re.escape(variant) + r'\b\s*:?\s*\+?\s*([\d.,]+)',
+                           text, _re.IGNORECASE)
+            if m:
+                qty = int(_re.sub(r'[^\d]', '', m.group(1)) or 0)
+                if qty:
+                    found[ship_key] = found.get(ship_key, 0) + qty
+                break  # no contar es+en de la misma nave
+    return found
+
 
 class Brain:
     def __init__(self, cfg: Config):
@@ -2380,21 +2418,8 @@ class Brain:
                                    or num_from_text(text, ["materia oscura", "dark matter"]))
 
                     ships_found = stats["total_expeditions"].setdefault("ships_found", {})
-                    for ship_key, name_variants in [
-                        ("large_cargo", ["carguero grande", "large cargo"]),
-                        ("small_cargo", ["carguero pequeño", "small cargo"]),
-                        ("recycler", ["reciclador", "recycler"]),
-                        ("light_fighter", ["caza ligero", "light fighter"]),
-                        ("heavy_fighter", ["caza pesado", "heavy fighter"]),
-                        ("cruiser", ["crucero", "cruiser"]),
-                        ("battleship", ["nave de batalla", "battleship"]),
-                        ("espionage_probe", ["sonda", "espionage probe"])
-                    ]:
-                        for variant in name_variants:
-                            m_ship = re.search(r'([\d\.,]+)\s+' + variant + r'|' + variant + r':?\s*([\d\.,]+)', text, re.IGNORECASE)
-                            if m_ship:
-                                qty = clean_num(m_ship.group(1) or m_ship.group(2))
-                                ships_found[ship_key] = ships_found.get(ship_key, 0) + qty
+                    for sk, qty in parse_found_ships(text).items():
+                        ships_found[sk] = ships_found.get(sk, 0) + qty
 
                 stats[key]["metal"] = stats[key].get("metal", 0) + metal
                 stats[key]["crystal"] = stats[key].get("crystal", 0) + crystal

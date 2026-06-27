@@ -1571,17 +1571,21 @@ class Brain:
         if not destinos or not fuentes:
             return
 
-        # Destinos que YA tienen recursos en camino (transporte/deploy entrante): no
-        # volvemos a alimentarlos hasta que lleguen, para no mandar de más antes de tiempo.
-        inbound = set()
+        # Destinos que YA tienen un TRANSPORTE entrante (la alimentación siempre usa
+        # mission=transport): no reenviamos hasta que llegue, para no mandar de más.
+        # OJO: solo transporte, NO deploy — los fleetsave son deploy y darían falsos
+        # positivos que dejarían al destino sin alimentar.
+        inbound = {}
         for m in (movements or []):
             if m.get("is_hostile") or m.get("is_return"):
                 continue
             mission = str(m.get("mission", "")).lower()
-            if mission in ("3", "4") or "transport" in mission or "deploy" in mission:
-                d = m.get("destination", "").replace("[", "").replace("]", "").strip()
-                if d:
-                    inbound.add(d)
+            if not (mission == "3" or "transport" in mission):
+                continue
+            d = m.get("destination", "").replace("[", "").replace("]", "").strip()
+            o = m.get("origin", "").replace("[", "").replace("]", "").strip()
+            if d and d != o:
+                inbound.setdefault(d, m)
 
         for dst in destinos:
             # Si ya está construyendo algo, lo que pediría está en cola y pagado: no
@@ -1592,8 +1596,11 @@ class Brain:
                 continue
             dst_key = f"{dst.coords.galaxy}:{dst.coords.system}:{dst.coords.position}"
             if dst_key in inbound:
-                self.log.info("Alimentación: %s ya tiene un transporte en camino; espero a que llegue.",
-                              dst.coords)
+                mv = inbound[dst_key]
+                self.log.info("Alimentación: %s ya tiene un TRANSPORTE entrante (%s -> %s mision=%s ret=%s); "
+                              "espero a que llegue.",
+                              dst.coords, mv.get("origin"), mv.get("destination"),
+                              mv.get("mission"), mv.get("is_return"))
                 continue
             need = self._feed_deficit(dst)
             if not need:

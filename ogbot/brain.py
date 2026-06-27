@@ -1605,7 +1605,9 @@ class Brain:
             need = self._feed_deficit(dst)
             if not need:
                 continue
-            for src in fuentes:
+            # Fuente más cercana primero: menos deut de vuelo y llega antes.
+            srcs = sorted(fuentes, key=lambda s: gd.distance(s.coords.tuple(), dst.coords.tuple()))
+            for src in srcs:
                 if src.coords.tuple() == dst.coords.tuple():
                     continue
                 if not self._has_free_slots_for_mission():

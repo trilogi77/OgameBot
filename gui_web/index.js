@@ -257,6 +257,47 @@ btnClearLogs.addEventListener("click", () => {
     terminalConsole.innerHTML = '<div class="log-line text-muted">Pantalla limpia. Esperando nuevos registros...</div>';
 });
 
+const btnTestTelegram = document.getElementById("btnTestTelegram");
+if (btnTestTelegram) btnTestTelegram.addEventListener("click", testTelegram);
+
+function testTelegram() {
+    const token = getVal("telegram_token");
+    const chatId = getVal("telegram_chat_id");
+    const statusEl = document.getElementById("telegram_test_status");
+    const setStatus = (msg, ok) => {
+        if (!statusEl) return;
+        statusEl.textContent = msg;
+        statusEl.style.color = ok === undefined ? "" : (ok ? "var(--accent-success, #22c55e)" : "var(--accent-danger, #ef4444)");
+    };
+    if (!token || !chatId) {
+        setStatus("Rellena el token y el ID de chat primero.", false);
+        showToast("Faltan el token o el ID de chat de Telegram", "danger");
+        return;
+    }
+    setStatus("Enviando mensaje de prueba…");
+    btnTestTelegram.disabled = true;
+    fetch(api("/api/telegram/test"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, chat_id: chatId })
+    })
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) {
+                setStatus("Error: " + data.error, false);
+                showToast("Telegram: " + data.error, "danger");
+            } else {
+                setStatus("✅ Mensaje enviado. Revisa tu Telegram.", true);
+                showToast("Mensaje de prueba enviado a Telegram", "success");
+            }
+        })
+        .catch(err => {
+            setStatus("Error de red: " + err, false);
+            showToast("Error al probar Telegram: " + err, "danger");
+        })
+        .finally(() => { btnTestTelegram.disabled = false; });
+}
+
 // --------------------------------------------------------------------------
 // Gestión de Tabs (Pestañas)
 // --------------------------------------------------------------------------

@@ -327,6 +327,8 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.stop_bot(account)
         elif path == "/api/locator":
             self.run_locator(account)
+        elif path == "/api/telegram/test":
+            self.test_telegram(account)
         elif path == "/api/live/click":
             self.handle_live_click(account)
         elif path == "/api/live/type":
@@ -593,6 +595,42 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.send_json(200, {"output": stdout, "error": stderr})
         except Exception as e:
             self.send_json(500, {"error": str(e)})
+
+    # -------------------------------------------------------- test telegram --
+    def test_telegram(self, account):
+        """Envía un mensaje de prueba a Telegram y devuelve el resultado (síncrono)."""
+        import urllib.request
+        import urllib.error
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b"{}")
+        except Exception:
+            body = {}
+        token = (body.get("token") or "").strip()
+        chat_id = (body.get("chat_id") or "").strip()
+        # Si no vienen en el cuerpo, usar lo guardado en el config de la cuenta.
+        if (not token or not chat_id) and account:
+            cfg = read_account_config(account)
+            token = token or str(cfg.get("telegram_token", "")).strip()
+            chat_id = chat_id or str(cfg.get("telegram_chat_id", "")).strip()
+        if not token or not chat_id:
+            return self.send_json(400, {"error": "Falta el token o el ID de chat de Telegram"})
+        text = "✅ Mensaje de prueba de OGBot. Si lees esto, las notificaciones de Telegram funcionan correctamente."
+        data = json.dumps({"chat_id": chat_id, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data=data, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                resp.read()
+            self.send_json(200, {"status": "success"})
+        except urllib.error.HTTPError as e:
+            try:
+                detail = json.loads(e.read().decode("utf-8", "ignore")).get("description", "")
+            except Exception:
+                detail = ""
+            self.send_json(200, {"error": f"Telegram rechazó el envío ({e.code}): {detail or e.reason}"})
+        except Exception as e:
+            self.send_json(200, {"error": f"No se pudo contactar con Telegram: {e}"})
 
     # --------------------------------------------------------- visor vivo --
     def _set_live_target(self, account):

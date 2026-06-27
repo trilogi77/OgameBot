@@ -264,7 +264,12 @@
                                 <label for="telegram_chat_id">ID de Chat de Telegram</label>
                                 <input type="text" id="telegram_chat_id" placeholder="Ej: 987654321">
                             </div>
-                            
+
+                            <div class="form-group col-span-2" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                                <button type="button" id="btnTestTelegram" class="btn btn-secondary">📨 Probar Telegram</button>
+                                <span id="telegram_test_status" class="text-muted" style="font-size:13px;">Envía un mensaje de prueba al chat configurado.</span>
+                            </div>
+
                             <div class="form-group col-span-2">
                                 <div class="help-box" style="background: rgba(255, 255, 255, 0.03); padding: 16px; border-radius: 12px; font-size: 13px; line-height: 1.6; border: 1px solid rgba(255, 255, 255, 0.08); margin-top: 8px;">
                                     <strong style="color: #38bdf8; display: block; margin-bottom: 8px; font-size: 14px; display: flex; align-items: center; gap: 6px;">

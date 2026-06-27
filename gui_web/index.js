@@ -83,6 +83,7 @@ function switchAccount(id) {
     localStorage.setItem("ogbot_account", id);
     configLoaded = false;
     messagesCache = [];
+    lastMessagesSig = "";
     renderAccountSelect();
     renderAccountsTab();
     loadConfig();
@@ -963,6 +964,7 @@ function loadStats() {
 // Visor de mensajes leídos por el bot
 // --------------------------------------------------------------------------
 let messagesCache = [];
+let lastMessagesSig = "";   // evita repintar (y resetear el scroll) si no hay mensajes nuevos
 const MESSAGE_CAT_COLORS = {
     "Combate": "#ef4444", "Expedición": "#a78bfa",
     "Reciclaje": "#fbbf24", "Espionaje": "#38bdf8"
@@ -971,7 +973,14 @@ const MESSAGE_CAT_COLORS = {
 function loadMessages() {
     fetch(api("/api/messages"))
         .then(res => res.json())
-        .then(data => { messagesCache = data.messages || []; renderMessages(); })
+        .then(data => {
+            const msgs = data.messages || [];
+            const sig = msgs.length + "|" + (msgs.length ? msgs[msgs.length - 1].key : "");
+            if (sig === lastMessagesSig) return;   // sin cambios: no repintamos, así no se pierde el scroll
+            lastMessagesSig = sig;
+            messagesCache = msgs;
+            renderMessages();
+        })
         .catch(() => {});
 }
 

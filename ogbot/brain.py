@@ -2411,13 +2411,13 @@ class Brain:
             msgs = self.client.read_message_reports(tab_id)
             for m in msgs:
                 msg_id = f"{tab_id}-{m['id']}"
+                entry = record_msg(tab_id, m)  # registrar el texto aunque ya esté contabilizado
                 if msg_id in parsed_set:
                     continue
 
                 text = m.get("text", "") or ""
                 raw = m.get("raw", {}) or {}
                 dark_matter = 0
-                entry = record_msg(tab_id, m)
 
                 text_lower = text.lower()
                 # Filtrar mensajes de combate para registrar solo ataques exitosos propios
@@ -2484,11 +2484,12 @@ class Brain:
 
         # Avisos de contraespionaje (tab 20): "Se ha detectado una flota del planeta X
         # cerca de tu planeta Y". Rescata sondeos que el polling de movimientos no pilló.
-        if getattr(self.cfg, "enable_spy_watch", True) and getattr(self.cfg, "spy_watch_messages", True) \
-           and getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""):
+        if getattr(self.cfg, "enable_spy_watch", True) and getattr(self.cfg, "spy_watch_messages", True):
+            tg_ok = bool(getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""))
             try:
                 for m in self.client.read_message_reports(20):
                     msg_id = f"20-{m['id']}"
+                    entry = record_msg(20, m)  # registrar el texto siempre (lo lea o no Telegram)
                     if msg_id in parsed_set:
                         continue
                     parsed_set.add(msg_id)
@@ -2496,7 +2497,6 @@ class Brain:
                     changed = True
                     text = m.get("text", "") or ""
                     tl = text.lower()
-                    entry = record_msg(20, m)
                     # Solo las notificaciones de "me han espiado", no mis propios informes.
                     if ("se ha detectado una flota" not in tl and "cerca de tu planeta" not in tl
                             and "near your planet" not in tl):
@@ -2507,17 +2507,18 @@ class Brain:
                     mine = coords[-1] if len(coords) > 1 else "?"
                     ce = re.search(r'contra-?espionaje[^\d]*(\d+)\s*%', tl)
                     ce_txt = f"{ce.group(1)}%" if ce else "?"
-                    alert = (
-                        f"🔍 <b>¡Te han espiado en OGame!</b> (detectado)\n\n"
-                        f"• <b>Desde:</b> [{origin}]\n"
-                        f"• <b>Tu ubicación:</b> [{mine}]\n"
-                        f"• <b>Prob. contraespionaje:</b> {ce_txt}\n\n"
-                        f"<i>Un sondeo suele preceder a un ataque.</i>"
-                    )
-                    entry["summary"] = f"🔍 Te han espiado desde [{origin}] (avisado por Telegram)"
+                    entry["summary"] = f"🔍 Te han espiado desde [{origin}]" + (" (avisado por Telegram)" if tg_ok else "")
                     self.log.info("Vigilancia de espionaje (mensaje): %s -> %s", origin, mine)
-                    utils.send_telegram_message(self.cfg.telegram_token,
-                                                self.cfg.telegram_chat_id, alert, logger=self.log)
+                    if tg_ok:
+                        alert = (
+                            f"🔍 <b>¡Te han espiado en OGame!</b> (detectado)\n\n"
+                            f"• <b>Desde:</b> [{origin}]\n"
+                            f"• <b>Tu ubicación:</b> [{mine}]\n"
+                            f"• <b>Prob. contraespionaje:</b> {ce_txt}\n\n"
+                            f"<i>Un sondeo suele preceder a un ataque.</i>"
+                        )
+                        utils.send_telegram_message(self.cfg.telegram_token,
+                                                    self.cfg.telegram_chat_id, alert, logger=self.log)
             except Exception as e:
                 self.log.debug("Error leyendo avisos de espionaje (tab 20): %s", e)
 

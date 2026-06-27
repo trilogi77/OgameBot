@@ -274,7 +274,7 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
-        account = parse_qs(parsed.query).get("account", [None])[0]
+        account = safe_account_id(parse_qs(parsed.query).get("account", [None])[0]) or None
 
         if path in ("/", "/index.html"):
             self.serve_static("gui_web/index.html", "text/html")
@@ -313,7 +313,7 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
-        account = parse_qs(parsed.query).get("account", [None])[0]
+        account = safe_account_id(parse_qs(parsed.query).get("account", [None])[0]) or None
 
         if path == "/api/accounts/create":
             self.create_account()

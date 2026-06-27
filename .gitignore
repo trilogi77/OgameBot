@@ -6,6 +6,7 @@ ogame_session.json
 state.json
 planets_cache.json
 ogbot_stats.json
+messages_read.json
 bot.pid
 
 # Logs de ejecución

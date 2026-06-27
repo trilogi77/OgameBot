@@ -2286,6 +2286,50 @@ class Brain:
         parsed_set = set(stats.get("parsed_messages", []))
         changed = False
 
+        # --- Visor de mensajes leídos (lo consume la GUI vía /api/messages) ---
+        msg_log_file = "messages_read.json"
+        msg_log = []
+        if os.path.exists(msg_log_file):
+            try:
+                with open(msg_log_file, "r", encoding="utf-8") as f:
+                    msg_log = json.load(f).get("messages", [])
+            except Exception:
+                msg_log = []
+        log_index = {e.get("key"): e for e in msg_log}
+        log_changed = [False]
+        cat_names = {21: "Combate", 22: "Expedición", 24: "Reciclaje", 20: "Espionaje"}
+        ship_es = {k: v[0] for k, v in EXPEDITION_SHIP_NAMES}
+
+        def record_msg(tab_id, m):
+            """Registra (una vez) el texto íntegro de un mensaje leído. Devuelve su entrada."""
+            key = f"{tab_id}-{m['id']}"
+            if key in log_index:
+                return log_index[key]
+            txt = (m.get("text", "") or "").strip()
+            if len(txt) > 4000:
+                txt = txt[:4000] + "…"
+            entry = {
+                "key": key, "tab": tab_id,
+                "category": cat_names.get(tab_id, str(tab_id)),
+                "ts": time.strftime("%Y-%m-%d %H:%M"),
+                "text": txt, "summary": "",
+            }
+            msg_log.append(entry)
+            log_index[key] = entry
+            log_changed[0] = True
+            return entry
+
+        def fmt_extracted(metal, crystal, deut, dark_matter, ships):
+            f = lambda n: f"{n:,}".replace(",", ".")
+            parts = []
+            if metal: parts.append(f"Metal {f(metal)}")
+            if crystal: parts.append(f"Cristal {f(crystal)}")
+            if deut: parts.append(f"Deuterio {f(deut)}")
+            if dark_matter: parts.append(f"Materia oscura {f(dark_matter)}")
+            for sk, q in (ships or {}).items():
+                parts.append(f"+{f(q)} {ship_es.get(sk, sk)}")
+            return " · ".join(parts) if parts else "Sin recursos ni naves"
+
         tabs = {
             21: "total_farming",
             22: "total_expeditions",
@@ -2373,6 +2417,7 @@ class Brain:
                 text = m.get("text", "") or ""
                 raw = m.get("raw", {}) or {}
                 dark_matter = 0
+                entry = record_msg(tab_id, m)
 
                 text_lower = text.lower()
                 # Filtrar mensajes de combate para registrar solo ataques exitosos propios
@@ -2380,6 +2425,7 @@ class Brain:
                     is_win = ("has ganado" in text_lower or "you won" in text_lower or "gewonnen" in text_lower)
                     is_loss_to_attacker = ("el atacante ha ganado" in text_lower or "the attacker has won" in text_lower or "der angreifer hat gewonnen" in text_lower)
                     if not is_win or is_loss_to_attacker:
+                        entry["summary"] = "Combate no ganado u hostil (no contabilizado)"
                         parsed_set.add(msg_id)
                         stats["parsed_messages"].append(msg_id)
                         changed = True
@@ -2387,10 +2433,11 @@ class Brain:
 
                 # Filtrar mensajes del tab "Otros" para procesar solo informes de reciclaje reales
                 elif key == "total_recycling":
-                    is_rec = ("reciclador" in text_lower or "recycler" in text_lower or 
-                              "escombros" in text_lower or "debris" in text_lower or 
+                    is_rec = ("reciclador" in text_lower or "recycler" in text_lower or
+                              "escombros" in text_lower or "debris" in text_lower or
                               "recolecci" in text_lower or "trümmerfeld" in text_lower)
                     if not is_rec:
+                        entry["summary"] = "No es informe de reciclaje (no contabilizado)"
                         parsed_set.add(msg_id)
                         stats["parsed_messages"].append(msg_id)
                         changed = True
@@ -2413,13 +2460,17 @@ class Brain:
                     self.log.debug("Mensaje %s sin recursos extraídos. raw=%s txt=%.120s",
                                    msg_id, raw, text.replace("\n", " "))
 
+                found_ships = {}
                 if key == "total_expeditions":
                     dark_matter = (num_from_raw(raw, "darkmatter", "dark_matter")
                                    or num_from_text(text, ["materia oscura", "dark matter"]))
 
+                    found_ships = parse_found_ships(text)
                     ships_found = stats["total_expeditions"].setdefault("ships_found", {})
-                    for sk, qty in parse_found_ships(text).items():
+                    for sk, qty in found_ships.items():
                         ships_found[sk] = ships_found.get(sk, 0) + qty
+
+                entry["summary"] = fmt_extracted(metal, crystal, deut, dark_matter, found_ships)
 
                 stats[key]["metal"] = stats[key].get("metal", 0) + metal
                 stats[key]["crystal"] = stats[key].get("crystal", 0) + crystal
@@ -2445,9 +2496,11 @@ class Brain:
                     changed = True
                     text = m.get("text", "") or ""
                     tl = text.lower()
+                    entry = record_msg(20, m)
                     # Solo las notificaciones de "me han espiado", no mis propios informes.
                     if ("se ha detectado una flota" not in tl and "cerca de tu planeta" not in tl
                             and "near your planet" not in tl):
+                        entry["summary"] = "Otro mensaje (sin aviso de espionaje)"
                         continue
                     coords = re.findall(r'\[(\d+:\d+:\d+)\]', text)
                     origin = coords[0] if coords else "?"
@@ -2461,6 +2514,7 @@ class Brain:
                         f"• <b>Prob. contraespionaje:</b> {ce_txt}\n\n"
                         f"<i>Un sondeo suele preceder a un ataque.</i>"
                     )
+                    entry["summary"] = f"🔍 Te han espiado desde [{origin}] (avisado por Telegram)"
                     self.log.info("Vigilancia de espionaje (mensaje): %s -> %s", origin, mine)
                     utils.send_telegram_message(self.cfg.telegram_token,
                                                 self.cfg.telegram_chat_id, alert, logger=self.log)
@@ -2474,6 +2528,14 @@ class Brain:
                 self.log.info("Estadísticas imperiales actualizadas en ogbot_stats.json.")
             except Exception as e:
                 self.log.debug("No se pudo escribir ogbot_stats.json: %s", e)
+
+        if log_changed[0]:
+            try:
+                del msg_log[:-300]  # acotar el fichero a los 300 mensajes más recientes
+                with open(msg_log_file, "w", encoding="utf-8") as f:
+                    json.dump({"messages": msg_log}, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                self.log.debug("No se pudo escribir messages_read.json: %s", e)
 
     def _calculate_panic_build(self, planet: Planet) -> Dict[str, int]:
         """

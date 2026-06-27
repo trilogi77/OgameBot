@@ -82,11 +82,13 @@ function switchAccount(id) {
     currentAccount = id;
     localStorage.setItem("ogbot_account", id);
     configLoaded = false;
+    messagesCache = [];
     renderAccountSelect();
     renderAccountsTab();
     loadConfig();
     loadPlanets();
     loadStats();
+    loadMessages();
     loadLogs();
     checkBotStatus();
     loadExpeditionStatus();
@@ -164,9 +166,12 @@ window.addEventListener("DOMContentLoaded", () => {
         checkBotStatus();
         loadLogs();
         loadStats();
+        loadMessages();
         loadExpeditionStatus();
         loadBuildStatus();
     });
+    const msgFilter = document.getElementById("messages_filter");
+    if (msgFilter) msgFilter.addEventListener("change", renderMessages);
     initColonyLocator();
     
     const defSelect = document.getElementById("defense_planet_select");
@@ -203,6 +208,7 @@ window.addEventListener("DOMContentLoaded", () => {
     setInterval(loadLogs, 2000);
     setInterval(loadPlanets, 5000); // Recargar planetas si se detectan nuevos en vivo
     setInterval(loadStats, 4000);
+    setInterval(loadMessages, 4000);
     setInterval(loadExpeditionStatus, 2000);
     setInterval(loadBuildStatus, 2000);
     setInterval(loadAccounts, 4000);
@@ -951,6 +957,74 @@ function loadStats() {
             renderSessionActions(data.session_actions || null);
         })
         .catch(err => console.error("Error al cargar estadísticas:", err));
+}
+
+// --------------------------------------------------------------------------
+// Visor de mensajes leídos por el bot
+// --------------------------------------------------------------------------
+let messagesCache = [];
+const MESSAGE_CAT_COLORS = {
+    "Combate": "#ef4444", "Expedición": "#a78bfa",
+    "Reciclaje": "#fbbf24", "Espionaje": "#38bdf8"
+};
+
+function loadMessages() {
+    fetch(api("/api/messages"))
+        .then(res => res.json())
+        .then(data => { messagesCache = data.messages || []; renderMessages(); })
+        .catch(() => {});
+}
+
+function renderMessages() {
+    const listEl = document.getElementById("messages_list");
+    if (!listEl) return;
+    const countEl = document.getElementById("messages_count");
+    const filterEl = document.getElementById("messages_filter");
+    const filter = filterEl ? filterEl.value : "";
+
+    let msgs = messagesCache.slice().reverse(); // el más reciente arriba
+    if (filter) msgs = msgs.filter(m => m.category === filter);
+    if (countEl) countEl.innerText = msgs.length;
+
+    if (!msgs.length) {
+        listEl.innerHTML = `<div class="text-muted" style="font-size:13px; padding:4px;">No hay mensajes${filter ? " de esa categoría" : ""} todavía.</div>`;
+        return;
+    }
+
+    listEl.innerHTML = "";
+    msgs.forEach(m => {
+        const item = document.createElement("div");
+        item.className = "session-list-item";
+        item.style.flexDirection = "column";
+        item.style.alignItems = "stretch";
+        item.style.borderLeftColor = MESSAGE_CAT_COLORS[m.category] || "var(--accent-primary, #8a2be2)";
+
+        const head = document.createElement("div");
+        head.style.cssText = "display:flex; justify-content:space-between; gap:8px; margin-bottom:4px;";
+        const cat = document.createElement("span");
+        cat.className = "session-item-name";
+        cat.textContent = m.category || ("Tab " + m.tab);
+        const time = document.createElement("span");
+        time.className = "session-item-time";
+        time.textContent = m.ts || "";
+        head.appendChild(cat);
+        head.appendChild(time);
+        item.appendChild(head);
+
+        if (m.summary) {
+            const summary = document.createElement("div");
+            summary.style.cssText = "font-size:12px; color: var(--text-secondary, #9aa); margin-bottom:6px;";
+            summary.textContent = m.summary;
+            item.appendChild(summary);
+        }
+
+        const body = document.createElement("pre");
+        body.className = "message-text";
+        body.textContent = m.text || "";   // textContent => el texto del juego no puede inyectar HTML
+        item.appendChild(body);
+
+        listEl.appendChild(item);
+    });
 }
 
 function setText(id, val) {

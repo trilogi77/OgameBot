@@ -326,6 +326,8 @@ function mapConfigToUI(cfg) {
     setCheck("enable_attack_escape", cfg.enable_attack_escape);
     setVal("attack_check_min_mins", Math.round((cfg.attack_check_interval_min_s !== undefined ? cfg.attack_check_interval_min_s : 300) / 60));
     setVal("attack_check_max_mins", Math.round((cfg.attack_check_interval_max_s !== undefined ? cfg.attack_check_interval_max_s : 780) / 60));
+    setCheck("enable_spy_watch", cfg.enable_spy_watch !== false);
+    setVal("spy_watch_cooldown_mins", cfg.spy_watch_cooldown_mins !== undefined ? cfg.spy_watch_cooldown_mins : 30);
     setCheck("enable_fleetsave", cfg.enable_fleetsave);
     setVal("fleetsave_mission", cfg.fleetsave_mission || "deploy");
     setCheck("fleetsave_carry_resources", cfg.fleetsave_carry_resources !== false);
@@ -444,6 +446,8 @@ function saveChanges() {
     globalConfig.enable_attack_escape = getCheck("enable_attack_escape");
     globalConfig.attack_check_interval_min_s = (parseInt(getVal("attack_check_min_mins")) || 5) * 60;
     globalConfig.attack_check_interval_max_s = (parseInt(getVal("attack_check_max_mins")) || 13) * 60;
+    globalConfig.enable_spy_watch = getCheck("enable_spy_watch");
+    globalConfig.spy_watch_cooldown_mins = parseInt(getVal("spy_watch_cooldown_mins")) || 30;
     globalConfig.enable_fleetsave = getCheck("enable_fleetsave");
     globalConfig.fleetsave_mission = getVal("fleetsave_mission");
     globalConfig.fleetsave_carry_resources = getCheck("fleetsave_carry_resources");

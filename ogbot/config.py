@@ -155,6 +155,9 @@ class Config:
     # no dar un patrón fijo de sondeo que delate el bot (5-13 min por defecto).
     attack_check_interval_min_s: int = 300
     attack_check_interval_max_s: int = 780
+    # Vigilancia de espionaje entrante (misión 6): avisa por Telegram cuando te sondean.
+    enable_spy_watch: bool = True
+    spy_watch_cooldown_mins: int = 30   # no re-avisar del mismo origen dentro de este tiempo
     fleetsave_mission: str = "deploy"        # deploy/transport/expedition
     fleetsave_carry_resources: bool = True   # llevarse los recursos del planeta en el fleetsave
     fleetsave_recall_halfway: bool = False   # retornar despliegues a mitad del descanso

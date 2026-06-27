@@ -140,6 +140,8 @@ enable_fleetsave: true
 enable_attack_escape: true
 attack_check_interval_min_s: 300   # comprobar ataques cada [min,max] s (aleatorio)
 attack_check_interval_max_s: 780   # 5-13 min: evita un patrón fijo de sondeo
+enable_spy_watch: true             # avisar por Telegram si te sondean (misión 6 entrante)
+spy_watch_cooldown_mins: 30        # no re-avisar del mismo origen dentro de este tiempo
 fleetsave_mission: deploy
 fleetsave_prefer_moon: true    # preferir destino luna en el fleetsave (no escaneable por phalanx)
 # Barrido nocturno: cada N horas durante el descanso, despierta y vacía (fleetsave)

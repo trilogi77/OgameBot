@@ -52,6 +52,7 @@ class Brain:
         self.escaped_fleets: List[dict] = []
         self.attack_history: Dict[str, float] = {}
         self.telegram_notified_attacks: Dict[str, float] = {}
+        self._spy_seen: Dict[str, float] = {}   # cooldown de avisos de espionaje por origen->destino
         self.last_economy_run_time = 0.0
         self.last_farming_run_time = 0.0
         self.last_expeditions_run_time = 0.0
@@ -76,6 +77,7 @@ class Brain:
                     data = json.load(f)
                     self.attack_history = data.get("attack_history", {})
                     self.telegram_notified_attacks = data.get("telegram_notified_attacks", {})
+                    self._spy_seen = data.get("spy_seen", {})
                     self.last_economy_run_time = data.get("last_economy_run_time", 0.0)
                     self.last_farming_run_time = data.get("last_farming_run_time", 0.0)
                     self.last_expeditions_run_time = data.get("last_expeditions_run_time", 0.0)
@@ -97,10 +99,13 @@ class Brain:
                 k: arr_epoch for k, arr_epoch in self.telegram_notified_attacks.items()
                 if arr_epoch > now - 7200
             }
+            spy_cd = max(3600, int(getattr(self.cfg, "spy_watch_cooldown_mins", 30)) * 60)
+            self._spy_seen = {k: t for k, t in self._spy_seen.items() if t > now - spy_cd}
             with open(self.cfg.state_file, "w", encoding="utf-8") as f:
                 json.dump({
                     "attack_history": self.attack_history,
                     "telegram_notified_attacks": self.telegram_notified_attacks,
+                    "spy_seen": self._spy_seen,
                     "last_economy_run_time": self.last_economy_run_time,
                     "last_farming_run_time": self.last_farming_run_time,
                     "last_expeditions_run_time": self.last_expeditions_run_time,
@@ -1845,6 +1850,39 @@ class Brain:
             lo, hi = hi, lo
         return random.uniform(lo, hi)
 
+    def _watch_incoming_spy(self, mvs, our_by_coords):
+        """Avisa por Telegram de espionaje hostil entrante (misión 6) a coords propias.
+        Un sondeo suele preceder a un ataque. Cooldown por origen para no spamear con
+        las sondas de rutina de los vecinos."""
+        if not getattr(self.cfg, "enable_spy_watch", True):
+            return
+        if not (getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", "")):
+            return
+        now = time.time()
+        cooldown = max(0, int(getattr(self.cfg, "spy_watch_cooldown_mins", 30))) * 60
+        for mv in mvs:
+            if str(mv.get("mission", "")) != "6" or mv.get("is_return", False):
+                continue
+            dest = mv.get("destination", "")
+            if dest not in our_by_coords:
+                continue
+            origin = mv.get("origin", "Desconocido")
+            key = f"{origin}->{dest}"
+            if key in self._spy_seen and now - self._spy_seen[key] < cooldown:
+                continue
+            self._spy_seen[key] = now
+            self._save_state()
+            msg = (
+                f"🔍 <b>¡Te están sondeando en OGame!</b>\n\n"
+                f"• <b>Origen:</b> [{origin}]\n"
+                f"• <b>Destino:</b> [{dest}]\n"
+                f"• <b>Llegada de las sondas:</b> {mv.get('arrival_text', '')}\n\n"
+                f"<i>Un sondeo suele preceder a un ataque. Revisa o saca la flota.</i>"
+            )
+            self.log.info("Vigilancia de espionaje: sondeo entrante %s", key)
+            utils.send_telegram_message(self.cfg.telegram_token, self.cfg.telegram_chat_id,
+                                        msg, logger=self.log)
+
     def _check_and_escape_attacks(self):
         if not getattr(self.cfg, "enable_attack_escape", True):
             return
@@ -1934,6 +1972,9 @@ class Brain:
                         logger=self.log
                     )
                     
+        # 1b. Vigilancia de espionaje entrante (misión 6): solo avisa, no evade.
+        self._watch_incoming_spy(mvs, our_by_coords)
+
         # 2. Iniciar evasión para planetas o lunas bajo ataque que no hayamos evadido todavía
         for dest_key, arrival_seconds in under_attack.items():
             try:

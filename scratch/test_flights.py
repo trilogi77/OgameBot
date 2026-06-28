@@ -52,13 +52,23 @@ mv_abs = [{"mission": "3", "origin": "1:2:3", "destination": "1:2:4",
            "arrival_text": "0:10:00", "arrival_epoch": 5000, "ships": {}}]
 assert build_flights(mv_abs, 1000.0)[0]["arrival_epoch"] == 5000
 
-# departure_epoch desde el reversal absoluto de OGame: salida = 2*now - reversal.
+# departure_epoch desde el reversal absoluto de OGame (epoch unix): salida = 2*now - reversal.
+NOW = 2_000_000_000
 mv_rev = [{"mission": "3", "origin": "1:2:3", "destination": "1:2:4",
-           "arrival_text": "0:10:00", "reversal_epoch": 1500, "ships": {}}]
-assert build_flights(mv_rev, 1000.0)[0]["departure_epoch"] == 500
+           "arrival_text": "0:10:00", "reversal_epoch": NOW + 300, "ships": {}}]   # vuelve en 300 s
+assert build_flights(mv_rev, float(NOW))[0]["departure_epoch"] == NOW - 300
 # departure_epoch desde el contador de regreso (lo ya volado): salida = now - 500.
 mv_rt = [{"mission": "3", "origin": "1:2:3", "destination": "1:2:4",
           "arrival_text": "0:10:00", "reversal_text": "0:08:20", "ships": {}}]  # 500 s
 assert build_flights(mv_rt, 1000.0)[0]["departure_epoch"] == 500
+
+# departure_epoch desde fecha+hora absoluta del hover (vuelve_en = epoch de esa fecha).
+import time as _t
+ret = _t.mktime((2030, 1, 1, 0, 30, 0, 0, 0, -1))   # hora de retorno conocida (local)
+now_dt = ret - 600                                   # ahora, 10 min antes del retorno
+mv_dt = [{"mission": "3", "origin": "1:2:3", "destination": "1:2:4", "arrival_text": "0:10:00",
+          "reversal_text": "El regreso será el 01.01.2030 00:30:00", "ships": {}}]
+dep = build_flights(mv_dt, now_dt)[0]["departure_epoch"]
+assert abs(dep - (ret - 1200)) <= 2, dep   # salida = 2*now - ret = ret - 1200
 
 print("OK")

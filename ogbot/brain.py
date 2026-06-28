@@ -118,6 +118,72 @@ def _flight_sig(f):
             int(f.get("arrival_epoch", 0)) // 60)
 
 
+_REV_DT = _re.compile(r'(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})\D+(\d{1,2}):(\d{2}):(\d{2})')
+_REV_CLOCK = _re.compile(r'(?<!\d)(\d{1,2}):(\d{2}):(\d{2})(?!\d)')
+
+
+def _clock_to_future_epoch(hh, mm, ss, now):
+    """Epoch de la próxima ocurrencia (hoy o mañana) de una hora HH:MM:SS en hora local."""
+    import time as _t
+    lt = _t.localtime(now)
+    try:
+        cand = _t.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, hh, mm, ss, 0, 0, -1))
+    except (ValueError, OverflowError):
+        return 0
+    if cand <= now:
+        cand += 86400
+    return cand
+
+
+def _reversal_departure(reversal_epoch, reversal_text, now):
+    """Estima la SALIDA de la flota (epoch) a partir de la info de 'reversal' de OGame (la
+    hora a la que volvería si se recupera ahora). Con ella la GUI calcula en vivo esa hora:
+    vuelve_en(t) = t + (t - salida). Devuelve 0 si no se pudo determinar.
+
+    Acepta varios formatos: epoch absoluto (data-*), epoch en el texto, fecha+hora absoluta
+    'DD.MM.YYYY HH:MM:SS', o solo 'HH:MM:SS' (probando como hora absoluta y, si no encaja,
+    como contador del regreso = lo ya volado)."""
+    def from_abs(ep):
+        dep = round(2 * now - ep)
+        return dep if now - 31 * 86400 < dep < now else 0
+
+    try:
+        ep = int(reversal_epoch or 0)
+    except (TypeError, ValueError):
+        ep = 0
+    if ep > 1_000_000_000:
+        return from_abs(ep)
+
+    txt = (reversal_text or "").strip()
+    if not txt:
+        return 0
+    m = _re.search(r'\b(1\d{9})\b', txt)            # epoch incrustado en el texto
+    if m:
+        return from_abs(int(m.group(1)))
+    m = _REV_DT.search(txt)                          # fecha + hora absoluta
+    if m:
+        import time as _t
+        d, mo, y, hh, mm, ss = (int(x) for x in m.groups())
+        if y < 100:
+            y += 2000
+        try:
+            return from_abs(_t.mktime((y, mo, d, hh, mm, ss, 0, 0, -1)))
+        except (ValueError, OverflowError):
+            pass
+    m = _REV_CLOCK.search(txt)                       # solo HH:MM:SS
+    if m:
+        hh, mm, ss = (int(m.group(i)) for i in (1, 2, 3))
+        abs_ep = _clock_to_future_epoch(hh, mm, ss, now)   # (a) hora absoluta de regreso
+        if abs_ep:
+            dep = from_abs(abs_ep)
+            if dep:
+                return dep
+        secs = hh * 3600 + mm * 60 + ss                    # (b) contador del regreso
+        if 0 < secs < 2592000:
+            return round(now - secs)
+    return 0
+
+
 def build_flights(mvs, now, prev=None):
     """Convierte movimientos crudos de read_movements() en vuelos para la GUI.
 
@@ -148,22 +214,8 @@ def build_flights(mvs, now, prev=None):
         else:
             secs = parse_time_to_seconds(arrival_text)
             arrival_epoch = round(now + secs) if secs is not None else 0
-        # Salida estimada, para la hora de vuelta si se recupera: el regreso dura lo ya
-        # volado, así que vuelve_en(t) = t + (t - salida). OGame da el 'reversal' (vuelta si
-        # se recall AHORA) = now + (now - salida) -> salida = 2*now - reversal.
-        departure_epoch = 0
-        try:
-            rev_abs = int(mv.get("reversal_epoch") or 0)
-        except (TypeError, ValueError):
-            rev_abs = 0
-        if rev_abs > 0:
-            departure_epoch = round(2 * now - rev_abs)
-        else:
-            rev_secs = parse_time_to_seconds(mv.get("reversal_text", "") or "")
-            if rev_secs and rev_secs < 2592000:   # contador de regreso (lo ya volado)
-                departure_epoch = round(now - rev_secs)
-        if departure_epoch and departure_epoch >= now:
-            departure_epoch = 0   # la salida debe estar en el pasado; si no, descartar
+        # Salida estimada (para la hora de vuelta si se recupera), derivada del 'reversal'.
+        departure_epoch = _reversal_departure(mv.get("reversal_epoch"), mv.get("reversal_text"), now)
         mcode = str(mv.get("mission", ""))
         f = {
             "mission": MISSION_NAMES_ES.get(mcode, mcode or "?"),
@@ -177,6 +229,7 @@ def build_flights(mvs, now, prev=None):
             "arrival_text": arrival_text,
             "arrival_epoch": arrival_epoch,
             "departure_epoch": departure_epoch,
+            "reversal_raw": (mv.get("reversal_text", "") or "")[:80],   # para depurar el formato
             "ships": ships,
             "cargo": cargo,
         }

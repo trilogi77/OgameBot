@@ -308,17 +308,30 @@ _JS_READ_MOVEMENTS = """() => {
             }
             mv.arrival_epoch = absEp;
 
-            // 6c. Reversal: OGame muestra cuándo volvería la flota si la recuperas ahora
-            // (el regreso dura lo ya volado). Capturamos su epoch/texto si está, para
-            // derivar la SALIDA y mostrar la hora de vuelta en vivo en la GUI.
-            const revEl = row.querySelector(
-                '.reversal_time, [class*="reversal"] [data-arrival-time], a.reversal, [class*="reversal"]'
-            );
+            // 6c. Reversal: OGame indica (en el hover del botón de regreso) cuándo volvería
+            // la flota si la recuperas ahora. Capturamos de forma exhaustiva su epoch/texto
+            // para derivar la SALIDA y mostrar la hora de vuelta en vivo en la GUI.
             let revEp = 0, revTxt = '';
-            if (revEl) {
-                revEp = parseInt(revEl.getAttribute('data-arrival-time')
-                                 || revEl.getAttribute('data-time') || '0') || 0;
-                revTxt = (revEl.getAttribute('title') || revEl.textContent || '').trim();
+            const isEpoch = v => { const n = parseInt(v); return (n > 1000000000 && n < 4000000000) ? n : 0; };
+            const revEls = row.querySelectorAll(
+                'a.reversal, a.reversal_flight, .reversal_flight, .reversal_time, [class*="reversal"], a[onclick*="sendRecall"]'
+            );
+            for (const el of revEls) {
+                // epoch en cualquier data-* del elemento o sus descendientes
+                for (const a of (el.attributes || [])) {
+                    if (a.name.indexOf('data-') === 0) { revEp = revEp || isEpoch(a.value); }
+                }
+                if (!revEp) {
+                    const c = el.querySelector('[data-arrival-time], [data-time], [data-end]');
+                    if (c) revEp = isEpoch(c.getAttribute('data-arrival-time'))
+                                   || isEpoch(c.getAttribute('data-time'))
+                                   || isEpoch(c.getAttribute('data-end'));
+                }
+                if (!revTxt) {
+                    const t = (el.getAttribute('title') || el.textContent || '').trim();
+                    if (t) revTxt = t;
+                }
+                if (revEp) break;
             }
             mv.reversal_epoch = revEp;
             mv.reversal_text = revTxt;

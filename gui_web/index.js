@@ -1310,6 +1310,15 @@ function flightCargoText(cargo) {
     return parts.join(" · ");
 }
 
+// Hora de un epoch; añade el día (dd/mm) si no es hoy, para que se vea cuándo llega.
+function flightWhen(ep) {
+    if (!ep) return "—";
+    const d = new Date(ep * 1000);
+    const t = d.toLocaleTimeString();
+    if (d.toDateString() === new Date().toDateString()) return t;
+    return d.toLocaleDateString(undefined, { day: "2-digit", month: "2-digit" }) + " " + t;
+}
+
 function flightMissionColor(fl) {
     return fl.is_hostile ? "#ef4444" : (MISSION_COLORS[fl.mission] || "var(--accent-primary, #8a2be2)");
 }
@@ -1352,7 +1361,6 @@ function renderFlights() {
     }
 
     ensureFlightsTableStyle();
-    const clock = ep => ep ? new Date(ep * 1000).toLocaleTimeString() : "—";
     listEl.innerHTML = "";
     const wrap = document.createElement("div");
     wrap.className = "flights-wrap";
@@ -1386,12 +1394,12 @@ function renderFlights() {
         tr.appendChild(tdE);
 
         const tdA = document.createElement("td");
-        tdA.textContent = clock(fl.arrival_epoch);
+        tdA.textContent = flightWhen(fl.arrival_epoch);
         tr.appendChild(tdA);
 
         // Retorno natural del viaje de ida y vuelta (pata de vuelta agrupada).
         const tdH = document.createElement("td");
-        tdH.textContent = fl.return_arrival_epoch ? "↩ " + clock(fl.return_arrival_epoch) : "—";
+        tdH.textContent = fl.return_arrival_epoch ? "↩ " + flightWhen(fl.return_arrival_epoch) : "—";
         tr.appendChild(tdH);
 
         // Acción: Regresar + estimación de la hora de vuelta si se recupera AHORA.
@@ -1491,9 +1499,9 @@ function updateFlightTimers() {
         if (!arrival) return;
         const rem = Math.max(0, Math.round(arrival - nowServer));
         const pad = n => String(n).padStart(2, "0");
-        el.textContent = rem > 0
-            ? `${Math.floor(rem / 3600)}:${pad(Math.floor((rem % 3600) / 60))}:${pad(rem % 60)}`
-            : "Llegó";
+        const days = Math.floor(rem / 86400);
+        const hms = `${pad(Math.floor((rem % 86400) / 3600))}:${pad(Math.floor((rem % 3600) / 60))}:${pad(rem % 60)}`;
+        el.textContent = rem <= 0 ? "Llegó" : (days > 0 ? `${days}d ${hms}` : hms);
     });
     // Hora a la que volvería la flota si se recupera AHORA (avanza 2 s por segundo real).
     document.querySelectorAll("#flights_list .flight-return").forEach(el => {
@@ -1502,7 +1510,7 @@ function updateFlightTimers() {
         const arr = parseInt(el.dataset.arrival || "0");
         if (arr && arr < nowServer) { el.textContent = ""; return; }   // ya llegó: recall no aplica
         const returnAt = 2 * nowServer - dep;
-        el.textContent = "si vuelve ahora ≈ " + new Date(returnAt * 1000).toLocaleTimeString();
+        el.textContent = "si vuelve ahora ≈ " + flightWhen(returnAt);
         el.title = el.dataset.est
             ? "Hora estimada de vuelta si la regresas ahora (estimada por el tiempo ya volado desde que salió)."
             : "Hora a la que volvería si la regresas ahora.";

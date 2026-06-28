@@ -292,19 +292,27 @@ _JS_READ_MOVEMENTS = """() => {
             }
             mv.dest_type = destType;
 
-            // 6. Arrival text
-            const arrEl = row.querySelector(
-                '.arrivalTime .value, .timer .value, .timeTillArrival, .countDown, .timer, [class*="timer"], [class*="countdown"]'
-            );
+            // 6. Arrival text. IMPORTANTE: excluir el temporizador de 'reversal' (regreso): la
+            // fila trae a la vez el contador de LLEGADA y el de la vuelta si se recupera; coger
+            // el de reversal hacía que un despliegue saliera con una hora de llegada errónea.
+            const notReversal = el => !(el.closest && el.closest('[class*="reversal"]'));
+            let arrEl = null;
+            for (const el of row.querySelectorAll(
+                    '.arrivalTime .value, .timer .value, .timeTillArrival, .countDown, .timer, [class*="timer"], [class*="countdown"]')) {
+                if (notReversal(el)) { arrEl = el; break; }
+            }
             mv.arrival_text = arrEl ? arrEl.textContent.trim() : '';
 
             // 6b. Epoch ABSOLUTO de llegada si el DOM lo expone (unix, segundos): es más
             // fiable que parsear el contador y evita confundir una hora absoluta H:MM:SS
-            // con una cuenta atrás.
+            // con una cuenta atrás. También aquí se excluye el reversal.
             let absEp = parseInt(row.getAttribute('data-arrival-time') || '0') || 0;
             if (!absEp) {
-                const ae = row.querySelector('[data-arrival-time]');
-                if (ae) absEp = parseInt(ae.getAttribute('data-arrival-time') || '0') || 0;
+                for (const ae of row.querySelectorAll('[data-arrival-time]')) {
+                    if (!notReversal(ae)) continue;
+                    absEp = parseInt(ae.getAttribute('data-arrival-time') || '0') || 0;
+                    if (absEp) break;
+                }
             }
             mv.arrival_epoch = absEp;
 

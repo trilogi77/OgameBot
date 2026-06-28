@@ -187,6 +187,7 @@ class Config:
     # (fuente) en la pestaña "Por Planeta". El destino usa sus objetivos de
     # instalaciones/economía (p.ej. lab a 12) y las fuentes le mandan su excedente.
     feed_min_send: int = 5000                # no mandar transportes de alimentación menores que esto
+    feed_round_up: int = 1000                # redondea el déficit hacia arriba a este múltiplo + 1 (51k->52k, 20k->21k). 0 = desactivado
 
     # --- Estilo de Juego (ofensivo / defensivo) ---
     server_playstyle: str = "defensive"      # "offensive" (prioriza flotas) o "defensive" (prioriza defensas)

@@ -2184,6 +2184,12 @@ class Brain:
                          max(0.0, target.deut - avail.deut))
         if need.total() <= 0:
             return None   # ya puede pagarlo (con su colchón); lo construye el paso normal
+        # Redondear cada componente hacia arriba: 51k->52k, 20k->21k. Asegura siempre
+        # >=feed_round_up de margen para que el destino no quede corto y construya ya.
+        k = getattr(self.cfg, "feed_round_up", 1000)
+        if k > 0:
+            roundup = lambda x: ((int(x) + k - 1) // k + 1) * k if x > 0 else 0.0
+            need = Resources(roundup(need.metal), roundup(need.crystal), roundup(need.deut))
         self.log.info("Alimentación: %s quiere %s (coste M:%d C:%d D:%d); le faltan M:%d C:%d D:%d",
                       planet.coords, name, int(cost.metal), int(cost.crystal), int(cost.deut),
                       int(need.metal), int(need.crystal), int(need.deut))

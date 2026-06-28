@@ -3179,6 +3179,34 @@ class Brain:
             except Exception as e:
                 self.log.debug("No se pudo escribir messages_read.json: %s", e)
 
+    def _own_location_summary(self, coords_str: str) -> str:
+        """Recursos + flota (planeta y, si tiene, luna) de un planeta PROPIO, para enriquecer
+        el aviso de espionaje con lo que hay en riesgo. Lee last_planets (datos del ciclo).
+        Devuelve '' si no se encuentra la ubicación."""
+        planet = None
+        for p in (getattr(self, "last_planets", None) or []):
+            c = getattr(p, "coords", None)
+            if c and f"{c.galaxy}:{c.system}:{c.position}" == coords_str:
+                planet = p
+                break
+        if planet is None:
+            return ""
+        f = lambda n: f"{int(n):,}".replace(",", ".")
+        ship_es = {k: v[0] for k, v in EXPEDITION_SHIP_NAMES}
+        def fleet_line(loc):
+            ships = getattr(loc, "ships", {}) or {}
+            items = [f"{ship_es.get(k, k)}: {f(q)}" for k, q in ships.items() if q]
+            return ", ".join(items) if items else "sin flota"
+        lines = []
+        r = getattr(planet, "resources", None)
+        if r is not None:
+            lines.append(f"• <b>Recursos:</b> M {f(r.metal)} · C {f(r.crystal)} · D {f(r.deut)}")
+        lines.append(f"• <b>Flota (planeta):</b> {fleet_line(planet)}")
+        moon = getattr(planet, "moon", None)
+        if moon is not None and (getattr(moon, "ships", {}) or {}):
+            lines.append(f"• <b>Flota (luna):</b> {fleet_line(moon)}")
+        return "\n".join(lines)
+
     SPY_LEDGER_FILE = "spy_notifications.csv"
 
     def _process_spy_messages(self, record_msg):
@@ -3318,6 +3346,9 @@ class Brain:
             if enemy:
                 parts.append(f"• <b>Espía:</b> {enemy}")
             parts.append(f"• <b>Prob. contraespionaje:</b> {ce_txt}")
+            loc_summary = self._own_location_summary(mine)
+            if loc_summary:
+                parts.append(loc_summary)
             alert = (
                 "🔍 <b>¡Te han espiado en OGame!</b>\n\n" + "\n".join(parts) +
                 "\n\n<i>Un sondeo suele preceder a un ataque. Revisa o saca la flota.</i>"

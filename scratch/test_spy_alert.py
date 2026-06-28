@@ -40,8 +40,20 @@ class _Coords:
     def __init__(self, g, s, p): self.galaxy, self.system, self.position = g, s, p
 
 
+class _Res:
+    def __init__(self, m, c, d): self.metal, self.crystal, self.deut = m, c, d
+
+
+class _Moon:
+    def __init__(self, ships=None): self.ships = ships or {}
+
+
 class _Planet:
-    def __init__(self, g, s, p): self.coords = _Coords(g, s, p)
+    def __init__(self, g, s, p, ships=None, res=None, moon=None):
+        self.coords = _Coords(g, s, p)
+        self.ships = ships or {}
+        self.resources = res
+        self.moon = moon
 
 
 def make_fake(msgs, planets=None, full=None):
@@ -52,6 +64,7 @@ def make_fake(msgs, planets=None, full=None):
                                  last_planets=planets or [],
                                  SPY_LEDGER_FILE=brain.Brain.SPY_LEDGER_FILE)
     fake._process_spy_messages = types.MethodType(brain.Brain._process_spy_messages, fake)
+    fake._own_location_summary = types.MethodType(brain.Brain._own_location_summary, fake)
     return fake
 
 
@@ -96,8 +109,12 @@ assert len(sent) == 1, sent
 assert ledger()["20-9"]["notified"] == "1"
 
 # 6) Formato compacto real (OGame nuevo): coords del mensaje = planeta MÍO -> avisa, y al
-#    abrir el mensaje saca el origen y el % de contra-espionaje del cuerpo completo.
-planets = [_Planet(1, 125, 8)]
+#    abrir el mensaje saca el origen y el % de contra-espionaje del cuerpo completo. Además
+#    enriquece con recursos + flota (planeta y luna) leídos de last_planets.
+planets = [_Planet(1, 125, 8,
+                   ships={"large_cargo": 2386, "light_fighter": 3317},
+                   res=_Res(13223208, 5586508, 7749265),
+                   moon=_Moon({"recycler": 743}))]
 full10 = ("43m 30s\nStadtholder Hubble\n-\n-\n[1:125:8]\nInforme de espionaje en Luna [1:201:8]\n"
           "Se ha detectado una flota del planeta Luna [1:201:8] (FINAL BOSS) cerca de tu "
           "planeta Luna [1:125:8]. La probabilidad de contra-espionaje es del 0 %")
@@ -105,6 +122,9 @@ run(make_fake([spy("7"), spy("8"), spy("9"), spy_compact("10")], planets, {"10":
 assert len(sent) == 1 and "Te han espiado" in sent[0][1], sent
 assert "[1:201:8]" in sent[0][1] and "Stadtholder Hubble" in sent[0][1], sent
 assert "0%" in sent[0][1], sent          # contra-espionaje sacado del cuerpo
+assert "13.223.208" in sent[0][1], sent  # recursos del planeta
+assert "nave grande de carga: 2.386" in sent[0][1], sent  # flota del planeta
+assert "reciclador: 743" in sent[0][1], sent               # flota de la luna
 assert ledger()["20-10"]["notified"] == "1"
 
 # 7) Fila compacta cuyas coords NO son mías (mi propio informe de un inactivo) -> se ignora.

@@ -114,4 +114,27 @@ assert _retain_unlanded([{"origin": "x"}], prev_keep, 1000.0) == [{"origin": "x"
 # Sin previo y lectura vacía -> lista vacía (no hay flotas de verdad).
 assert _retain_unlanded([], [], 1000.0) == []
 
+# Despliegue (una sola ida): la salida se estima por 'first_seen' (1ª vez visto) cuando no hay
+# reversal ni pata de vuelta. 1ª lectura: first_seen = now. 2ª lectura (prev): se arrastra.
+dep1 = build_flights([
+    {"mission": "4", "origin": "1:2:3", "destination": "4:5:6", "arrival_epoch": 6000,
+     "is_return": False, "ships": {"Nave grande de carga": 9}},
+], 1000.0)
+assert dep1[0]["first_seen"] == 1000 and dep1[0]["departure_epoch"] == 1000, dep1[0]
+assert dep1[0].get("departure_estimated") is True, dep1[0]
+# Más tarde, el mismo despliegue conserva la salida estimada original (no se reinicia).
+dep2 = build_flights([
+    {"mission": "4", "origin": "1:2:3", "destination": "4:5:6", "arrival_epoch": 6000,
+     "is_return": False, "ships": {}},
+], 3000.0, prev=dep1)
+assert dep2[0]["first_seen"] == 1000 and dep2[0]["departure_epoch"] == 1000, dep2[0]
+
+# Estabilización de la llegada: sin epoch absoluto, se reutiliza la llegada estable del previo
+# (evita el "sube y baja" del contador). prev llegada 6000; ahora 0:50:00 daría 3000+3000=6000.
+stab = build_flights([
+    {"mission": "4", "origin": "1:2:3", "destination": "4:5:6", "arrival_text": "0:49:50",
+     "is_return": False, "ships": {}},
+], 3000.0, prev=dep1)
+assert stab[0]["arrival_epoch"] == 6000, stab[0]["arrival_epoch"]   # reutiliza el del previo
+
 print("OK")

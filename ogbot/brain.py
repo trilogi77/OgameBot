@@ -107,15 +107,45 @@ def _split_ships_cargo(ships_raw: dict):
     return ships, cargo
 
 
-def _flight_sig(f):
-    # Incluye un bucket de llegada (minuto) para no confundir dos flotas distintas en la
-    # MISMA ruta/misión (p.ej. dos expediciones a la misma posición). El epoch apenas
-    # deriva entre la escritura del ciclo y la del chequeo de ataques, así que el bucket
-    # casa el mismo vuelo físico; si justo cruza un minuto, las naves se mostrarán vacías
-    # (mejor que mostrar las de otra flota).
+def _route_key(f):
     return (str(f.get("mission_code", "")), f.get("origin", ""),
-            f.get("destination", ""), bool(f.get("is_return")),
-            int(f.get("arrival_epoch", 0)) // 60)
+            f.get("destination", ""), bool(f.get("is_return")))
+
+
+def _best_prev(f, prev_by_route, used):
+    """Casa este vuelo con el MISMO vuelo físico del fichero previo: misma ruta/misión y la
+    llegada más cercana (tolerancia 180 s para absorber el pequeño desfase entre la escritura
+    del ciclo y la del chequeo de ataques). Cada vuelo previo se usa una sola vez para no
+    confundir dos flotas distintas en la misma ruta (p.ej. dos expediciones)."""
+    cands = prev_by_route.get(_route_key(f), [])
+    fa = int(f.get("arrival_epoch") or 0)
+    best, best_d = None, 181
+    for p in cands:
+        if id(p) in used:
+            continue
+        pa = int(p.get("arrival_epoch") or 0)
+        d = abs(pa - fa) if (pa and fa) else 0
+        if d < best_d:
+            best, best_d = p, d
+    if best is not None:
+        used.add(id(best))
+    return best
+
+
+def _estimate_departures(flights, now):
+    """Último recurso para la 'hora de vuelta si se recupera ahora' cuando no hay reversal del
+    DOM ni pata de vuelta que emparejar (caso típico: el despliegue, de una sola ida): usa
+    'first_seen' (la 1ª vez que vimos el vuelo) como salida estimada. Es exacto si el bot
+    estaba corriendo cuando salió la flota; si ya estaba en vuelo al arrancar, subestima lo ya
+    volado (la vuelta saldrá algo corta). Solo rellena los que aún no tengan salida."""
+    for f in flights:
+        if f.get("is_return") or f.get("departure_epoch"):
+            continue
+        fs = int(f.get("first_seen") or 0)
+        a = int(f.get("arrival_epoch") or 0)
+        if fs and a and fs < a:
+            f["departure_epoch"] = fs
+            f["departure_estimated"] = True
 
 
 _REV_DT = _re.compile(r'(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})\D+(\d{1,2}):(\d{2}):(\d{2})')
@@ -212,6 +242,9 @@ def _dedup_flights(flights):
         a["is_hostile"] = a.get("is_hostile") or f.get("is_hostile")
         if not a.get("departure_epoch") and f.get("departure_epoch"):
             a["departure_epoch"] = f["departure_epoch"]
+        fs_a, fs_f = int(a.get("first_seen") or 0), int(f.get("first_seen") or 0)
+        if fs_f and (not fs_a or fs_f < fs_a):
+            a["first_seen"] = fs_f   # conserva la 1ª vez visto más temprana (salida estimada)
     return out
 
 
@@ -262,9 +295,10 @@ def build_flights(mvs, now, prev=None):
     event_list no las trae), se conservan del vuelo previo equivalente (escrito por el
     ciclo con datos completos).
     """
-    prev_by_sig = {}
+    prev_by_route = {}
     for pf in (prev or []):
-        prev_by_sig.setdefault(_flight_sig(pf), pf)
+        prev_by_route.setdefault(_route_key(pf), []).append(pf)
+    used = set()
     flights = []
     for mv in mvs:
         if mv.get("is_hostile"):
@@ -299,15 +333,26 @@ def build_flights(mvs, now, prev=None):
             "reversal_raw": (mv.get("reversal_text", "") or "")[:80],   # para depurar el formato
             "ships": ships,
             "cargo": cargo,
+            "first_seen": 0,
         }
-        if not ships and not any(cargo.values()):
-            pf = prev_by_sig.get(_flight_sig(f))
-            if pf:
-                f["ships"] = pf.get("ships", {}) or {}
-                f["cargo"] = pf.get("cargo", {}) or {"metal": 0, "crystal": 0, "deut": 0}
+        # Casar con el MISMO vuelo del fichero previo (misma ruta, llegada cercana) para:
+        #  - conservar naves/carga del ciclo cuando esta lectura no las trae (event_list),
+        #  - ESTABILIZAR la llegada (evita el "sube y baja" del contador entre fuentes),
+        #  - arrastrar 'first_seen' (1ª vez visto = salida estimada del despliegue).
+        pm = _best_prev(f, prev_by_route, used)
+        if pm is not None:
+            if not ships and not any(cargo.values()):
+                f["ships"] = pm.get("ships", {}) or {}
+                f["cargo"] = pm.get("cargo", {}) or {"metal": 0, "crystal": 0, "deut": 0}
+            if abs_ep <= 0 and int(pm.get("arrival_epoch") or 0) > 0:
+                f["arrival_epoch"] = int(pm["arrival_epoch"])
+            f["first_seen"] = int(pm.get("first_seen") or 0) or now
+        else:
+            f["first_seen"] = now
         flights.append(f)
     flights = _dedup_flights(flights)
     flights = _link_round_trips(flights)
+    _estimate_departures(flights, now)
     return flights
 
 
@@ -1066,8 +1111,9 @@ class Brain:
             except Exception:
                 prev_flights = []
             now_ts = time.time()
+            new_flights = build_flights(mvs, now_ts, prev=prev_flights)
             with open("fleet_flights.json", "w", encoding="utf-8") as f:
-                json.dump({"flights": _retain_unlanded(build_flights(mvs, now_ts), prev_flights, now_ts),
+                json.dump({"flights": _retain_unlanded(new_flights, prev_flights, now_ts),
                            "updated": now_ts}, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.log.debug("No se pudo guardar planets_cache.json: %s", e)

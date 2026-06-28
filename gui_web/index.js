@@ -1310,6 +1310,32 @@ function flightCargoText(cargo) {
     return parts.join(" · ");
 }
 
+function flightMissionColor(fl) {
+    return fl.is_hostile ? "#ef4444" : (MISSION_COLORS[fl.mission] || "var(--accent-primary, #8a2be2)");
+}
+
+function ensureFlightsTableStyle() {
+    if (document.getElementById("flights-table-style")) return;
+    const st = document.createElement("style");
+    st.id = "flights-table-style";
+    st.textContent = `
+      .flights-wrap { overflow-x:auto; }
+      .flights-table { width:100%; border-collapse:collapse; font-size:12px; }
+      .flights-table th { text-align:left; padding:6px 8px; color:var(--text-muted,#8b949e);
+          font-weight:600; border-bottom:1px solid var(--border,#30363d); white-space:nowrap; }
+      .flights-table td { padding:6px 8px; vertical-align:middle; white-space:nowrap; }
+      .flights-table tr.flight-main td { border-top:1px solid var(--border,#21262d); }
+      .flights-table .fl-dot { display:inline-block; width:8px; height:8px; border-radius:50%;
+          margin-right:6px; vertical-align:middle; }
+      .flights-table .flight-eta { font-variant-numeric:tabular-nums; }
+      .flights-table td.fl-detail { padding-top:0; white-space:normal;
+          color:var(--text-secondary,#9aa); border-top:none; }
+      .flights-table .fl-chip { display:inline-block; background:var(--bg-tertiary,#21262d);
+          border-radius:6px; padding:1px 6px; margin:2px 4px 2px 0; font-size:11px; }
+    `;
+    document.head.appendChild(st);
+}
+
 function renderFlights() {
     const listEl = document.getElementById("flights_list");
     if (!listEl) return;
@@ -1325,102 +1351,110 @@ function renderFlights() {
         return;
     }
 
+    ensureFlightsTableStyle();
+    const clock = ep => ep ? new Date(ep * 1000).toLocaleTimeString() : "—";
     listEl.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "flights-wrap";
+    const table = document.createElement("table");
+    table.className = "flights-table";
+    table.innerHTML = `<thead><tr>
+        <th>Misión</th><th>Ruta</th><th>Llega en</th><th>Llegada</th>
+        <th>Vuelve a casa</th><th>Acción</th></tr></thead>`;
+    const tbody = document.createElement("tbody");
+
     flights.forEach(fl => {
-        const item = document.createElement("div");
-        item.className = "session-list-item";
-        item.style.flexDirection = "column";
-        item.style.alignItems = "stretch";
-        item.style.borderLeftColor = fl.is_hostile ? "#ef4444" : (MISSION_COLORS[fl.mission] || "var(--accent-primary, #8a2be2)");
+        const tr = document.createElement("tr");
+        tr.className = "flight-main";
 
-        const head = document.createElement("div");
-        head.style.cssText = "display:flex; justify-content:space-between; gap:8px; align-items:center; margin-bottom:4px;";
-        const left = document.createElement("span");
-        left.className = "session-item-name";
-        left.textContent = (fl.is_hostile ? "⚠️ " : "") + (fl.mission || "?") + (fl.is_return ? " (vuelta)" : "");
+        const tdM = document.createElement("td");
+        tdM.innerHTML = `<span class="fl-dot" style="background:${flightMissionColor(fl)}"></span>`;
+        tdM.appendChild(document.createTextNode(
+            (fl.is_hostile ? "⚠️ " : "") + (fl.mission || "?") + (fl.is_return ? " (vuelta)" : "")));
+        tr.appendChild(tdM);
+
+        const tdR = document.createElement("td");
+        tdR.textContent = `${flightLocIcon(fl.origin_type)} [${fl.origin || "?"}] → ${flightLocIcon(fl.dest_type)} [${fl.destination || "?"}]`;
+        tr.appendChild(tdR);
+
+        const tdE = document.createElement("td");
         const eta = document.createElement("span");
-        eta.className = "session-item-time flight-eta";
+        eta.className = "flight-eta";
         if (fl.arrival_epoch) eta.dataset.arrival = fl.arrival_epoch;
-        eta.textContent = fl.arrival_text || "";
-        head.appendChild(left);
-        head.appendChild(eta);
-        item.appendChild(head);
+        eta.textContent = fl.arrival_text || "—";
+        tdE.appendChild(eta);
+        tr.appendChild(tdE);
 
-        const route = document.createElement("div");
-        route.style.cssText = "font-size:12px; color: var(--text-secondary, #9aa); margin-bottom:4px;";
-        route.textContent = `${flightLocIcon(fl.origin_type)} [${fl.origin || "?"}]  →  ${flightLocIcon(fl.dest_type)} [${fl.destination || "?"}]`;
-        item.appendChild(route);
+        const tdA = document.createElement("td");
+        tdA.textContent = clock(fl.arrival_epoch);
+        tr.appendChild(tdA);
 
-        if (fl.arrival_epoch) {
-            const arr = document.createElement("div");
-            arr.style.cssText = "font-size:11px; color: var(--text-muted, #8b949e); margin-bottom:4px;";
-            arr.textContent = "Llegada " + new Date(fl.arrival_epoch * 1000).toLocaleTimeString();
-            item.appendChild(arr);
-        }
+        // Retorno natural del viaje de ida y vuelta (pata de vuelta agrupada).
+        const tdH = document.createElement("td");
+        tdH.textContent = fl.return_arrival_epoch ? "↩ " + clock(fl.return_arrival_epoch) : "—";
+        tr.appendChild(tdH);
 
-        // Ida y vuelta agrupadas: la pata de vuelta vinculada se muestra aquí (misma tarjeta).
-        if (fl.return_arrival_epoch) {
-            const home = document.createElement("div");
-            home.style.cssText = "font-size:11px; color: var(--text-muted, #8b949e); margin-bottom:4px;";
-            home.textContent = "↩ Vuelve a casa " + new Date(fl.return_arrival_epoch * 1000).toLocaleTimeString();
-            item.appendChild(home);
-        }
-
-        const cargoTxt = flightCargoText(fl.cargo);
-        if (cargoTxt) {
-            const cargo = document.createElement("div");
-            cargo.style.cssText = "font-size:12px; margin-bottom:4px;";
-            cargo.textContent = "📦 " + cargoTxt;
-            item.appendChild(cargo);
-        }
-
-        const shipNames = Object.keys(fl.ships || {});
-        if (shipNames.length) {
-            const ships = document.createElement("div");
-            ships.style.cssText = "display:flex; flex-wrap:wrap; gap:6px;";
-            shipNames.forEach(n => {
-                const chip = document.createElement("span");
-                chip.className = "session-item-planet";
-                chip.textContent = `${n}: ${formatNumber(fl.ships[n])}`;
-                ships.appendChild(chip);
-            });
-            item.appendChild(ships);
-        }
-
-        // Regreso de flota (solo vuelos de ida aún en curso): botón + hora de vuelta en vivo
-        // (si se recupera ahora, vuelve en lo ya volado; la hora avanza 2 s por segundo).
+        // Acción: Regresar + estimación de la hora de vuelta si se recupera AHORA.
+        const tdAct = document.createElement("td");
         const stillFlying = !fl.arrival_epoch || fl.arrival_epoch > (Date.now() / 1000 + flightsServerOffset);
-        // Las expediciones solo pueden regresarse en el momento del envío, no en vuelo.
         const isExpedition = fl.mission_code === "15" || fl.mission === "Expedición";
         if (!fl.is_return && stillFlying && !isExpedition) {
-            const foot = document.createElement("div");
-            foot.style.cssText = "display:flex; gap:8px; align-items:center; margin-top:6px;";
             const btn = document.createElement("button");
             btn.type = "button";
             btn.className = "btn-secondary btn-sm";
             btn.title = "El bot recuperará esta flota en cuanto vea la petición.";
             if (recalledFlights.has(flightKey(fl))) {
                 btn.disabled = true;
-                btn.textContent = "↩ Regreso pedido";
+                btn.textContent = "↩ Pedido";
             } else {
                 btn.textContent = "↩ Regresar";
                 btn.onclick = () => requestRecall(fl, btn);
             }
-            foot.appendChild(btn);
+            tdAct.appendChild(btn);
             if (fl.departure_epoch) {
-                const ret = document.createElement("span");
+                const ret = document.createElement("div");
                 ret.className = "flight-return text-muted";
-                ret.style.cssText = "font-size:11px;";
+                ret.style.cssText = "font-size:11px; margin-top:3px;";
                 ret.dataset.departure = fl.departure_epoch;
                 if (fl.arrival_epoch) ret.dataset.arrival = fl.arrival_epoch;
-                ret.textContent = "vuelve ~ —";
-                foot.appendChild(ret);
+                if (fl.departure_estimated) ret.dataset.est = "1";
+                ret.textContent = "≈ —";
+                tdAct.appendChild(ret);
             }
-            item.appendChild(foot);
+        } else {
+            tdAct.textContent = "—";
         }
+        tr.appendChild(tdAct);
+        tbody.appendChild(tr);
 
-        listEl.appendChild(item);
+        // Sub-fila de detalle a todo el ancho: carga y naves.
+        const cargoTxt = flightCargoText(fl.cargo);
+        const shipNames = Object.keys(fl.ships || {});
+        if (cargoTxt || shipNames.length) {
+            const trd = document.createElement("tr");
+            const td = document.createElement("td");
+            td.className = "fl-detail";
+            td.colSpan = 6;
+            if (cargoTxt) {
+                const c = document.createElement("span");
+                c.style.marginRight = "10px";
+                c.textContent = "📦 " + cargoTxt;
+                td.appendChild(c);
+            }
+            shipNames.forEach(n => {
+                const chip = document.createElement("span");
+                chip.className = "fl-chip";
+                chip.textContent = `${n}: ${formatNumber(fl.ships[n])}`;
+                td.appendChild(chip);
+            });
+            trd.appendChild(td);
+            tbody.appendChild(trd);
+        }
     });
+
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    listEl.appendChild(wrap);
     updateFlightTimers();
 }
 
@@ -1468,7 +1502,10 @@ function updateFlightTimers() {
         const arr = parseInt(el.dataset.arrival || "0");
         if (arr && arr < nowServer) { el.textContent = ""; return; }   // ya llegó: recall no aplica
         const returnAt = 2 * nowServer - dep;
-        el.textContent = "vuelve ~ " + new Date(returnAt * 1000).toLocaleTimeString();
+        el.textContent = "si vuelve ahora ≈ " + new Date(returnAt * 1000).toLocaleTimeString();
+        el.title = el.dataset.est
+            ? "Hora estimada de vuelta si la regresas ahora (estimada por el tiempo ya volado desde que salió)."
+            : "Hora a la que volvería si la regresas ahora.";
     });
 }
 

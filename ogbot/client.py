@@ -316,44 +316,29 @@ _JS_READ_MOVEMENTS = """() => {
             }
             mv.arrival_epoch = absEp;
 
-            // 6c. Reversal: el enlace de regreso (a.recallFleet) lleva en data-tooltip-title la
-            // FECHA y HORA exactas de vuelta si se recupera ahora (p.ej. "Retirar...
-            // 28.06.2026<br>22:35:52"). De ahí derivamos la SALIDA real y mostramos la hora de
-            // vuelta exacta en la GUI. También probamos title/textContent y epochs en data-*.
+            // 6c. Reversal: el ancla de regreso (a.recallFleet) lleva en title/data-tooltip-title
+            // la FECHA y HORA de vuelta si se recupera ahora, en hora del SERVIDOR de OGame
+            // (p.ej. "Retirar:| 28.06.2026<br>23:04:56"). La convertimos a epoch UTC usando el
+            // desfase horario del servidor, derivado de data-arrival-time (epoch UTC fiable) vs
+            // la hora local mostrada en la celda arrivalTime. Así NO depende de la zona horaria
+            // del contenedor (Docker suele ir en UTC y el servidor en CEST -> daba +2 h).
             let revEp = 0, revTxt = '';
-            const isEpoch = v => { const n = parseInt(v); return (n > 1000000000 && n < 4000000000) ? n : 0; };
-            const revTip = el => el.getAttribute('data-tooltip-title')
-                                 || el.getAttribute('title') || '';
-            // PRIORIDAD: el tooltip exacto (fecha+hora) del ancla de regreso. Se coge antes del
-            // barrido genérico para que un contenedor con un contador suelto no lo tape.
             const recallA = row.querySelector('a.recallFleet, a[onclick*="sendRecall"], a.reversal');
-            if (recallA) revTxt = revTip(recallA).trim();
-            const revEls = row.querySelectorAll(
-                'a.recallFleet, .recallFleet, a.reversal, a.reversal_flight, .reversal_flight, ' +
-                '.reversal_time, [class*="reversal"], a[onclick*="sendRecall"]'
-            );
-            for (const el of revEls) {
-                // epoch en cualquier data-* del elemento o sus descendientes
-                for (const a of (el.attributes || [])) {
-                    if (a.name.indexOf('data-') === 0) { revEp = revEp || isEpoch(a.value); }
+            if (recallA) revTxt = (recallA.getAttribute('data-tooltip-title')
+                                   || recallA.getAttribute('title') || '').trim();
+            if (revTxt && absEp) {
+                const dm = revTxt.match(/(\\d{1,2})[.\\-\\/](\\d{1,2})[.\\-\\/](\\d{2,4})\\D+(\\d{1,2}):(\\d{2}):(\\d{2})/);
+                const arrCell = row.querySelector('.arrivalTime');
+                const am = arrCell ? (arrCell.textContent || '').match(/(\\d{1,2}):(\\d{2}):(\\d{2})/) : null;
+                if (dm && am) {
+                    const arrSec = (+am[1]) * 3600 + (+am[2]) * 60 + (+am[3]);  // hora servidor de la llegada
+                    let off = arrSec - (absEp % 86400);                         // desfase servidor - UTC (s)
+                    off = ((off % 86400) + 86400) % 86400;
+                    if (off > 43200) off -= 86400;                              // normalizar a [-12h, +12h]
+                    let y = +dm[3]; if (y < 100) y += 2000;
+                    const utc = Date.UTC(y, (+dm[2]) - 1, +dm[1], +dm[4], +dm[5], +dm[6]) / 1000;
+                    revEp = Math.round(utc - off);
                 }
-                if (!revEp) {
-                    const c = el.querySelector('[data-arrival-time], [data-time], [data-end]');
-                    if (c) revEp = isEpoch(c.getAttribute('data-arrival-time'))
-                                   || isEpoch(c.getAttribute('data-time'))
-                                   || isEpoch(c.getAttribute('data-end'));
-                }
-                if (!revTxt) {
-                    let t = revTip(el);
-                    if (!t) {
-                        const tt = el.querySelector('[data-tooltip-title], [title]');
-                        if (tt) t = revTip(tt);
-                    }
-                    if (!t) t = el.textContent || '';
-                    t = t.trim();
-                    if (t) revTxt = t;
-                }
-                if (revEp && revTxt) break;
             }
             mv.reversal_epoch = revEp;
             mv.reversal_text = revTxt;

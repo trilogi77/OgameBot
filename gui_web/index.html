@@ -643,6 +643,32 @@
                             </div>
                             <span id="fix_status" class="text-muted" style="font-size:12px; display:block; margin-top:8px;"></span>
                         </div>
+
+                        <div class="section-title" style="margin-top:4px;">🏗️ Cola de construcción (por planeta)</div>
+                        <div class="exp-live" id="buildQueuePanel" style="margin-bottom:16px;">
+                            <p class="text-muted" style="font-size:12px; margin-top:0;">Dile al bot qué construir y hasta qué nivel, en orden. Construye la siguiente en cuanto termina la anterior; si faltan recursos, calcula cuándo los tendrá (con la producción real) y la coloca en ese momento. Ideal para arrancar cuentas. Mientras haya cola, la economía automática cede el paso en ese planeta.</p>
+                            <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+                                <div>
+                                    <label style="display:block; font-size:11px; color:var(--text-muted);">Planeta / Luna</label>
+                                    <select id="queue_location" class="form-control" style="min-width:200px; padding:8px; border-radius:8px; background: rgba(0,0,0,0.3); color:#fff; border:1px solid var(--panel-border);"></select>
+                                </div>
+                            </div>
+                            <div id="queue_list" style="margin:12px 0; display:flex; flex-direction:column; gap:6px;"></div>
+                            <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+                                <div>
+                                    <label style="display:block; font-size:11px; color:var(--text-muted);">Edificio</label>
+                                    <select id="queue_building" class="form-control" style="min-width:220px; padding:8px; border-radius:8px; background: rgba(0,0,0,0.3); color:#fff; border:1px solid var(--panel-border);"></select>
+                                </div>
+                                <div>
+                                    <label style="display:block; font-size:11px; color:var(--text-muted);">Hasta nivel</label>
+                                    <input type="number" id="queue_target" min="1" class="form-control" style="width:110px; padding:8px; border-radius:8px; background: rgba(0,0,0,0.3); color:#fff; border:1px solid var(--panel-border);">
+                                </div>
+                                <button type="button" id="btnQueueAdd" class="btn btn-secondary">+ Añadir a la cola</button>
+                                <button type="button" id="btnQueueSave" class="btn btn-primary">Guardar cola</button>
+                            </div>
+                            <span id="queue_status" class="text-muted" style="font-size:12px; display:block; margin-top:8px;"></span>
+                        </div>
+
                         <div class="planets-list" id="planetsListContainer">
                             <!-- Inyectado dinámicamente por JS -->
                         </div>

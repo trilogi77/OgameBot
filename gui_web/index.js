@@ -86,6 +86,9 @@ function switchAccount(id) {
     lastMessagesSig = "";
     flightsCache = [];
     lastFlightsSig = "";
+    queueDrafts = {};
+    queueLocations = [];
+    lastQueueLocSig = "";
     renderAccountSelect();
     renderAccountsTab();
     loadConfig();
@@ -188,6 +191,13 @@ window.addEventListener("DOMContentLoaded", () => {
     if (btnResync) btnResync.addEventListener("click", forceResync);
     const btnResyncAll = document.getElementById("btnForceResyncAll");
     if (btnResyncAll) btnResyncAll.addEventListener("click", forceResyncAll);
+
+    const queueLoc = document.getElementById("queue_location");
+    if (queueLoc) queueLoc.addEventListener("change", renderQueueList);
+    const btnQueueAdd = document.getElementById("btnQueueAdd");
+    if (btnQueueAdd) btnQueueAdd.addEventListener("click", addToQueue);
+    const btnQueueSave = document.getElementById("btnQueueSave");
+    if (btnQueueSave) btnQueueSave.addEventListener("click", saveBuildQueue);
     initColonyLocator();
     
     const defSelect = document.getElementById("defense_planet_select");
@@ -685,6 +695,7 @@ function loadPlanets() {
                 populateDefensePlanetSelect();
                 populateFacilitiesPlanetSelect();
                 populateLevelFix();
+                populateBuildQueue();
             } else {
                 planetsListContainer.innerHTML = `
                     <div class="text-center text-muted" style="padding: 40px 0;">
@@ -806,6 +817,137 @@ function forceResync() {
 function forceResyncAll() {
     postResync({ all: true },
         "🔄 El bot releerá TODOS los niveles del juego en el próximo ciclo.");
+}
+
+// --------------------------------------------------------------------------
+// Cola de construcción por planeta (tipo Comandante)
+// --------------------------------------------------------------------------
+const QUEUE_BUILDINGS = ["metal_mine", "crystal_mine", "deut_synth", "solar_plant", "fusion_reactor",
+    "metal_storage", "crystal_storage", "deut_tank", "robotics_factory", "shipyard",
+    "research_lab", "nanite_factory"];
+let queueDrafts = {};        // coords -> [{building, target_level}] (edición en memoria)
+let queueLocations = [];     // solo planetas (las lunas no tienen cola de construcción)
+let lastQueueLocSig = "";
+
+function currentQueueCoords() {
+    const sel = document.getElementById("queue_location");
+    const loc = sel ? queueLocations[sel.value] : null;
+    return loc ? loc.coords : null;
+}
+
+function getQueueDraft(coords) {
+    if (!coords) return [];
+    if (!queueDrafts[coords]) {
+        const pcfg = (globalConfig.planets_config || {})[coords] || {};
+        queueDrafts[coords] = Array.isArray(pcfg.build_queue) ? pcfg.build_queue.map(e => ({ ...e })) : [];
+    }
+    return queueDrafts[coords];
+}
+
+function populateBuildQueue() {
+    const locSel = document.getElementById("queue_location");
+    const bSel = document.getElementById("queue_building");
+    if (!locSel || !bSel) return;
+    queueLocations = fixLocations.filter(l => !l.is_moon);   // las lunas no tienen cola
+    const sig = queueLocations.map(l => l.coords).join(",");
+    if (sig !== lastQueueLocSig || !locSel.options.length) {
+        lastQueueLocSig = sig;
+        locSel.innerHTML = queueLocations.map((l, i) => `<option value="${i}">${l.label}</option>`).join("");
+        bSel.innerHTML = QUEUE_BUILDINGS.map(n => `<option value="${n}">${BUILDING_TRANSLATIONS[n] || n}</option>`).join("");
+    }
+    renderQueueList();
+}
+
+function renderQueueList() {
+    const listEl = document.getElementById("queue_list");
+    if (!listEl) return;
+    const loc = queueLocations[(document.getElementById("queue_location") || {}).value];
+    const draft = getQueueDraft(loc ? loc.coords : null);
+    if (!draft.length) {
+        listEl.innerHTML = `<div class="text-muted" style="font-size:13px;">Cola vacía. Añade construcciones abajo.</div>`;
+        return;
+    }
+    listEl.innerHTML = "";
+    draft.forEach((e, i) => {
+        const cur = loc && loc.buildings ? (loc.buildings[e.building] || 0) : null;
+        const done = cur !== null && cur >= e.target_level;
+        const row = document.createElement("div");
+        row.className = "session-list-item";
+        row.style.borderLeftColor = done ? "#22c55e" : "var(--accent-primary, #8a2be2)";
+        const label = document.createElement("span");
+        label.className = "session-item-name";
+        label.textContent = `${i + 1}. ${BUILDING_TRANSLATIONS[e.building] || e.building} → nivel ${e.target_level}`
+            + (cur !== null ? `  (actual ${cur})${done ? " ✓" : ""}` : "");
+        const ctrls = document.createElement("span");
+        ctrls.style.cssText = "display:flex; gap:4px;";
+        const mk = (txt, fn) => {
+            const b = document.createElement("button");
+            b.type = "button"; b.className = "btn-secondary btn-sm"; b.textContent = txt; b.onclick = fn;
+            return b;
+        };
+        ctrls.appendChild(mk("↑", () => moveQueue(i, -1)));
+        ctrls.appendChild(mk("↓", () => moveQueue(i, 1)));
+        ctrls.appendChild(mk("✕", () => removeQueue(i)));
+        row.appendChild(label);
+        row.appendChild(ctrls);
+        listEl.appendChild(row);
+    });
+}
+
+function moveQueue(i, d) {
+    const draft = getQueueDraft(currentQueueCoords());
+    const j = i + d;
+    if (j < 0 || j >= draft.length) return;
+    [draft[i], draft[j]] = [draft[j], draft[i]];
+    renderQueueList();
+}
+
+function removeQueue(i) {
+    getQueueDraft(currentQueueCoords()).splice(i, 1);
+    renderQueueList();
+}
+
+function queueStatus(msg, ok) {
+    const el = document.getElementById("queue_status");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = ok === undefined ? "" : (ok ? "var(--accent-success, #22c55e)" : "var(--accent-danger, #ef4444)");
+}
+
+function addToQueue() {
+    const coords = currentQueueCoords();
+    if (!coords) { queueStatus("Selecciona un planeta.", false); return; }
+    const building = document.getElementById("queue_building").value;
+    const target = parseInt(document.getElementById("queue_target").value);
+    if (!building || isNaN(target) || target < 1) { queueStatus("Indica edificio y nivel válido.", false); return; }
+    getQueueDraft(coords).push({ building, target_level: target });
+    renderQueueList();
+    queueStatus("Añadido. Pulsa «Guardar cola» para aplicarlo.", true);
+}
+
+function saveBuildQueue() {
+    const coords = currentQueueCoords();
+    if (!coords) { queueStatus("Selecciona un planeta.", false); return; }
+    const queue = getQueueDraft(coords);
+    fetch(api("/api/build_queue"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ coords, queue })
+    })
+        .then(r => r.json())
+        .then(d => {
+            if (d.error) { queueStatus("Error: " + d.error, false); showToast("Error: " + d.error, "danger"); }
+            else {
+                // Reflejar en memoria para que «Guardar cambios» no revierta la cola.
+                if (!globalConfig.planets_config) globalConfig.planets_config = {};
+                if (!globalConfig.planets_config[coords]) globalConfig.planets_config[coords] = {};
+                globalConfig.planets_config[coords].build_queue = queue.map(e => ({ ...e }));
+                if (!localPlanetsConfig[coords]) localPlanetsConfig[coords] = {};
+                localPlanetsConfig[coords].build_queue = queue.map(e => ({ ...e }));
+                queueStatus("✅ Cola guardada. El bot la seguirá en el próximo ciclo.", true);
+                showToast("Cola de construcción guardada", "success");
+            }
+        })
+        .catch(e => queueStatus("Error de red: " + e, false));
 }
 
 function renderPlanetsList() {

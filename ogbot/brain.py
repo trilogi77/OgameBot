@@ -72,6 +72,10 @@ def parse_found_ships(text: str) -> dict:
     return found
 
 
+# Cola de construcción: suelos de espera para no recargar/navegar en bucle (patrón de bot).
+_QUEUE_RETRY_S = 120.0       # reintento corto (rate-limit, fallo de envío, fin impreciso)
+_QUEUE_ETA_FLOOR_S = 120.0   # nunca despertar por "ahorro de recursos" antes de 2 min
+
 # Misiones de OGame -> nombre legible (código numérico y alias de texto).
 MISSION_NAMES_ES = {
     "1": "Ataque", "2": "Ataque (ACS)", "3": "Transporte", "4": "Despliegue",
@@ -188,6 +192,7 @@ class Brain:
         self._expedition_returns: List[float] = []
         self._expedition_top1_cache: Tuple[float, int] = (0.0, 0)
         self.expedition_flight_cal = 1.0  # factor real/estimado de vuelo (autocalibrado)
+        self.next_build_event = 0.0       # despertar para encolar la siguiente construcción
         self._load_state()
         # Memoria de estado (niveles de edificios/investigación/defensas)
         self.state_cache = {"research": {}, "planets": {}}
@@ -506,6 +511,14 @@ class Brain:
                                 self.next_expedition_event = 0.0
                                 break
 
+                        # Reactivarse en el momento justo para encolar la siguiente
+                        # construcción (fin de la actual o cuando ya hay recursos).
+                        if getattr(self.cfg, "enable_build_queue", True) and self.next_build_event > 0:
+                            if time.time() >= self.next_build_event:
+                                self.log.info("Despertando por cola de construcción.")
+                                self.next_build_event = 0.0
+                                break
+
                         # Comprobación periódica de ataques hostiles si está habilitado.
                         # El intervalo se re-sortea en cada comprobación (rango aleatorio).
                         if getattr(self.cfg, "enable_attack_escape", True):
@@ -813,6 +826,11 @@ class Brain:
             self.my_tech.shielding = self.research_levels.get("shielding_tech", 0)
             self.my_tech.armor = self.research_levels.get("armor_tech", 0)
 
+        # Cola de construcción por planeta: corre CADA ciclo (no depende del intervalo de
+        # economía) para colocar la siguiente construcción en cuanto termine la anterior o
+        # haya recursos, y arma el próximo 'despertar' por su fin/ETA.
+        self._process_build_queues(planets)
+
         now = time.time()
         
         # Evaluar si toca ejecutar ronda de economía (construcción)
@@ -932,6 +950,9 @@ class Brain:
     def _economy_step(self, planet):
         if not self._get_planet_setting(planet, "enable_economy", True):
             self.log.debug("%s: economía desactivada para este planeta.", planet.coords)
+            return
+        if self._active_queue_entry(planet):
+            self.log.debug("%s: cola de construcción activa, la economía cede el paso.", planet.coords)
             return
         if planet.building_in_progress:
             self.log.debug("%s: construcción en progreso, saltando economía.", planet.coords)
@@ -1715,6 +1736,9 @@ class Brain:
         if not self._get_planet_setting(planet, "enable_facilities", True):
             self.log.debug("%s: instalaciones desactivadas para este planeta.", planet.coords)
             return
+        if self._active_queue_entry(planet):
+            self.log.debug("%s: cola de construcción activa, las instalaciones ceden el paso.", planet.coords)
+            return
         if planet.building_in_progress:
             self.log.debug("%s: construcción en progreso, saltando instalaciones.", planet.coords)
             return
@@ -1769,6 +1793,137 @@ class Brain:
                     # alimentaría. El próximo ciclo reevalúa con el estado real del juego.
                     self.log.info("%s: ahorrando para instalaciones: %s (tiempo estimado: %.1fh)",
                                   planet.coords, name, t)
+
+    # ------------------------------------------------------------------ #
+    # Cola de construcción manual por planeta (tipo Comandante)
+    # ------------------------------------------------------------------ #
+    def _active_queue_entry(self, planet):
+        """Construcción que la cola debe hacer AHORA en este planeta. La cola es DECLARATIVA
+        ([{building, target_level}, ...], no se muta): se toma la primera entrada no cumplida
+        que sea un edificio CONOCIDO y con prerequisitos satisfechos, y se devuelve
+        (real_name, real_lvl, cost). Si la primera entrada pendiente está BLOQUEADA (necesita
+        una investigación) o es inválida, se devuelve None: así la economía automática NO cede
+        el paso y el planeta sigue progresando en vez de quedarse parado."""
+        queue = self._get_planet_setting(planet, "build_queue", []) or []
+        from .prereqs import resolve_prerequisites
+        for entry in queue:
+            name = (entry or {}).get("building")
+            try:
+                target = int(entry.get("target_level", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if not name or name not in gd.BUILDING_COST:
+                continue  # entrada inválida/desconocida: la ignoramos (ni construye ni bloquea)
+            if planet.lvl(name) >= target:
+                continue  # objetivo ya alcanzado: siguiente entrada
+            res = resolve_prerequisites("building", name, planet.lvl(name) + 1, planet, self.research_levels)
+            if res and res[0] == "building":
+                return res[1], res[2], gd.building_cost(res[1], res[2])
+            # Bloqueada (p.ej. requiere una investigación): la cola espera aquí, pero dejamos
+            # que la economía normal siga para no dejar el planeta sin hacer nada.
+            self.log.debug("Cola %s: %s espera prerequisitos (%s); la economía sigue.",
+                           planet.coords, name, res)
+            return None
+        return None
+
+    def _hourly_production(self, planet, plasma):
+        """Producción real/hora (metal, crystal, deut). Usa la página de recursos cacheada;
+        la relee si falta, si está obsoleta (>1h) o —importante— si han CAMBIADO los niveles
+        que afectan a la producción (minas y energía), p.ej. tras construir una mina."""
+        key = self._loc_key(planet.coords)
+        entry = self.state_cache["planets"].get(key)
+        # Firma de los niveles que determinan la producción del planeta.
+        sig = [planet.lvl("metal_mine"), planet.lvl("crystal_mine"), planet.lvl("deut_synth"),
+               planet.lvl("solar_plant"), planet.lvl("fusion_reactor")]
+        prod = (entry or {}).get("hourly_production") if entry else None
+        ts = (entry or {}).get("hourly_production_at", 0.0) if entry else 0.0
+        cached_sig = (entry or {}).get("hourly_production_levels") if entry else None
+        stale = (not prod) or (time.time() - ts > 3600) or (cached_sig != sig)
+        if stale and entry is not None:
+            fresh = self.client.read_hourly_production(planet)
+            if fresh:
+                entry["hourly_production"] = fresh
+                entry["hourly_production_at"] = time.time()
+                entry["hourly_production_levels"] = sig
+                self._save_state_cache()
+                prod = fresh
+        if prod:
+            return prod
+        return {
+            "metal": gd.metal_production(planet.lvl("metal_mine"), plasma, self.cfg.universe_speed),
+            "crystal": gd.crystal_production(planet.lvl("crystal_mine"), plasma, self.cfg.universe_speed),
+            "deut": gd.deut_production(planet.lvl("deut_synth"), planet.max_temp, plasma, self.cfg.universe_speed),
+        }
+
+    def _eta_to_afford(self, planet, cost) -> float:
+        """Horas estimadas hasta poder pagar 'cost' con la producción del planeta."""
+        plasma = self.research_levels.get("plasma_tech", 0)
+        prod = self._hourly_production(planet, plasma)
+        avail = planet.resources
+
+        def hrs(need, rate):
+            if need <= 0:
+                return 0.0
+            return need / rate if rate and rate > 0.1 else 999.0
+
+        return max(hrs(cost.metal - avail.metal, prod.get("metal", 0)),
+                   hrs(cost.crystal - avail.crystal, prod.get("crystal", 0)),
+                   hrs(cost.deut - avail.deut, prod.get("deut", 0)))
+
+    def _build_queue_step(self, planet):
+        """Procesa la cola del planeta. Construye la siguiente entrada si hay recursos.
+        Devuelve el epoch en que conviene volver (fin de la construcción en curso o cuándo
+        habrá recursos), o None si no hay nada accionable."""
+        if not self._get_planet_setting(planet, "enable_build_queue", True):
+            return None
+        active = self._active_queue_entry(planet)
+        if not active:
+            return None
+        real_name, real_lvl, cost = active
+
+        # Si ya hay algo construyéndose en el juego, esperar a que termine para encolar.
+        if getattr(planet, "building_in_progress", False):
+            rem = getattr(planet, "building_remaining_seconds", 0) or 0
+            return time.time() + (rem if rem > 0 else _QUEUE_RETRY_S)
+
+        avail = planet.resources
+        if (avail.metal >= cost.metal and avail.crystal >= cost.crystal and avail.deut >= cost.deut):
+            if not self._guard():
+                return time.time() + _QUEUE_RETRY_S   # rate-limit: reintentar pronto
+            comp = "facilities" if real_name in ("robotics_factory", "nanite_factory",
+                                                 "shipyard", "research_lab") else "supplies"
+            self.log.info("Cola %s: construyendo %s (nivel %d).", planet.coords, real_name, real_lvl)
+            ok = self.client.build(planet, comp, real_name)
+            if ok:
+                self.record_session_action("buildings", real_name, real_lvl, str(planet.coords))
+                planet.building_in_progress = True
+                dur = gd.building_time(cost, planet.lvl("robotics_factory"),
+                                       planet.lvl("nanite_factory"), self.cfg.universe_speed)
+                return time.time() + max(30.0, dur)
+            return time.time() + _QUEUE_RETRY_S       # el envío falló: reintentar pronto
+
+        # Sin recursos: estimar cuándo los habrá según la producción real.
+        eta_h = self._eta_to_afford(planet, cost)
+        self.log.info("Cola %s: ahorrando para %s (nivel %d); ETA %.1f h.",
+                      planet.coords, real_name, real_lvl, eta_h)
+        if eta_h >= 999:
+            return None   # producción nula: reevaluar el próximo ciclo
+        return time.time() + max(_QUEUE_ETA_FLOOR_S, eta_h * 3600)
+
+    def _process_build_queues(self, planets):
+        """Corre la cola de cada planeta y arma el próximo 'despertar' (el más cercano)."""
+        if not getattr(self.cfg, "enable_build_queue", True):
+            return
+        soonest = 0.0
+        for p in planets:
+            try:
+                wake = self._build_queue_step(p)
+            except Exception as e:
+                self.log.warning("Cola de construcción %s: error procesando la cola: %s", p.coords, e)
+                wake = None
+            if wake and wake > time.time():
+                soonest = wake if soonest == 0.0 else min(soonest, wake)
+        self.next_build_event = soonest
 
     # ------------------------------------------------------------------ #
     # Alimentación de recursos entre planetas (transporte para construir)

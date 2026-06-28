@@ -397,3 +397,13 @@ def research_time(cost: "Cost", lab_level: int, universe_speed: float = 1.0,
     if denom <= 0:
         return 0.0
     return ((cost.metal + cost.crystal) / denom) * 3600.0
+
+
+def building_time(cost: "Cost", robotics_level: int = 0, nanite_level: int = 0,
+                  universe_speed: float = 1.0) -> float:
+    """Segundos estimados de una construcción (fórmula estándar de OGame).
+    Permite saber cuándo terminará sin navegar, para encolar la siguiente."""
+    denom = 2500.0 * (1 + max(robotics_level, 0)) * (2 ** max(nanite_level, 0)) * max(universe_speed, 0.01)
+    if denom <= 0:
+        return 0.0
+    return ((cost.metal + cost.crystal) / denom) * 3600.0

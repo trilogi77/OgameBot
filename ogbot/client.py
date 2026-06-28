@@ -2253,6 +2253,47 @@ class GameClient:
             self.log.debug("Error leyendo fleet slots: %s", e)
             return None
 
+    def read_hourly_production(self, planet) -> Optional[Dict[str, int]]:
+        """Lee la producción REAL por hora (metal/cristal/deut) de la página de ajustes de
+        recursos del planeta. Incluye oficiales, clase, formas de vida e items — más fiable
+        que la estimación por niveles de mina. Devuelve None si no se pudo leer."""
+        pid = str(getattr(planet, "id", "")).replace("planet-", "").replace("moon-", "")
+        if not pid:
+            return None
+        url = (f"{self.cfg.server_url.rstrip('/')}/game/"
+               f"index.php?page=ingame&component=resourcesettings&cp={pid}")
+        try:
+            self.page.goto(url, wait_until="domcontentloaded", timeout=12000)
+            self._delay()
+        except Exception:
+            return None
+        js = r"""() => {
+            const clean = s => parseInt(String(s||'').replace(/[^0-9-]/g, '')) || 0;
+            for (const tr of document.querySelectorAll('tr')) {
+                const label = (tr.innerText || '').toLowerCase();
+                if (label.includes('total por hora') || label.includes('total per hour')
+                        || label.includes('gesamt pro stunde')) {
+                    const nums = [];
+                    tr.querySelectorAll('td, th').forEach(c => {
+                        const v = (c.textContent || '').trim();
+                        // celdas puramente numéricas (excluye la celda de la etiqueta)
+                        if (/[0-9]/.test(v) && !/[a-z]/i.test(v)) nums.push(clean(v));
+                    });
+                    if (nums.length >= 3) return {metal: nums[0], crystal: nums[1], deut: nums[2]};
+                }
+            }
+            return null;
+        }"""
+        try:
+            data = self.page.evaluate(js)
+            if data:
+                self.log.info("Producción real %s: M/h=%d C/h=%d D/h=%d",
+                              planet.coords, data.get("metal", 0), data.get("crystal", 0), data.get("deut", 0))
+            return data
+        except Exception as e:
+            self.log.debug("Error leyendo producción de %s: %s", getattr(planet, "coords", "?"), e)
+            return None
+
     def read_debris_fields(self, planets_with_recyclers: List[Planet] = None) -> List[dict]:
         """Busca campos de escombros en los sistemas de nuestros planetas y alrededores."""
         targets = planets_with_recyclers if planets_with_recyclers is not None else self._planet_cache

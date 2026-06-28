@@ -335,6 +335,8 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.force_resync(account)
         elif path == "/api/state_override":
             self.add_state_override(account)
+        elif path == "/api/build_queue":
+            self.save_build_queue(account)
         elif path == "/api/live/click":
             self.handle_live_click(account)
         elif path == "/api/live/type":
@@ -710,6 +712,53 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             data.append(ov)
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            self.send_json(200, {"status": "ok"})
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+    def save_build_queue(self, account):
+        """Guarda la cola de construcción de un planeta en planets_config[coords].build_queue."""
+        if not account:
+            return self.send_json(400, {"error": "Falta la cuenta"})
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b"{}")
+        except Exception:
+            body = {}
+        coords = (body.get("coords") or "").strip()
+        queue = body.get("queue")
+        if not coords or not isinstance(queue, list):
+            return self.send_json(400, {"error": "Faltan coords o queue"})
+        try:
+            from ogbot import gamedata as gd
+            valid_buildings = set(gd.BUILDING_COST.keys())
+        except Exception:
+            valid_buildings = None
+        clean = []
+        for e in queue:
+            if not isinstance(e, dict):
+                continue
+            name = str(e.get("building", "")).strip()
+            try:
+                lvl = int(e.get("target_level"))
+            except (TypeError, ValueError):
+                continue
+            if not name or lvl <= 0:
+                continue
+            if valid_buildings is not None and name not in valid_buildings:
+                return self.send_json(400, {"error": f"Edificio desconocido: {name}"})
+            clean.append({"building": name, "target_level": lvl})
+        try:
+            cfg = read_account_config(account)
+            pc = cfg.get("planets_config") or {}
+            if not isinstance(pc, dict):
+                pc = {}
+            p = pc.get(coords) or {}
+            if not isinstance(p, dict):
+                p = {}
+            p["build_queue"] = clean
+            pc[coords] = p
+            cfg["planets_config"] = pc
+            write_account_config(account, cfg)
             self.send_json(200, {"status": "ok"})
         except Exception as e:
             self.send_json(500, {"error": str(e)})

@@ -9,6 +9,7 @@ ogbot_stats.json
 messages_read.json
 fleet_in_motion.json
 fleet_flights.json
+recall_requests.json
 bot.pid
 
 # Logs de ejecución

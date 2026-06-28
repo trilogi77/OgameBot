@@ -308,6 +308,21 @@ _JS_READ_MOVEMENTS = """() => {
             }
             mv.arrival_epoch = absEp;
 
+            // 6c. Reversal: OGame muestra cuándo volvería la flota si la recuperas ahora
+            // (el regreso dura lo ya volado). Capturamos su epoch/texto si está, para
+            // derivar la SALIDA y mostrar la hora de vuelta en vivo en la GUI.
+            const revEl = row.querySelector(
+                '.reversal_time, [class*="reversal"] [data-arrival-time], a.reversal, [class*="reversal"]'
+            );
+            let revEp = 0, revTxt = '';
+            if (revEl) {
+                revEp = parseInt(revEl.getAttribute('data-arrival-time')
+                                 || revEl.getAttribute('data-time') || '0') || 0;
+                revTxt = (revEl.getAttribute('title') || revEl.textContent || '').trim();
+            }
+            mv.reversal_epoch = revEp;
+            mv.reversal_text = revTxt;
+
             // 7. Flags
             mv.is_return = row.classList.contains('is_return') ||
                            row.getAttribute('data-return-flight') === 'true' ||
@@ -2408,7 +2423,8 @@ class GameClient:
             self.log.info("Escombros encontrados: %d campos.", len(debris_list))
         return debris_list
 
-    def recall_fleet(self, origin: str, destination: str, mission: str = "deploy") -> bool:
+    def recall_fleet(self, origin: str, destination: str, mission: str = "deploy",
+                     arrival: int = 0) -> bool:
         desc = f"Retornar flota de {origin} -> {destination} ({mission})"
         if self._act(desc):
             return True
@@ -2422,7 +2438,13 @@ class GameClient:
         except Exception:
             pass
 
-        js_recall = """(origin, destination, mission) => {
+        # Empareja por origen+destino+misión y, si hay varias flotas iguales, por la hora de
+        # llegada (data-arrival-time) más cercana a la pedida, para recuperar la correcta.
+        js_recall = """(origin, destination, mission, arrival) => {
+            const norm = m => { m = String(m || '').toLowerCase();
+                                return (m === 'deploy' || m === '4') ? '4' : m; };
+            const want = norm(mission);
+            const candidates = [];
             const rows = document.querySelectorAll(
                 '.eventFleet, .fleetDetails, .fleet_row, tr.flightEventRow'
             );
@@ -2456,26 +2478,40 @@ class GameClient:
                                          (mEl.className.match(/mission(\\d+)/) || [])[1] || '';
                         }
                     }
-                    
-                    if (mission === 'deploy' || mission === '4') {
-                        if (rowMission !== '4' && rowMission !== 'deploy' && !rowMission.toLowerCase().includes('deploy')) {
-                            continue;
-                        }
-                    }
+                    // Filtra SIEMPRE por misión cuando se indica (no solo deploy), para no
+                    // recuperar otra flota distinta en la misma ruta.
+                    if (want && norm(rowMission) && norm(rowMission) !== want) continue;
 
                     const recallBtn = row.querySelector(
                         'a.reversal, .reversal_flight a, a.reversal_flight, a[onclick*="sendRecall"], a[class*="reversal"]'
                     );
-                    if (recallBtn) {
-                        recallBtn.click();
-                        return true;
+                    if (!recallBtn) continue;
+
+                    let rowArr = parseInt(row.getAttribute('data-arrival-time') || '0') || 0;
+                    if (!rowArr) {
+                        const ae = row.querySelector('[data-arrival-time]');
+                        if (ae) rowArr = parseInt(ae.getAttribute('data-arrival-time') || '0') || 0;
                     }
+                    candidates.push({ btn: recallBtn, arr: rowArr });
                 } catch(e) {}
             }
-            return false;
+            if (!candidates.length) return false;
+            let chosen = candidates[0];
+            if (arrival) {
+                let bestDiff = 1e15;
+                for (const c of candidates) {
+                    if (c.arr) {
+                        const d = Math.abs(c.arr - arrival);
+                        if (d < bestDiff) { bestDiff = d; chosen = c; }
+                    }
+                }
+                // si ninguna trae hora, nos quedamos con la primera
+            }
+            chosen.btn.click();
+            return true;
         }"""
         try:
-            result = self.page.evaluate(js_recall, (origin, destination, mission))
+            result = self.page.evaluate(js_recall, (origin, destination, mission, int(arrival or 0)))
             if result:
                 self.log.info("Recall ejecutado en UI para flota %s -> %s", origin, destination)
                 try:

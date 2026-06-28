@@ -1264,6 +1264,10 @@ function loadStats() {
 let flightsCache = [];
 let lastFlightsSig = "";
 let flightsServerOffset = 0;   // segundos que el reloj del bot va por delante del navegador
+const recalledFlights = new Set();   // vuelos cuyo regreso ya se pidió (para no reenviar)
+function flightKey(fl) {
+    return `${fl.mission_code}|${fl.origin}>${fl.destination}|${fl.arrival_epoch || 0}`;
+}
 const MISSION_COLORS = {
     "Ataque": "#ef4444", "Ataque (ACS)": "#ef4444", "Destruir luna": "#ef4444",
     "Transporte": "#38bdf8", "Despliegue": "#22c55e", "Defensa (ACS)": "#22c55e",
@@ -1375,9 +1379,65 @@ function renderFlights() {
             item.appendChild(ships);
         }
 
+        // Regreso de flota (solo vuelos de ida aún en curso): botón + hora de vuelta en vivo
+        // (si se recupera ahora, vuelve en lo ya volado; la hora avanza 2 s por segundo).
+        const stillFlying = !fl.arrival_epoch || fl.arrival_epoch > (Date.now() / 1000 + flightsServerOffset);
+        if (!fl.is_return && stillFlying) {
+            const foot = document.createElement("div");
+            foot.style.cssText = "display:flex; gap:8px; align-items:center; margin-top:6px;";
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "btn-secondary btn-sm";
+            btn.title = "El bot recuperará esta flota en cuanto vea la petición.";
+            if (recalledFlights.has(flightKey(fl))) {
+                btn.disabled = true;
+                btn.textContent = "↩ Regreso pedido";
+            } else {
+                btn.textContent = "↩ Regresar";
+                btn.onclick = () => requestRecall(fl, btn);
+            }
+            foot.appendChild(btn);
+            if (fl.departure_epoch) {
+                const ret = document.createElement("span");
+                ret.className = "flight-return text-muted";
+                ret.style.cssText = "font-size:11px;";
+                ret.dataset.departure = fl.departure_epoch;
+                if (fl.arrival_epoch) ret.dataset.arrival = fl.arrival_epoch;
+                ret.textContent = "vuelve ~ —";
+                foot.appendChild(ret);
+            }
+            item.appendChild(foot);
+        }
+
         listEl.appendChild(item);
     });
     updateFlightTimers();
+}
+
+function requestRecall(fl, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "↩ Enviando…"; }
+    fetch(api("/api/recall"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            origin: fl.origin, destination: fl.destination,
+            mission_code: fl.mission_code, arrival: fl.arrival_epoch || 0
+        })
+    })
+        .then(r => r.json())
+        .then(d => {
+            if (d.error) {
+                showToast("Error: " + d.error, "danger");
+                if (btn) { btn.disabled = false; btn.textContent = "↩ Regresar"; }
+            } else {
+                recalledFlights.add(flightKey(fl));   // recordar para no reenviar al repintar
+                showToast("Regreso solicitado: el bot recuperará la flota en breve.", "success");
+                if (btn) btn.textContent = "↩ Regreso pedido";
+            }
+        })
+        .catch(e => {
+            showToast("Error de red: " + e, "danger");
+            if (btn) { btn.disabled = false; btn.textContent = "↩ Regresar"; }
+        });
 }
 
 function updateFlightTimers() {
@@ -1390,6 +1450,15 @@ function updateFlightTimers() {
         el.textContent = rem > 0
             ? `${Math.floor(rem / 3600)}:${pad(Math.floor((rem % 3600) / 60))}:${pad(rem % 60)}`
             : "Llegó";
+    });
+    // Hora a la que volvería la flota si se recupera AHORA (avanza 2 s por segundo real).
+    document.querySelectorAll("#flights_list .flight-return").forEach(el => {
+        const dep = parseInt(el.dataset.departure || "0");
+        if (!dep) return;
+        const arr = parseInt(el.dataset.arrival || "0");
+        if (arr && arr < nowServer) { el.textContent = ""; return; }   // ya llegó: recall no aplica
+        const returnAt = 2 * nowServer - dep;
+        el.textContent = "vuelve ~ " + new Date(returnAt * 1000).toLocaleTimeString();
     });
 }
 

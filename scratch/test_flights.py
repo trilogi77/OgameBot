@@ -52,4 +52,13 @@ mv_abs = [{"mission": "3", "origin": "1:2:3", "destination": "1:2:4",
            "arrival_text": "0:10:00", "arrival_epoch": 5000, "ships": {}}]
 assert build_flights(mv_abs, 1000.0)[0]["arrival_epoch"] == 5000
 
+# departure_epoch desde el reversal absoluto de OGame: salida = 2*now - reversal.
+mv_rev = [{"mission": "3", "origin": "1:2:3", "destination": "1:2:4",
+           "arrival_text": "0:10:00", "reversal_epoch": 1500, "ships": {}}]
+assert build_flights(mv_rev, 1000.0)[0]["departure_epoch"] == 500
+# departure_epoch desde el contador de regreso (lo ya volado): salida = now - 500.
+mv_rt = [{"mission": "3", "origin": "1:2:3", "destination": "1:2:4",
+          "arrival_text": "0:10:00", "reversal_text": "0:08:20", "ships": {}}]  # 500 s
+assert build_flights(mv_rt, 1000.0)[0]["departure_epoch"] == 500
+
 print("OK")

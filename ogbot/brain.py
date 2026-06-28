@@ -148,6 +148,22 @@ def build_flights(mvs, now, prev=None):
         else:
             secs = parse_time_to_seconds(arrival_text)
             arrival_epoch = round(now + secs) if secs is not None else 0
+        # Salida estimada, para la hora de vuelta si se recupera: el regreso dura lo ya
+        # volado, así que vuelve_en(t) = t + (t - salida). OGame da el 'reversal' (vuelta si
+        # se recall AHORA) = now + (now - salida) -> salida = 2*now - reversal.
+        departure_epoch = 0
+        try:
+            rev_abs = int(mv.get("reversal_epoch") or 0)
+        except (TypeError, ValueError):
+            rev_abs = 0
+        if rev_abs > 0:
+            departure_epoch = round(2 * now - rev_abs)
+        else:
+            rev_secs = parse_time_to_seconds(mv.get("reversal_text", "") or "")
+            if rev_secs and rev_secs < 2592000:   # contador de regreso (lo ya volado)
+                departure_epoch = round(now - rev_secs)
+        if departure_epoch and departure_epoch >= now:
+            departure_epoch = 0   # la salida debe estar en el pasado; si no, descartar
         mcode = str(mv.get("mission", ""))
         f = {
             "mission": MISSION_NAMES_ES.get(mcode, mcode or "?"),
@@ -160,6 +176,7 @@ def build_flights(mvs, now, prev=None):
             "is_hostile": False,
             "arrival_text": arrival_text,
             "arrival_epoch": arrival_epoch,
+            "departure_epoch": departure_epoch,
             "ships": ships,
             "cargo": cargo,
         }
@@ -288,6 +305,71 @@ class Brain:
                 json.dump(self.state_cache, f, indent=2)
         except Exception as e:
             self.log.debug("No se pudo guardar game_state_cache.json: %s", e)
+
+    def _process_recall_requests(self):
+        """Ejecuta los regresos de flota pedidos desde la GUI (recall_requests.json). Se
+        llama con frecuencia (tick del bucle) para que el regreso sea casi inmediato.
+        Reclama el fichero de forma atómica (rename) para no perder peticiones que la GUI
+        escriba justo a la vez, y re-encola las que fallen (hasta 3 intentos)."""
+        import json
+        import os
+        src = "recall_requests.json"
+        if not os.path.exists(src):
+            return
+        work = "recall_requests.processing.json"
+        try:
+            os.replace(src, work)   # lo que escriba la GUI a partir de ahora va a un fichero nuevo
+        except Exception:
+            return
+        try:
+            with open(work, "r", encoding="utf-8") as f:
+                reqs = json.load(f) or []
+        except Exception:
+            reqs = []
+
+        failed = []
+        for r in reqs:
+            origin = str((r or {}).get("origin", "")).strip()
+            dest = str((r or {}).get("destination", "")).strip()
+            mission = str((r or {}).get("mission_code", "")).strip()
+            try:
+                arrival = int((r or {}).get("arrival") or 0)
+            except (TypeError, ValueError):
+                arrival = 0
+            attempts = int((r or {}).get("_attempts", 0) or 0)
+            if not origin or not dest:
+                continue
+            self.log.info("Regreso de flota pedido desde la GUI: %s -> %s (misión %s).", origin, dest, mission)
+            ok = False
+            try:
+                ok = self.client.recall_fleet(origin, dest, mission=mission, arrival=arrival)
+            except Exception as e:
+                self.log.warning("Error al recuperar la flota %s -> %s: %s", origin, dest, e)
+            if ok:
+                self.log.info("Regreso %s -> %s ejecutado.", origin, dest)
+            elif attempts + 1 < 3:
+                r["_attempts"] = attempts + 1
+                failed.append(r)
+                self.log.info("Regreso %s -> %s no encontrado todavía; reintento %d/3.",
+                              origin, dest, attempts + 1)
+            else:
+                self.log.warning("Regreso %s -> %s descartado tras 3 intentos.", origin, dest)
+
+        try:
+            os.remove(work)
+        except Exception:
+            pass
+        # Re-encolar los fallidos junto a las peticiones nuevas llegadas entretanto.
+        if failed:
+            try:
+                existing = []
+                if os.path.exists(src):
+                    with open(src, "r", encoding="utf-8") as f:
+                        existing = json.load(f) or []
+                with open(src, "w", encoding="utf-8") as f:
+                    json.dump(failed + existing, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                self.log.debug("No se pudo re-encolar regresos fallidos: %s", e)
 
     def _apply_pending_gui_requests(self):
         """Aplica peticiones dejadas por la GUI como ficheros: corrección manual de
@@ -486,6 +568,12 @@ class Brain:
         self.initialize_session_stats()
         try:
             while self.running:
+                # Regresos de flota pedidos desde la GUI (se atienden cuanto antes).
+                try:
+                    self._process_recall_requests()
+                except Exception as e:
+                    self.log.debug("Error procesando regresos de flota: %s", e)
+
                 # Comprobación de ataque prioritaria e incondicional (antes de evaluar franja horaria)
                 if getattr(self.cfg, "enable_attack_escape", True):
                     try:
@@ -539,7 +627,13 @@ class Brain:
                                     self._check_and_escape_attacks()
                                 except Exception as e:
                                     self.log.debug("Error comprobando ataques en espera: %s", e)
-                                    
+
+                        # Atender regresos de flota pedidos desde la GUI casi al instante.
+                        try:
+                            self._process_recall_requests()
+                        except Exception as e:
+                            self.log.debug("Error procesando regresos de flota (espera): %s", e)
+
                         time.sleep(5)
                 else:
                     hours_to_sleep = utils.hours_until_active(self.cfg.active_hours)
@@ -583,6 +677,11 @@ class Brain:
                     sweep_interval_s = max(0.25, float(getattr(self.cfg, "night_sweep_interval_hours", 2.0) or 2.0)) * 3600
                     last_sweep = time.time()
                     while self.running and not utils.within_active_hours(self.cfg.active_hours):
+                        # Atender regresos de flota pedidos desde la GUI también de noche.
+                        try:
+                            self._process_recall_requests()
+                        except Exception as e:
+                            self.log.debug("Error procesando regresos de flota (noche): %s", e)
                         if night_sweep and (time.time() - last_sweep) >= sweep_interval_s:
                             last_sweep = time.time()
                             self.log.info("Barrido nocturno: despertando para vaciar planetas...")

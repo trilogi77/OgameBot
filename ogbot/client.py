@@ -316,13 +316,17 @@ _JS_READ_MOVEMENTS = """() => {
             }
             mv.arrival_epoch = absEp;
 
-            // 6c. Reversal: OGame indica (en el hover del botón de regreso) cuándo volvería
-            // la flota si la recuperas ahora. Capturamos de forma exhaustiva su epoch/texto
-            // para derivar la SALIDA y mostrar la hora de vuelta en vivo en la GUI.
+            // 6c. Reversal: el enlace de regreso (a.recallFleet) lleva en data-tooltip-title la
+            // FECHA y HORA exactas de vuelta si se recupera ahora (p.ej. "Retirar...
+            // 28.06.2026<br>22:35:52"). De ahí derivamos la SALIDA real y mostramos la hora de
+            // vuelta exacta en la GUI. También probamos title/textContent y epochs en data-*.
             let revEp = 0, revTxt = '';
             const isEpoch = v => { const n = parseInt(v); return (n > 1000000000 && n < 4000000000) ? n : 0; };
+            const revTip = el => el.getAttribute('data-tooltip-title')
+                                 || el.getAttribute('title') || '';
             const revEls = row.querySelectorAll(
-                'a.reversal, a.reversal_flight, .reversal_flight, .reversal_time, [class*="reversal"], a[onclick*="sendRecall"]'
+                'a.recallFleet, .recallFleet, a.reversal, a.reversal_flight, .reversal_flight, ' +
+                '.reversal_time, [class*="reversal"], a[onclick*="sendRecall"]'
             );
             for (const el of revEls) {
                 // epoch en cualquier data-* del elemento o sus descendientes
@@ -336,10 +340,16 @@ _JS_READ_MOVEMENTS = """() => {
                                    || isEpoch(c.getAttribute('data-end'));
                 }
                 if (!revTxt) {
-                    const t = (el.getAttribute('title') || el.textContent || '').trim();
+                    let t = revTip(el);
+                    if (!t) {
+                        const tt = el.querySelector('[data-tooltip-title], [title]');
+                        if (tt) t = revTip(tt);
+                    }
+                    if (!t) t = el.textContent || '';
+                    t = t.trim();
                     if (t) revTxt = t;
                 }
-                if (revEp) break;
+                if (revEp && revTxt) break;
             }
             mv.reversal_epoch = revEp;
             mv.reversal_text = revTxt;

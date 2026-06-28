@@ -1280,9 +1280,10 @@ function loadFlights() {
         .then(res => res.json())
         .then(data => {
             const flights = data.flights || [];
-            // Corregir el desfase entre el reloj del bot (arrival_epoch/updated) y el del
-            // navegador, para que la cuenta atrás sea exacta aunque el bot esté en Docker.
-            if (data.updated) flightsServerOffset = data.updated - Date.now() / 1000;
+            // Desfase ESTABLE entre el reloj del servidor y el del navegador, usando la hora
+            // ACTUAL del servidor (server_now). No usar 'updated' (hora de escritura): al
+            // quedar fija entre escrituras hacía que la cuenta atrás diera saltos.
+            flightsServerOffset = data.server_now ? (data.server_now - Date.now() / 1000) : 0;
             // Firma por IDENTIDAD de vuelos (no por 'updated'/arrival_epoch, que cambian en
             // cada escritura): así solo repintamos cuando entra/sale un vuelo, no cada poll.
             const sig = flights.map(f =>
@@ -1510,10 +1511,10 @@ function updateFlightTimers() {
         const arr = parseInt(el.dataset.arrival || "0");
         if (arr && arr < nowServer) { el.textContent = ""; return; }   // ya llegó: recall no aplica
         const returnAt = 2 * nowServer - dep;
-        el.textContent = "si vuelve ahora ≈ " + flightWhen(returnAt);
+        el.textContent = "si vuelve ahora " + (el.dataset.est ? "≈ " : "") + flightWhen(returnAt);
         el.title = el.dataset.est
             ? "Hora estimada de vuelta si la regresas ahora (estimada por el tiempo ya volado desde que salió)."
-            : "Hora a la que volvería si la regresas ahora.";
+            : "Hora exacta de vuelta si la regresas ahora (según el dato de regreso de OGame).";
     });
 }
 

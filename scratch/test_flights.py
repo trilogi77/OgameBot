@@ -72,6 +72,15 @@ mv_dt = [{"mission": "3", "origin": "1:2:3", "destination": "1:2:4", "arrival_te
 dep = build_flights(mv_dt, now_dt)[0]["departure_epoch"]
 assert abs(dep - (ret - 1200)) <= 2, dep   # salida = 2*now - ret = ret - 1200
 
+# Formato REAL del tooltip de regreso de OGame: "Retirar...<br>DD.MM.YYYY<br>HH:MM:SS".
+ret_tt = _t.mktime((2030, 1, 1, 22, 35, 52, 0, 0, -1))
+now_tt = ret_tt - 1000
+mv_tt = [{"mission": "4", "origin": "1:2:3", "destination": "4:5:6", "arrival_text": "0:10:00",
+          "reversal_text": "Retirar la flota:<br>01.01.2030<br>22:35:52", "ships": {}}]
+dep_tt = build_flights(mv_tt, now_tt)[0]
+assert abs(dep_tt["departure_epoch"] - (2 * now_tt - ret_tt)) <= 2, dep_tt["departure_epoch"]
+assert not dep_tt.get("departure_estimated"), "el reversal del DOM es EXACTO, no estimado"
+
 # Dedup: una fila de "vuelta" espuria con la MISMA llegada exacta que la ida se fusiona en
 # una sola, conservando naves y el tipo de cuerpo más específico (luna).
 dup = build_flights([

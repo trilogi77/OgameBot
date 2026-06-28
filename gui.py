@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import json
+import time
 import yaml
 import shutil
 import subprocess
@@ -295,7 +296,7 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/fleet_motion":
             self._send_json_file(account, "fleet_in_motion.json", {})
         elif path == "/api/flights":
-            self._send_json_file(account, "fleet_flights.json", {"flights": []})
+            self.get_flights(account)
         elif path == "/api/stats":
             self.get_stats(account)
         elif path == "/api/messages":
@@ -528,6 +529,23 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.send_json(500, {"error": str(e)})
 
     # ------------------------------------------------------ datos por API --
+    def get_flights(self, account):
+        """Sirve los vuelos e incluye 'server_now' (hora ACTUAL del servidor) para que el
+        navegador calcule un desfase de reloj ESTABLE. Antes se usaba 'updated' (hora de
+        escritura del fichero), que al quedar fija entre escrituras hacía que la cuenta atrás
+        diera saltos (bajaba y volvía a subir)."""
+        data = {"flights": []}
+        if account:
+            p = acc_path(account, "fleet_flights.json")
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception as e:
+                    return self.send_json(500, {"error": str(e)})
+        data["server_now"] = time.time()
+        self.send_json(200, data)
+
     def _send_json_file(self, account, name, default):
         if not account:
             return self.send_json(200, default)

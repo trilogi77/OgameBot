@@ -400,6 +400,18 @@ class Brain:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.log = utils.setup_logger("ogbot", cfg.log_file, cfg.log_level)
+        # Servidores con bodega en sondas (raid con sondas): fija la capacidad real para que
+        # todo el cálculo (carga, botín, combate, combustible) la tenga en cuenta. Solo se
+        # aplica si el raid con sondas está activo, para no alterar el resto del juego.
+        if getattr(cfg, "farm_with_probes", False):
+            pc = int(getattr(cfg, "espionage_probe_cargo", 0) or 0)
+            if pc > 0:
+                gd.SHIPS["espionage_probe"].cargo = pc
+            else:
+                self.log.warning(
+                    "farm_with_probes activo pero espionage_probe_cargo=0; uso la bodega de "
+                    "gamedata (%d u). Pon la bodega real de tu servidor o el raid con sondas "
+                    "saqueará casi nada.", gd.SHIPS["espionage_probe"].cargo)
         self.client = GameClient(cfg, self.log)
         self.api = UniverseAPI(cfg.server_url, logger=self.log) if cfg.server_url else None
         self.rate = utils.RateLimiter(cfg.max_actions_per_hour)
@@ -1404,10 +1416,18 @@ class Brain:
             return
 
         # 1. Template de flota de ataque
+        use_probes = bool(getattr(self.cfg, "farm_with_probes", False))
         template = {k: v for k, v in
                     (self.cfg.attacker_fleet_template or {}).items() if v > 0}
         if not template:
-            template = {"large_cargo": 5}
+            template = {"espionage_probe": 1} if use_probes else {"large_cargo": 5}
+
+        # Dimensionado de la flota de ataque según el modo (sondas con bodega vs cargueros).
+        def size_fleet(p, full_loot):
+            if use_probes:
+                return fleet_mod.size_attack_fleet_probes(
+                    p, full_loot, template, gd.SHIPS["espionage_probe"].cargo)
+            return fleet_mod.size_attack_fleet_for_planet(p, full_loot, template)
 
         # Comprobar si tenemos al menos una naves de estos tipos en algún origen elegible
         has_farming_fleet = any(self._has_ships(eligible_locations, ship_type, min_count=1) for ship_type in template.keys())
@@ -1483,7 +1503,7 @@ class Brain:
         while time.time() < deadline:
             mvs = self.client.read_movements()
             spy_flying = [m for m in mvs
-                          if m.get("mission") in ("9", "espionage", "Espionage")]
+                          if m.get("mission") in ("6", "espionage", "Espionage")]
             if not spy_flying:
                 break
             self.log.debug("Sondas aún en vuelo: %d. Comprobando en 15s.", len(spy_flying))
@@ -1521,8 +1541,8 @@ class Brain:
             best_atk_for_target = None
             reasons_by_planet = {}
             for p in eligible_locations:
-                # 1. Dimensionar la flota específicamente para los cargueros disponibles en este origen
-                atk_fleet = fleet_mod.size_attack_fleet_for_planet(p, full_loot, template)
+                # 1. Dimensionar la flota específicamente para lo disponible en este origen
+                atk_fleet = size_fleet(p, full_loot)
                 
                 # 2. Verificar que el origen tenga toda la flota requerida (cargueros + cazas del template)
                 if not can_afford_fleet(p, atk_fleet):
@@ -1591,7 +1611,7 @@ class Brain:
                 # Intentar buscar otro origen elegible sobre la marcha
                 best_alt = None
                 for p in eligible_locations:
-                    alt_fleet = fleet_mod.size_attack_fleet_for_planet(p, full_loot, template)
+                    alt_fleet = size_fleet(p, full_loot)
                     if not can_afford_fleet(p, alt_fleet):
                         continue
                     if tgt.cargo_capacity(alt_fleet) == 0:

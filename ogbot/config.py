@@ -92,6 +92,10 @@ class Config:
     only_inactive_targets: bool = True       # solo jugadores inactivos (más seguro/legal-grey)
     avoid_strong_players: bool = True
     farming_attack_cooldown_hours: float = 2.0  # tiempo de espera (en horas) para volver a atacar/espiar
+    # Servidores donde las sondas de espionaje tienen bodega y son más rápidas: permite
+    # atacar inactivos con sondas (raid con sondas) en lugar de cargueros.
+    farm_with_probes: bool = False
+    espionage_probe_cargo: int = 0   # bodega real por sonda en este servidor (0 = usar gamedata)
     attacker_fleet_template: dict = field(default_factory=lambda: {
         "small_cargo": 0, "large_cargo": 0, "light_fighter": 0, "cruiser": 0,
     })

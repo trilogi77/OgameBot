@@ -133,6 +133,22 @@ def size_attack_fleet_for_planet(planet: Planet, loot: Resources, template: Dict
     return fleet
 
 
+def size_attack_fleet_probes(planet: Planet, loot: Resources, template: Dict[str, int],
+                             probe_cargo: int = 0) -> Dict[str, int]:
+    """Dimensiona un raid con sondas de espionaje (servidores donde las sondas tienen bodega).
+    Mantiene las escoltas del template y escala las sondas según el botín y las disponibles
+    en el hangar. Devuelve solo escoltas si no hay sondas o bodega (cargo_capacity=0 -> se
+    descarta luego en la evaluación)."""
+    cap = probe_cargo if probe_cargo > 0 else gd.SHIPS["espionage_probe"].cargo
+    fleet = {k: v for k, v in template.items() if k != "espionage_probe" and v > 0}  # escoltas
+    avail = planet.ships.get("espionage_probe", 0)
+    if cap <= 0 or avail <= 0:
+        return fleet
+    needed = math.ceil(loot.total() / cap) if loot.total() > 0 else 1
+    fleet["espionage_probe"] = max(1, min(avail, needed))
+    return fleet
+
+
 def fleetsave_plan(origin: Coords, all_planets: List[Coords], cfg: Config,
                    offline_hours: float = 8.0) -> Optional[dict]:
     """

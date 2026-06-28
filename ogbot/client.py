@@ -1594,7 +1594,7 @@ class GameClient:
             time.sleep(10)
             mvs = self.read_movements()
             in_flight = any(
-                m.get("mission") in ("9", "espionage", "Espionage") and
+                m.get("mission") in ("6", "espionage", "Espionage") and
                 coord_str in m.get("destination", "")
                 for m in mvs
             )

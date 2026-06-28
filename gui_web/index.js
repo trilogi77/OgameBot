@@ -1358,6 +1358,14 @@ function renderFlights() {
             item.appendChild(arr);
         }
 
+        // Ida y vuelta agrupadas: la pata de vuelta vinculada se muestra aquí (misma tarjeta).
+        if (fl.return_arrival_epoch) {
+            const home = document.createElement("div");
+            home.style.cssText = "font-size:11px; color: var(--text-muted, #8b949e); margin-bottom:4px;";
+            home.textContent = "↩ Vuelve a casa " + new Date(fl.return_arrival_epoch * 1000).toLocaleTimeString();
+            item.appendChild(home);
+        }
+
         const cargoTxt = flightCargoText(fl.cargo);
         if (cargoTxt) {
             const cargo = document.createElement("div");
@@ -1382,7 +1390,9 @@ function renderFlights() {
         // Regreso de flota (solo vuelos de ida aún en curso): botón + hora de vuelta en vivo
         // (si se recupera ahora, vuelve en lo ya volado; la hora avanza 2 s por segundo).
         const stillFlying = !fl.arrival_epoch || fl.arrival_epoch > (Date.now() / 1000 + flightsServerOffset);
-        if (!fl.is_return && stillFlying) {
+        // Las expediciones solo pueden regresarse en el momento del envío, no en vuelo.
+        const isExpedition = fl.mission_code === "15" || fl.mission === "Expedición";
+        if (!fl.is_return && stillFlying && !isExpedition) {
             const foot = document.createElement("div");
             foot.style.cssText = "display:flex; gap:8px; align-items:center; margin-top:6px;";
             const btn = document.createElement("button");

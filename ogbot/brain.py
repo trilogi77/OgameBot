@@ -215,28 +215,40 @@ def _dedup_flights(flights):
     return out
 
 
-def _pair_departures(flights):
-    """Deriva la SALIDA (para la 'hora de vuelta si se recupera ahora') emparejando cada vuelo
-    de ida con su pata de vuelta del MISMO vuelo (misma misión y ruta) que llega después.
-    Viaje simétrico sin estancia: salida = 2*llegada_ida − llegada_vuelta. Solo rellena los
-    que no tengan ya 'departure_epoch' del reversal del DOM (p.ej. el despliegue, de una sola
-    ida, necesita el reversal del juego)."""
+def _link_round_trips(flights):
+    """Agrupa cada vuelo de ida con su pata de vuelta vinculada (misma misión y ruta, con
+    llegada posterior) en UNA sola tarjeta, para no mostrarlas separadas:
+      - la ida hereda la hora de vuelta a casa  -> return_arrival_epoch/text
+      - si falta, deriva la SALIDA (para la 'hora de vuelta si se recupera ahora'): viaje
+        simétrico sin estancia, salida = 2*llegada_ida − llegada_vuelta
+      - la pata de vuelta se descarta de la lista
+    La vuelta sin ida visible (la ida ya llegó) se conserva como tarjeta propia. El despliegue,
+    de una sola ida, no tiene vuelta que emparejar: su hora de regreso necesita el reversal del
+    juego (capturable con OGBOT_DUMP_MOVEMENTS=1)."""
     returns = [f for f in flights if f.get("is_return") and int(f.get("arrival_epoch") or 0)]
-    if not returns:
-        return
+    used = set()
     for f in flights:
-        if f.get("is_return") or f.get("departure_epoch"):
+        if f.get("is_return"):
             continue
         a1 = int(f.get("arrival_epoch") or 0)
         if not a1:
             continue
-        for r in returns:
+        for i, r in enumerate(returns):
+            if i in used:
+                continue
+            a2 = int(r.get("arrival_epoch") or 0)
             if (r.get("mission_code") == f.get("mission_code")
                     and r.get("origin") == f.get("origin")
                     and r.get("destination") == f.get("destination")
-                    and int(r.get("arrival_epoch") or 0) > a1):
-                f["departure_epoch"] = 2 * a1 - int(r["arrival_epoch"])
+                    and a2 > a1):
+                f["return_arrival_epoch"] = a2
+                f["return_arrival_text"] = r.get("arrival_text", "")
+                if not f.get("departure_epoch"):
+                    f["departure_epoch"] = 2 * a1 - a2
+                used.add(i)
                 break
+    drop = {id(returns[i]) for i in used}
+    return [f for f in flights if id(f) not in drop]
 
 
 def build_flights(mvs, now, prev=None):
@@ -295,8 +307,24 @@ def build_flights(mvs, now, prev=None):
                 f["cargo"] = pf.get("cargo", {}) or {"metal": 0, "crystal": 0, "deut": 0}
         flights.append(f)
     flights = _dedup_flights(flights)
-    _pair_departures(flights)
+    flights = _link_round_trips(flights)
     return flights
+
+
+def _retain_unlanded(new_flights, prev, now):
+    """Evita que el panel de Vuelos se vacíe por una lectura de movimientos fallida o
+    transitoria (navegación/selector). Si la lista nueva viene VACÍA, conserva del fichero
+    previo los vuelos cuya llegada (o vuelta a casa) aún está en el futuro; los ya aterrizados
+    se descartan, de modo que cuando de verdad no hay flotas la lista se vacía sola en cuanto
+    pasan sus horas de llegada. Si la lista nueva trae datos, se usa tal cual."""
+    if new_flights:
+        return new_flights
+    kept = []
+    for f in (prev or []):
+        horizon = max(int(f.get("return_arrival_epoch") or 0), int(f.get("arrival_epoch") or 0))
+        if horizon and horizon > now:
+            kept.append(f)
+    return kept
 
 
 class Brain:
@@ -1028,10 +1056,19 @@ class Brain:
                 json.dump(planets_data, f, indent=2)
             with open("fleet_in_motion.json", "w", encoding="utf-8") as f:
                 json.dump(ships_in_motion, f, indent=2)
-            # Lista de vuelos para la pestaña "Vuelos" (datos completos: naves y carga).
+            # Lista de vuelos para la pestaña "Vuelos" (datos completos: naves y carga). Si la
+            # lectura vino vacía (fallo transitorio), NO vaciamos el panel: conservamos los
+            # vuelos previos aún en curso (_retain_unlanded).
+            prev_flights = []
+            try:
+                with open("fleet_flights.json", "r", encoding="utf-8") as pf:
+                    prev_flights = json.load(pf).get("flights", [])
+            except Exception:
+                prev_flights = []
+            now_ts = time.time()
             with open("fleet_flights.json", "w", encoding="utf-8") as f:
-                json.dump({"flights": build_flights(mvs, time.time()),
-                           "updated": time.time()}, f, ensure_ascii=False, indent=2)
+                json.dump({"flights": _retain_unlanded(build_flights(mvs, now_ts), prev_flights, now_ts),
+                           "updated": now_ts}, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.log.debug("No se pudo guardar planets_cache.json: %s", e)
 
@@ -2479,9 +2516,10 @@ class Brain:
             if os.path.exists("fleet_flights.json"):
                 with open("fleet_flights.json", "r", encoding="utf-8") as f:
                     prev = json.load(f).get("flights", [])
+            now_ts = time.time()
             with open("fleet_flights.json", "w", encoding="utf-8") as f:
-                json.dump({"flights": build_flights(mvs, time.time(), prev=prev),
-                           "updated": time.time()}, f, ensure_ascii=False, indent=2)
+                json.dump({"flights": _retain_unlanded(build_flights(mvs, now_ts, prev=prev), prev, now_ts),
+                           "updated": now_ts}, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.log.debug("No se pudo refrescar fleet_flights.json: %s", e)
         planets = self.client.read_planets()

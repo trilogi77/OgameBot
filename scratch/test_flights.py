@@ -1,6 +1,7 @@
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ogbot.brain import build_flights, parse_time_to_seconds, _split_ships_cargo
+from ogbot.brain import (build_flights, parse_time_to_seconds, _split_ships_cargo,
+                         _retain_unlanded)
 
 # Parser canónico: HH:MM:SS, Xh Ym Zs y segundos.
 assert parse_time_to_seconds("1:02:03") == 3723
@@ -83,15 +84,34 @@ assert len(dup) == 1, dup
 assert dup[0]["is_return"] is False and dup[0]["dest_type"] == "moon", dup[0]
 assert dup[0]["ships"] == {"Nave grande de carga": 13}, dup[0]["ships"]
 
-# Patas de ida y vuelta REALES (distinta llegada) NO se fusionan; la ida deriva su salida.
+# Ida y vuelta vinculadas (distinta llegada) se AGRUPAN en una sola tarjeta: la ida hereda la
+# hora de vuelta a casa y deriva su salida; la pata de vuelta ya no aparece suelta.
 pair = build_flights([
     {"mission": "3", "origin": "1:2:3", "destination": "1:2:4", "arrival_epoch": 1600,
      "is_return": False, "ships": {"Nave grande de carga": 20}},
     {"mission": "3", "origin": "1:2:3", "destination": "1:2:4", "arrival_epoch": 2200,
      "is_return": True, "ships": {}},
 ], 1000.0)
-assert len(pair) == 2, pair
-out = [f for f in pair if not f["is_return"]][0]
-assert out["departure_epoch"] == 2 * 1600 - 2200, out["departure_epoch"]   # = 1000
+assert len(pair) == 1, pair
+assert pair[0]["is_return"] is False
+assert pair[0]["departure_epoch"] == 2 * 1600 - 2200, pair[0]["departure_epoch"]   # = 1000
+assert pair[0]["return_arrival_epoch"] == 2200, pair[0]
+
+# Una vuelta SIN ida visible (la ida ya llegó) se conserva como tarjeta propia.
+solo = build_flights([
+    {"mission": "1", "origin": "1:2:3", "destination": "9:9:9", "arrival_epoch": 2200,
+     "is_return": True, "ships": {"Cazador ligero": 5}},
+], 1000.0)
+assert len(solo) == 1 and solo[0]["is_return"] is True, solo
+
+# Lectura vacía (fallo transitorio): NO se vacía el panel; se conservan los vuelos aún en curso
+# y se descartan los ya aterrizados.
+prev_keep = [{"arrival_epoch": 2000, "origin": "a"}, {"return_arrival_epoch": 3000, "origin": "b"}]
+prev_drop = [{"arrival_epoch": 500, "origin": "c"}]
+assert _retain_unlanded([], prev_keep + prev_drop, 1000.0) == prev_keep
+# Si la lectura trae datos, se usan tal cual (ignora el previo).
+assert _retain_unlanded([{"origin": "x"}], prev_keep, 1000.0) == [{"origin": "x"}]
+# Sin previo y lectura vacía -> lista vacía (no hay flotas de verdad).
+assert _retain_unlanded([], [], 1000.0) == []
 
 print("OK")

@@ -2252,8 +2252,11 @@ class GameClient:
             self.log.debug("Error leyendo movimientos: %s", e)
             return []
         # Diagnóstico opcional: vuelca el HTML crudo de las filas de flota para depurar el
-        # parseo (tipo luna/planeta, reversal/hora de vuelta). Activar con OGBOT_DUMP_MOVEMENTS=1.
-        if os.environ.get("OGBOT_DUMP_MOVEMENTS"):
+        # parseo (tipo luna/planeta, reversal/hora de vuelta). Se activa con la variable de
+        # entorno OGBOT_DUMP_MOVEMENTS=1 o creando un fichero 'dump_movements.txt' junto al bot
+        # (cómodo en Docker); el fichero se borra tras volcar una vez.
+        flag_file = "dump_movements.txt"
+        if os.environ.get("OGBOT_DUMP_MOVEMENTS") or os.path.exists(flag_file):
             try:
                 html = self.page.evaluate(
                     "() => Array.from(document.querySelectorAll("
@@ -2263,6 +2266,11 @@ class GameClient:
                 with open("movement_debug.html", "w", encoding="utf-8") as f:
                     f.write(html or "")
                 self.log.info("Volcado de movimientos en movement_debug.html (%d filas).", len(data))
+                try:
+                    if os.path.exists(flag_file):
+                        os.remove(flag_file)
+                except OSError:
+                    pass
             except Exception as e:
                 self.log.debug("No se pudo volcar movement_debug.html: %s", e)
         return data

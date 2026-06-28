@@ -448,6 +448,8 @@ function mapConfigToUI(cfg) {
     setCheck("only_inactive_targets", cfg.only_inactive_targets);
     setVal("max_attack_targets_per_cycle", cfg.max_attack_targets_per_cycle !== undefined ? cfg.max_attack_targets_per_cycle : 8);
     setVal("min_loot_value", cfg.min_loot_value !== undefined ? cfg.min_loot_value : 50000);
+    setCheck("farm_with_probes", cfg.farm_with_probes);
+    setVal("espionage_probe_cargo", cfg.espionage_probe_cargo !== undefined ? cfg.espionage_probe_cargo : 0);
 
     // Objetivos de flota
     const targets = cfg.fleet_targets || {};
@@ -570,6 +572,8 @@ function saveChanges() {
     globalConfig.only_inactive_targets = getCheck("only_inactive_targets");
     globalConfig.max_attack_targets_per_cycle = parseInt(getVal("max_attack_targets_per_cycle")) || 8;
     globalConfig.min_loot_value = parseInt(getVal("min_loot_value")) || 50000;
+    globalConfig.farm_with_probes = getCheck("farm_with_probes");
+    globalConfig.espionage_probe_cargo = parseInt(getVal("espionage_probe_cargo")) || 0;
 
     // Guardar objetivos de flota
     globalConfig.fleet_targets = {

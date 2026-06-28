@@ -400,18 +400,7 @@ class Brain:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.log = utils.setup_logger("ogbot", cfg.log_file, cfg.log_level)
-        # Servidores con bodega en sondas (raid con sondas): fija la capacidad real para que
-        # todo el cálculo (carga, botín, combate, combustible) la tenga en cuenta. Solo se
-        # aplica si el raid con sondas está activo, para no alterar el resto del juego.
-        if getattr(cfg, "farm_with_probes", False):
-            pc = int(getattr(cfg, "espionage_probe_cargo", 0) or 0)
-            if pc > 0:
-                gd.SHIPS["espionage_probe"].cargo = pc
-            else:
-                self.log.warning(
-                    "farm_with_probes activo pero espionage_probe_cargo=0; uso la bodega de "
-                    "gamedata (%d u). Pon la bodega real de tu servidor o el raid con sondas "
-                    "saqueará casi nada.", gd.SHIPS["espionage_probe"].cargo)
+        self._apply_probe_cargo(warn=True)
         self.client = GameClient(cfg, self.log)
         self.api = UniverseAPI(cfg.server_url, logger=self.log) if cfg.server_url else None
         self.rate = utils.RateLimiter(cfg.max_actions_per_hour)
@@ -1059,6 +1048,7 @@ class Brain:
             new_cfg = Config.load(path)
             for k, v in new_cfg.__dict__.items():
                 setattr(self.cfg, k, v)
+            self._apply_probe_cargo()   # aplicar cambios de bodega de sonda hechos desde la GUI
             self.log.info("Configuración recargada desde el disco.")
         except Exception as e:
             self.log.warning("No se pudo recargar la configuración desde el disco: %s", e)
@@ -1407,6 +1397,21 @@ class Brain:
                 ok = self.client.build_ships(home, "large_cargo", 10)
                 if ok:
                     self.record_session_action("fleet", "large_cargo", 10, str(home.coords))
+
+    def _apply_probe_cargo(self, warn: bool = False):
+        """Servidores con bodega en sondas (raid con sondas): fija la capacidad real en el
+        modelo de juego para que carga/botín/combate/combustible la usen. Solo si el raid
+        con sondas está activo. Se llama al iniciar y al recargar config (cambios de la GUI)."""
+        if not getattr(self.cfg, "farm_with_probes", False):
+            return
+        pc = int(getattr(self.cfg, "espionage_probe_cargo", 0) or 0)
+        if pc > 0:
+            gd.SHIPS["espionage_probe"].cargo = pc
+        elif warn:
+            self.log.warning(
+                "farm_with_probes activo pero espionage_probe_cargo=0; uso la bodega de "
+                "gamedata (%d u). Pon la bodega real de tu servidor o el raid con sondas "
+                "saqueará casi nada.", gd.SHIPS["espionage_probe"].cargo)
 
     def _farm(self, locations):
         # Filtrar ubicaciones origen elegibles para farmeo (planetas y lunas)

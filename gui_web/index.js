@@ -1284,11 +1284,16 @@ function loadFlights() {
             // ACTUAL del servidor (server_now). No usar 'updated' (hora de escritura): al
             // quedar fija entre escrituras hacía que la cuenta atrás diera saltos.
             flightsServerOffset = data.server_now ? (data.server_now - Date.now() / 1000) : 0;
-            // Firma por IDENTIDAD de vuelos (no por 'updated'/arrival_epoch, que cambian en
-            // cada escritura): así solo repintamos cuando entra/sale un vuelo, no cada poll.
+            // Firma por contenido VISIBLE de cada vuelo (no por 'updated', que cambia siempre):
+            // repintamos cuando entra/sale un vuelo O cuando uno gana su hora de vuelta a casa,
+            // su estimación de regreso, naves o carga (datos que llegan en una lectura posterior).
+            const cargoSum = c => c ? ((c.metal || 0) + (c.crystal || 0) + (c.deut || 0)) : 0;
             const sig = flights.map(f =>
-                `${f.mission_code}|${f.origin}>${f.destination}|${f.is_return ? "r" : "o"}`).sort().join(";");
-            if (sig === lastFlightsSig) return;   // mismo conjunto de vuelos: no repintamos
+                `${f.mission_code}|${f.origin}>${f.destination}|${f.is_return ? "r" : "o"}` +
+                `|${f.arrival_epoch || 0}|${f.departure_epoch || 0}|${f.return_arrival_epoch || 0}` +
+                `|${f.departure_estimated ? 1 : 0}|${Object.keys(f.ships || {}).length}|${cargoSum(f.cargo)}`
+            ).sort().join(";");
+            if (sig === lastFlightsSig) return;   // sin cambios visibles: no repintamos
             lastFlightsSig = sig;
             flightsCache = flights;
             renderFlights();
@@ -1410,7 +1415,8 @@ function renderFlights() {
         if (!fl.is_return && stillFlying && !isExpedition) {
             const btn = document.createElement("button");
             btn.type = "button";
-            btn.className = "btn-secondary btn-sm";
+            btn.className = "btn-secondary btn-sm flight-recall-btn";
+            if (fl.arrival_epoch) btn.dataset.arrival = fl.arrival_epoch;
             btn.title = "El bot recuperará esta flota en cuanto vea la petición.";
             if (recalledFlights.has(flightKey(fl))) {
                 btn.disabled = true;
@@ -1420,7 +1426,7 @@ function renderFlights() {
                 btn.onclick = () => requestRecall(fl, btn);
             }
             tdAct.appendChild(btn);
-            if (fl.departure_epoch) {
+            if (fl.departure_epoch > 0) {
                 const ret = document.createElement("div");
                 ret.className = "flight-return text-muted";
                 ret.style.cssText = "font-size:11px; margin-top:3px;";
@@ -1510,11 +1516,18 @@ function updateFlightTimers() {
         if (!dep) return;
         const arr = parseInt(el.dataset.arrival || "0");
         if (arr && arr < nowServer) { el.textContent = ""; return; }   // ya llegó: recall no aplica
+        if (dep >= nowServer) { el.textContent = ""; return; }          // salida no en el pasado: aún no aplica
         const returnAt = 2 * nowServer - dep;
         el.textContent = "si vuelve ahora " + (el.dataset.est ? "≈ " : "") + flightWhen(returnAt);
         el.title = el.dataset.est
             ? "Hora estimada de vuelta si la regresas ahora (estimada por el tiempo ya volado desde que salió)."
             : "Hora exacta de vuelta si la regresas ahora (según el dato de regreso de OGame).";
+    });
+    // Una flota que aterriza estando en pantalla: desactivar su botón de Regresar (la cuenta
+    // atrás ya marca "Llegó"); evita pedir el regreso de algo que ya llegó.
+    document.querySelectorAll("#flights_list .flight-recall-btn").forEach(el => {
+        const arr = parseInt(el.dataset.arrival || "0");
+        if (arr && arr < nowServer && !el.disabled) { el.disabled = true; el.textContent = "Llegó"; }
     });
 }
 

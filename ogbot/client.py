@@ -324,6 +324,10 @@ _JS_READ_MOVEMENTS = """() => {
             const isEpoch = v => { const n = parseInt(v); return (n > 1000000000 && n < 4000000000) ? n : 0; };
             const revTip = el => el.getAttribute('data-tooltip-title')
                                  || el.getAttribute('title') || '';
+            // PRIORIDAD: el tooltip exacto (fecha+hora) del ancla de regreso. Se coge antes del
+            // barrido genérico para que un contenedor con un contador suelto no lo tape.
+            const recallA = row.querySelector('a.recallFleet, a[onclick*="sendRecall"], a.reversal');
+            if (recallA) revTxt = revTip(recallA).trim();
             const revEls = row.querySelectorAll(
                 'a.recallFleet, .recallFleet, a.reversal, a.reversal_flight, .reversal_flight, ' +
                 '.reversal_time, [class*="reversal"], a[onclick*="sendRecall"]'
@@ -2308,7 +2312,9 @@ class GameClient:
                 )
                 with open("movement_debug.html", "w", encoding="utf-8") as f:
                     f.write(html or "")
-                self.log.info("Volcado de movimientos en movement_debug.html (%d filas).", len(data))
+                rows_dumped = (html.count("===== fila =====") + 1) if html else 0
+                self.log.info("Volcado de movimientos en movement_debug.html (%d filas, %d parseadas).",
+                              rows_dumped, len(data))
                 try:
                     if os.path.exists(flag_file):
                         os.remove(flag_file)

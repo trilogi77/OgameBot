@@ -146,4 +146,45 @@ stab = build_flights([
 ], 3000.0, prev=dep1)
 assert stab[0]["arrival_epoch"] == 6000, stab[0]["arrival_epoch"]   # reutiliza el del previo
 
+# Carry-over: una lectura sin reversal (event_list) conserva la salida/vuelta EXACTAS del previo
+# (antes se perdían y se re-estimaban en cada lectura ligera, haciendo parpadear el dato).
+prev_exact = [{"mission_code": "4", "origin": "1:2:3", "destination": "4:5:6", "is_return": False,
+               "arrival_epoch": 6000, "departure_epoch": 1200, "return_arrival_epoch": 7200,
+               "return_arrival_text": "", "first_seen": 1200, "ships": {"x": 1},
+               "cargo": {"metal": 0, "crystal": 0, "deut": 0}}]
+carried = build_flights([
+    {"mission": "4", "origin": "1:2:3", "destination": "4:5:6", "arrival_epoch": 6000,
+     "is_return": False, "ships": {}}], 3000.0, prev=prev_exact)
+assert carried[0]["departure_epoch"] == 1200, carried[0]          # no se re-estima
+assert not carried[0].get("departure_estimated"), carried[0]      # sigue siendo exacta
+assert carried[0]["return_arrival_epoch"] == 7200, carried[0]
+
+# FIFO: dos idas + dos vueltas en la misma ruta se emparejan por orden de llegada (no de lista).
+fifo = build_flights([
+    {"mission": "3", "origin": "1:2:3", "destination": "1:2:4", "arrival_epoch": 2000, "is_return": False, "ships": {"a": 1}},
+    {"mission": "3", "origin": "1:2:3", "destination": "1:2:4", "arrival_epoch": 1000, "is_return": False, "ships": {"b": 1}},
+    {"mission": "3", "origin": "1:2:3", "destination": "1:2:4", "arrival_epoch": 2500, "is_return": True, "ships": {}},
+    {"mission": "3", "origin": "1:2:3", "destination": "1:2:4", "arrival_epoch": 1500, "is_return": True, "ships": {}},
+], 100.0)
+by_arr = {f["arrival_epoch"]: f for f in fifo if not f["is_return"]}
+assert len(fifo) == 2, fifo
+assert by_arr[1000]["return_arrival_epoch"] == 1500, by_arr[1000]
+assert by_arr[2000]["return_arrival_epoch"] == 2500, by_arr[2000]
+
+# Expedición (con estancia): la fórmula 2*a1-a2 da salida negativa -> se rechaza y cae a la
+# estimación por first_seen; nunca se muestra como exacta.
+exp = build_flights([
+    {"mission": "15", "origin": "1:2:3", "destination": "1:2:16", "arrival_epoch": 2000, "is_return": False, "ships": {"a": 1}},
+    {"mission": "15", "origin": "1:2:3", "destination": "1:2:16", "arrival_epoch": 9000, "is_return": True, "ships": {}},
+], 1500.0)
+exp_out = [f for f in exp if not f["is_return"]][0]
+assert exp_out["departure_epoch"] > 0 and exp_out.get("departure_estimated") is True, exp_out
+
+# Dos flotas distintas SIN llegada legible no se fusionan (clave de dedup con id único).
+no_arr = build_flights([
+    {"mission": "4", "origin": "1:2:3", "destination": "4:5:6", "arrival_text": "", "ships": {"a": 1}},
+    {"mission": "4", "origin": "1:2:3", "destination": "4:5:6", "arrival_text": "", "ships": {"b": 2}},
+], 1000.0)
+assert len(no_arr) == 2, no_arr
+
 print("OK")

@@ -111,4 +111,10 @@ assert ledger()["20-10"]["notified"] == "1"
 run(make_fake([spy_compact("11", enemy="NodStar", to="1:134:10")], planets))
 assert sent == [], sent
 
+# 8) Sin last_planets pero con planets_cache.json: own_coords sale del caché (planeta+luna).
+with open("planets_cache.json", "w", encoding="utf-8") as f:
+    json.dump([{"coords": "5:5:5", "moon": {"coords": "6:6:6"}}], f)
+run(make_fake([spy_compact("12", enemy="Raider", to="6:6:6")]))   # luna propia, planets=[]
+assert len(sent) == 1 and "[6:6:6]" in sent[0][1], sent
+
 print("OK")

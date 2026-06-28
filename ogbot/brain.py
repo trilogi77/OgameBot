@@ -3205,6 +3205,19 @@ class Brain:
                 own_coords.add(f"{c.galaxy}:{c.system}:{c.position}")
             except Exception:
                 pass
+        # Respaldo robusto: el caché persistente de planetas (siempre disponible, sin depender
+        # de que el ciclo ya haya leído ubicaciones cuando corre esta función).
+        try:
+            import json
+            with open("planets_cache.json", "r", encoding="utf-8") as f:
+                for p in json.load(f):
+                    if p.get("coords"):
+                        own_coords.add(p["coords"])
+                    moon = p.get("moon") or {}
+                    if moon.get("coords"):
+                        own_coords.add(moon["coords"])
+        except Exception:
+            pass
 
         for m in msgs:
             msg_id = f"20-{m['id']}"

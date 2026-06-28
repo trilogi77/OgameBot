@@ -2647,7 +2647,6 @@ class Brain:
             "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
             "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}},
             "parsed_messages": [],
-            "spy_seen_at_boot": [],
             "session_actions": {
                 "buildings": {},
                 "research": [],
@@ -2661,9 +2660,9 @@ class Brain:
         }
 
         # Combate/expedición/reciclaje: marcamos los previos como vistos (no contabilizamos
-        # loot antiguo). El espionaje (tab 20) va aparte: guardamos los avisos YA presentes
-        # en 'spy_seen_at_boot' para no soltar un alud al arrancar, pero SIN marcarlos
-        # 'parsed', de modo que cualquier aviso NUEVO sí dispare el Telegram.
+        # loot antiguo). El espionaje (tab 20) NO se toca aquí: su dedup/notificación vive en
+        # spy_notifications.csv (libro mayor persistente entre reinicios), que siembra su
+        # propio backlog la primera vez y avisa de TODO mensaje nuevo a partir de entonces.
         tabs = [21, 22, 24]
         for tab_id in tabs:
             try:
@@ -2674,13 +2673,6 @@ class Brain:
                         stats["parsed_messages"].append(msg_id)
             except Exception as e:
                 self.log.warning("No se pudieron leer mensajes previos del tab %d durante la inicialización: %s", tab_id, e)
-        try:
-            for m in self.client.read_message_reports(20):
-                sid = f"20-{m['id']}"
-                if sid not in stats["spy_seen_at_boot"]:
-                    stats["spy_seen_at_boot"].append(sid)
-        except Exception as e:
-            self.log.warning("No se pudieron leer avisos de espionaje previos al inicializar: %s", e)
 
         try:
             with open(stats_file, "w", encoding="utf-8") as f:
@@ -2796,7 +2788,6 @@ class Brain:
                 pass
 
         parsed_set = set(stats.get("parsed_messages", []))
-        spy_seen_at_boot = set(stats.get("spy_seen_at_boot", []))
         changed = False
 
         # --- Visor de mensajes leídos (lo consume la GUI vía /api/messages) ---
@@ -3000,53 +2991,11 @@ class Brain:
                 stats["parsed_messages"].append(msg_id)
                 changed = True
 
-        # Avisos de contraespionaje (tab 20): "Se ha detectado una flota del planeta X
-        # cerca de tu planeta Y". Rescata sondeos que el polling de movimientos no pilló.
+        # Avisos de "te han espiado" (tab 20). Su dedup/notificación vive en un libro mayor
+        # CSV persistente (spy_notifications.csv), no en parsed_messages, para garantizar UNA
+        # notificación por mensaje nuevo y reintentar si Telegram falla. Ver _process_spy_messages.
         if getattr(self.cfg, "enable_spy_watch", True) and getattr(self.cfg, "spy_watch_messages", True):
-            tg_ok = bool(getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""))
-            try:
-                for m in self.client.read_message_reports(20):
-                    msg_id = f"20-{m['id']}"
-                    entry = record_msg(20, m)  # registrar el texto siempre (lo lea o no Telegram)
-                    if msg_id in parsed_set:
-                        continue
-                    parsed_set.add(msg_id)
-                    stats["parsed_messages"].append(msg_id)
-                    changed = True
-                    text = m.get("text", "") or ""
-                    tl = text.lower()
-                    # Solo las notificaciones de "me han espiado", no mis propios informes.
-                    if ("se ha detectado una flota" not in tl and "cerca de tu planeta" not in tl
-                            and "near your planet" not in tl):
-                        entry["summary"] = "Otro mensaje (sin aviso de espionaje)"
-                        continue
-                    coords = re.findall(r'\[(\d+:\d+:\d+)\]', text)
-                    origin = coords[0] if coords else "?"
-                    mine = coords[-1] if len(coords) > 1 else "?"
-                    ce = re.search(r'contra-?espionaje[^\d]*(\d+)\s*%', tl)
-                    ce_txt = f"{ce.group(1)}%" if ce else "?"
-                    # No avisar del backlog que ya estaba al arrancar (evita el alud); sí de
-                    # cualquier aviso nuevo aparecido mientras el bot corre.
-                    is_backlog = msg_id in spy_seen_at_boot
-                    self.log.info("Vigilancia de espionaje (mensaje): %s -> %s%s",
-                                  origin, mine, " [previo al arranque, no aviso]" if is_backlog else "")
-                    if is_backlog:
-                        entry["summary"] = f"🔍 Te han espiado desde [{origin}] (ya estaba al arrancar)"
-                    elif tg_ok:
-                        entry["summary"] = f"🔍 Te han espiado desde [{origin}] (avisado por Telegram)"
-                        alert = (
-                            f"🔍 <b>¡Te han espiado en OGame!</b> (detectado)\n\n"
-                            f"• <b>Desde:</b> [{origin}]\n"
-                            f"• <b>Tu ubicación:</b> [{mine}]\n"
-                            f"• <b>Prob. contraespionaje:</b> {ce_txt}\n\n"
-                            f"<i>Un sondeo suele preceder a un ataque.</i>"
-                        )
-                        utils.send_telegram_message(self.cfg.telegram_token,
-                                                    self.cfg.telegram_chat_id, alert, logger=self.log)
-                    else:
-                        entry["summary"] = f"🔍 Te han espiado desde [{origin}] (Telegram no configurado)"
-            except Exception as e:
-                self.log.debug("Error leyendo avisos de espionaje (tab 20): %s", e)
+            self._process_spy_messages(record_msg)
 
         if changed:
             try:
@@ -3063,6 +3012,120 @@ class Brain:
                     json.dump({"messages": msg_log}, f, ensure_ascii=False, indent=2)
             except Exception as e:
                 self.log.debug("No se pudo escribir messages_read.json: %s", e)
+
+    SPY_LEDGER_FILE = "spy_notifications.csv"
+
+    def _process_spy_messages(self, record_msg):
+        """Garantiza UNA notificación de Telegram por cada aviso de "te han espiado" (tab 20).
+
+        Usa spy_notifications.csv como libro mayor persistente y fuente de verdad:
+            msg_id, from, to, detected_at, notified, notified_at
+        - notified="1" -> ya avisado, no se repite.
+        - notified="0" -> detectado pero NO avisado (Telegram falló o no estaba configurado);
+          se reintenta el envío en cada ciclo hasta que llega.
+        El CSV persiste entre reinicios, así que un sondeo recibido con el bot caído se avisa
+        al volver. Solo la PRIMERA vez (sin CSV) se siembra el backlog como ya notificado para
+        no soltar un alud de avisos viejos.
+        """
+        import csv
+        import os
+        import re
+
+        ledger_file = self.SPY_LEDGER_FILE
+        fields = ["msg_id", "from", "to", "detected_at", "notified", "notified_at"]
+        ledger: Dict[str, dict] = {}
+        ledger_existed = os.path.exists(ledger_file)
+        if ledger_existed:
+            try:
+                with open(ledger_file, "r", encoding="utf-8", newline="") as f:
+                    for row in csv.DictReader(f):
+                        ledger[row["msg_id"]] = row
+            except Exception as e:
+                self.log.debug("No se pudo leer %s: %s", ledger_file, e)
+
+        tg_ok = bool(getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""))
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        changed = False
+
+        try:
+            msgs = self.client.read_message_reports(20)
+        except Exception as e:
+            self.log.debug("Error leyendo avisos de espionaje (tab 20): %s", e)
+            return
+
+        for m in msgs:
+            msg_id = f"20-{m['id']}"
+            entry = record_msg(20, m)  # registrar el texto siempre (para el visor de la GUI)
+            text = m.get("text", "") or ""
+            tl = text.lower()
+            # Solo las notificaciones de "me han espiado", no mis propios informes de espionaje.
+            if ("se ha detectado una flota" not in tl and "cerca de tu planeta" not in tl
+                    and "near your planet" not in tl):
+                entry["summary"] = "Otro mensaje (sin aviso de espionaje)"
+                continue
+
+            coords = re.findall(r'\[(\d+:\d+:\d+)\]', text)
+            origin = coords[0] if coords else "?"
+            mine = coords[-1] if len(coords) > 1 else "?"
+            ce = re.search(r'contra-?espionaje[^\d]*(\d+)\s*%', tl)
+            ce_txt = f"{ce.group(1)}%" if ce else "?"
+
+            row = ledger.get(msg_id)
+            if row and row.get("notified") == "1":
+                entry["summary"] = f"🔍 Te han espiado desde [{origin}] (ya notificado)"
+                continue
+
+            # Primer arranque (sin libro mayor): sembrar el backlog como ya notificado para no
+            # soltar un alud de avisos viejos. A partir de ahí, todo mensaje nuevo se avisa.
+            if row is None and not ledger_existed:
+                ledger[msg_id] = {"msg_id": msg_id, "from": origin, "to": mine,
+                                  "detected_at": now_str, "notified": "1", "notified_at": now_str}
+                entry["summary"] = f"🔍 Te han espiado desde [{origin}] (backlog inicial, sin avisar)"
+                changed = True
+                continue
+
+            # Mensaje nuevo, o detectado antes pero pendiente de aviso (reintento).
+            if row is None:
+                row = {"msg_id": msg_id, "from": origin, "to": mine,
+                       "detected_at": now_str, "notified": "0", "notified_at": ""}
+                ledger[msg_id] = row
+                changed = True
+                self.log.info("Vigilancia de espionaje (mensaje nuevo): %s desde [%s] -> [%s]", msg_id, origin, mine)
+
+            if not tg_ok:
+                entry["summary"] = f"🔍 Te han espiado desde [{origin}] (Telegram no configurado, pendiente)"
+                continue
+
+            alert = (
+                f"🔍 <b>¡Te han espiado en OGame!</b> (detectado)\n\n"
+                f"• <b>Desde:</b> [{origin}]\n"
+                f"• <b>Tu ubicación:</b> [{mine}]\n"
+                f"• <b>Prob. contraespionaje:</b> {ce_txt}\n\n"
+                f"<i>Un sondeo suele preceder a un ataque.</i>"
+            )
+            ok = utils.send_telegram_message(self.cfg.telegram_token, self.cfg.telegram_chat_id,
+                                             alert, logger=self.log, block=True)
+            if ok:
+                row["notified"] = "1"
+                row["notified_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                entry["summary"] = f"🔍 Te han espiado desde [{origin}] (avisado por Telegram)"
+                self.log.info("Aviso de espionaje notificado por Telegram: %s desde [%s]", msg_id, origin)
+            else:
+                entry["summary"] = f"🔍 Te han espiado desde [{origin}] (fallo de Telegram, se reintentará)"
+                self.log.warning("Fallo al notificar espionaje %s; se reintentará el próximo ciclo.", msg_id)
+            changed = True
+
+        if changed:
+            # ponytail: reescribe el CSV entero; trivial para la decena de avisos de espionaje,
+            # pasar a append solo si algún día crece de verdad.
+            try:
+                with open(ledger_file, "w", encoding="utf-8", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=fields)
+                    w.writeheader()
+                    for r in ledger.values():
+                        w.writerow(r)
+            except Exception as e:
+                self.log.debug("No se pudo escribir %s: %s", ledger_file, e)
 
     def _calculate_panic_build(self, planet: Planet) -> Dict[str, int]:
         """

@@ -7,7 +7,9 @@ class FakeClient:
     def read_message_reports(self, tab): return self.by_tab.get(tab, [])
 
 def run(by_tab, cfg, cwd):
-    fake = types.SimpleNamespace(log=logging.getLogger("t"), cfg=cfg, client=FakeClient(by_tab))
+    fake = types.SimpleNamespace(log=logging.getLogger("t"), cfg=cfg, client=FakeClient(by_tab),
+                                 SPY_LEDGER_FILE=brain.Brain.SPY_LEDGER_FILE)
+    fake._process_spy_messages = types.MethodType(brain.Brain._process_spy_messages, fake)
     os.chdir(cwd)
     brain.Brain.update_imperial_stats(fake)
     with open("messages_read.json", encoding="utf-8") as f:
@@ -37,10 +39,14 @@ assert "22-9" in msgs, "mensaje preexistente NO registrado (bug de arranque)"
 assert "ya leida al arrancar" in msgs["22-9"]["text"]
 
 # --- 3) Espionaje (tab 20) se registra aunque Telegram NO este configurado ---
+# El libro mayor ya existe (no es primer arranque), asi que el aviso es NUEVO -> pendiente.
 cfg_spy = types.SimpleNamespace(enable_spy_watch=True, spy_watch_messages=True,
                                 telegram_token="", telegram_chat_id="")
+d3 = tempfile.mkdtemp()
+with open(os.path.join(d3, brain.Brain.SPY_LEDGER_FILE), "w", encoding="utf-8", newline="") as f:
+    f.write("msg_id,from,to,detected_at,notified,notified_at\n")  # cabecera: libro mayor vacio pero existente
 msgs = run({20: [{"id": "5", "text": "Se ha detectado una flota del planeta [1:2:3] cerca de tu planeta [4:5:6]", "raw": {}}]},
-           cfg_spy, tempfile.mkdtemp())
+           cfg_spy, d3)
 assert "20-5" in msgs and msgs["20-5"]["category"] == "Espionaje", msgs
 assert "Te han espiado" in msgs["20-5"]["summary"], msgs["20-5"]["summary"]
 assert "no configurado" in msgs["20-5"]["summary"], msgs["20-5"]["summary"]

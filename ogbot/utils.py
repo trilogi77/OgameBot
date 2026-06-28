@@ -123,16 +123,18 @@ class RateLimiter:
             time.sleep(min(sleep_for, 60))
 
 
-def send_telegram_message(token: str, chat_id: str, text: str, logger=None) -> None:
-    """Envía un mensaje a un chat de Telegram de forma asíncrona para no bloquear el bot."""
+def send_telegram_message(token: str, chat_id: str, text: str, logger=None, block: bool = False):
+    """Envía un mensaje a un chat de Telegram. Por defecto es asíncrono (no bloquea el bot).
+    Con block=True envía de forma síncrona y devuelve True/False según el éxito, para flujos
+    que necesitan saber si la notificación llegó (p.ej. la vigilancia de espionaje)."""
     if not token or not chat_id:
-        return
+        return False
     import threading
     import urllib.request
     import urllib.parse
     import json
 
-    def _send():
+    def _send() -> bool:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = json.dumps({
             "chat_id": chat_id,
@@ -147,9 +149,14 @@ def send_telegram_message(token: str, chat_id: str, text: str, logger=None) -> N
         try:
             with urllib.request.urlopen(req, timeout=10) as response:
                 response.read()
+            return True
         except Exception as e:
             if logger:
                 logger.debug("Error al enviar mensaje de Telegram: %s", e)
+            return False
 
+    if block:
+        return _send()
     threading.Thread(target=_send, daemon=True).start()
+    return None
 

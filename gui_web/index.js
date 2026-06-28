@@ -1263,6 +1263,7 @@ function loadStats() {
 // --------------------------------------------------------------------------
 let flightsCache = [];
 let lastFlightsSig = "";
+let flightsServerOffset = 0;   // segundos que el reloj del bot va por delante del navegador
 const MISSION_COLORS = {
     "Ataque": "#ef4444", "Ataque (ACS)": "#ef4444", "Destruir luna": "#ef4444",
     "Transporte": "#38bdf8", "Despliegue": "#22c55e", "Defensa (ACS)": "#22c55e",
@@ -1275,6 +1276,9 @@ function loadFlights() {
         .then(res => res.json())
         .then(data => {
             const flights = data.flights || [];
+            // Corregir el desfase entre el reloj del bot (arrival_epoch/updated) y el del
+            // navegador, para que la cuenta atrás sea exacta aunque el bot esté en Docker.
+            if (data.updated) flightsServerOffset = data.updated - Date.now() / 1000;
             // Firma por IDENTIDAD de vuelos (no por 'updated'/arrival_epoch, que cambian en
             // cada escritura): así solo repintamos cuando entra/sale un vuelo, no cada poll.
             const sig = flights.map(f =>
@@ -1377,11 +1381,11 @@ function renderFlights() {
 }
 
 function updateFlightTimers() {
-    const now = Date.now();
+    const nowServer = Date.now() / 1000 + flightsServerOffset;   // reloj del navegador ajustado al del bot
     document.querySelectorAll("#flights_list .flight-eta").forEach(el => {
         const arrival = parseInt(el.dataset.arrival || "0");
         if (!arrival) return;
-        const rem = Math.max(0, Math.round(arrival - now / 1000));
+        const rem = Math.max(0, Math.round(arrival - nowServer));
         const pad = n => String(n).padStart(2, "0");
         el.textContent = rem > 0
             ? `${Math.floor(rem / 3600)}:${pad(Math.floor((rem % 3600) / 60))}:${pad(rem % 60)}`

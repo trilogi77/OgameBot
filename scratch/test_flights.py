@@ -47,4 +47,9 @@ cur = build_flights([
 assert cur[0]["ships"] == {"Cazador ligero": 100}, cur[0]["ships"]
 assert cur[1]["ships"] == {"Nave grande de carga": 500}, cur[1]["ships"]
 
+# El epoch ABSOLUTO del DOM (mv.arrival_epoch) tiene prioridad sobre el contador.
+mv_abs = [{"mission": "3", "origin": "1:2:3", "destination": "1:2:4",
+           "arrival_text": "0:10:00", "arrival_epoch": 5000, "ships": {}}]
+assert build_flights(mv_abs, 1000.0)[0]["arrival_epoch"] == 5000
+
 print("OK")

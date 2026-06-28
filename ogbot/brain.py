@@ -138,7 +138,16 @@ def build_flights(mvs, now, prev=None):
             continue
         ships, cargo = _split_ships_cargo(mv.get("ships", {}))
         arrival_text = (mv.get("arrival_text", "") or "").strip()
-        secs = parse_time_to_seconds(arrival_text)
+        # Preferir el epoch absoluto del DOM (estable y sin ambigüedad); si no, el contador.
+        try:
+            abs_ep = int(mv.get("arrival_epoch") or 0)
+        except (TypeError, ValueError):
+            abs_ep = 0
+        if abs_ep > 0:
+            arrival_epoch = abs_ep
+        else:
+            secs = parse_time_to_seconds(arrival_text)
+            arrival_epoch = round(now + secs) if secs is not None else 0
         mcode = str(mv.get("mission", ""))
         f = {
             "mission": MISSION_NAMES_ES.get(mcode, mcode or "?"),
@@ -150,7 +159,7 @@ def build_flights(mvs, now, prev=None):
             "is_return": bool(mv.get("is_return")),
             "is_hostile": False,
             "arrival_text": arrival_text,
-            "arrival_epoch": round(now + secs) if secs is not None else 0,
+            "arrival_epoch": arrival_epoch,
             "ships": ships,
             "cargo": cargo,
         }
@@ -2744,13 +2753,18 @@ class Brain:
                     g("deuterium", "deut", "903"))
 
         def num_from_text(text, labels):
-            """Respaldo: extrae una cifra junto a una etiqueta, en cualquier orden."""
-            for lab in labels:
-                m = re.search(
-                    r'(?:%s)\s*:?\s*([\d][\d\.\s,]*)|([\d][\d\.\s,]*)\s*(?:de\s+)?(?:%s)'
-                    % (lab, lab), text, re.IGNORECASE)
+            """Respaldo: extrae la cifra de una etiqueta. Prioriza 'etiqueta: número' y solo
+            si no aparece usa 'número etiqueta' (número justo antes), para no robar la cifra
+            del recurso anterior (p.ej. en 'Metal: 1.000 Cristal: 500' el cristal son 500)."""
+            num = r'(\d[\d.,]*)'
+            for lab in labels:   # 1) etiqueta seguida del número (orden real de OGame)
+                m = re.search(r'(?:%s)\s*:?\s*%s' % (lab, num), text, re.IGNORECASE)
                 if m:
-                    return clean_num(m.group(1) or m.group(2))
+                    return clean_num(m.group(1))
+            for lab in labels:   # 2) número inmediatamente antes de la etiqueta
+                m = re.search(r'%s\s*(?:de\s+)?(?:%s)' % (num, lab), text, re.IGNORECASE)
+                if m:
+                    return clean_num(m.group(1))
             return 0
 
         for tab_id, key in tabs.items():

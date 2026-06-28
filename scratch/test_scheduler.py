@@ -42,6 +42,16 @@ class TestScheduler(unittest.TestCase):
         self.brain._has_free_slots_for_mission = MagicMock(return_value=True)
         self.brain._has_free_expe_slots = MagicMock(return_value=True)
 
+        # El test comprueba SOLO el agendado por intervalos de cycle(); mockeamos la
+        # lectura/persistencia de estado para no tropezar con la aritmética sobre los
+        # planetas MagicMock (building_remaining_seconds, build_finish_epoch, etc.).
+        self.brain.client.read_movements.return_value = []
+        self.brain._read_location_state = MagicMock()
+        self.brain._read_research_smart = MagicMock(return_value={})
+        self.brain._aggregate_ships_in_motion = MagicMock(return_value={})
+        self.brain._write_build_status = MagicMock()
+        self.brain._process_build_queues = MagicMock()
+
     def tearDown(self):
         if os.path.exists(self.cfg.state_file):
             os.remove(self.cfg.state_file)
@@ -78,6 +88,9 @@ class TestScheduler(unittest.TestCase):
     def test_configured_intervals_respected(self):
         self.cfg.economy_run_interval_mins = 30
         self.cfg.farming_run_interval_mins = 10
+        # El reciclaje tiene su propio intervalo independiente; lo igualamos al de farmeo
+        # para que _recycle siga el mismo patrón que comprueba este test.
+        self.cfg.recycling_run_interval_mins = 10
         
         mock_planet = MagicMock()
         mock_planet.coords.type = "planet"

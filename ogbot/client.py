@@ -298,6 +298,16 @@ _JS_READ_MOVEMENTS = """() => {
             );
             mv.arrival_text = arrEl ? arrEl.textContent.trim() : '';
 
+            // 6b. Epoch ABSOLUTO de llegada si el DOM lo expone (unix, segundos): es más
+            // fiable que parsear el contador y evita confundir una hora absoluta H:MM:SS
+            // con una cuenta atrás.
+            let absEp = parseInt(row.getAttribute('data-arrival-time') || '0') || 0;
+            if (!absEp) {
+                const ae = row.querySelector('[data-arrival-time]');
+                if (ae) absEp = parseInt(ae.getAttribute('data-arrival-time') || '0') || 0;
+            }
+            mv.arrival_epoch = absEp;
+
             // 7. Flags
             mv.is_return = row.classList.contains('is_return') ||
                            row.getAttribute('data-return-flight') === 'true' ||

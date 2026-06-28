@@ -139,7 +139,7 @@ def _estimate_departures(flights, now):
     estaba corriendo cuando salió la flota; si ya estaba en vuelo al arrancar, subestima lo ya
     volado (la vuelta saldrá algo corta). Solo rellena los que aún no tengan salida."""
     for f in flights:
-        if f.get("is_return") or f.get("departure_epoch"):
+        if f.get("is_return") or int(f.get("departure_epoch") or 0) > 0:
             continue
         fs = int(f.get("first_seen") or 0)
         a = int(f.get("arrival_epoch") or 0)
@@ -223,8 +223,10 @@ def _dedup_flights(flights):
     seen, out = {}, []
     for f in flights:
         ep = int(f.get("arrival_epoch") or 0)
+        # Si no hay llegada (ni epoch ni texto), usar una identidad única para NO fusionar dos
+        # flotas distintas por tener ambas la llegada en blanco.
         key = (str(f.get("mission_code", "")), f.get("origin", ""),
-               f.get("destination", ""), ep if ep else f.get("arrival_text", ""))
+               f.get("destination", ""), ep if ep else (f.get("arrival_text") or f"id{id(f)}"))
         a = seen.get(key)
         if a is None:
             seen[key] = f
@@ -242,6 +244,11 @@ def _dedup_flights(flights):
         a["is_hostile"] = a.get("is_hostile") or f.get("is_hostile")
         if not a.get("departure_epoch") and f.get("departure_epoch"):
             a["departure_epoch"] = f["departure_epoch"]
+            if f.get("departure_estimated"):
+                a["departure_estimated"] = True
+        if not a.get("return_arrival_epoch") and f.get("return_arrival_epoch"):
+            a["return_arrival_epoch"] = f["return_arrival_epoch"]
+            a["return_arrival_text"] = f.get("return_arrival_text", "")
         fs_a, fs_f = int(a.get("first_seen") or 0), int(f.get("first_seen") or 0)
         if fs_f and (not fs_a or fs_f < fs_a):
             a["first_seen"] = fs_f   # conserva la 1ª vez visto más temprana (salida estimada)
@@ -258,26 +265,33 @@ def _link_round_trips(flights):
     La vuelta sin ida visible (la ida ya llegó) se conserva como tarjeta propia. El despliegue,
     de una sola ida, no tiene vuelta que emparejar: su hora de regreso necesita el reversal del
     juego (capturable con OGBOT_DUMP_MOVEMENTS=1)."""
-    returns = [f for f in flights if f.get("is_return") and int(f.get("arrival_epoch") or 0)]
+    # Emparejado FIFO: la ida más temprana con la vuelta más temprana de la misma ruta. Así no
+    # se cruza el orden cuando hay varias flotas iguales (p.ej. dos expediciones al mismo sitio).
+    ep = lambda x: int(x.get("arrival_epoch") or 0)
+    returns = sorted((f for f in flights if f.get("is_return") and ep(f)), key=ep)
+    outbounds = sorted((f for f in flights if not f.get("is_return") and ep(f)), key=ep)
     used = set()
-    for f in flights:
-        if f.get("is_return"):
-            continue
-        a1 = int(f.get("arrival_epoch") or 0)
-        if not a1:
-            continue
+    for f in outbounds:
+        a1 = ep(f)
         for i, r in enumerate(returns):
             if i in used:
                 continue
-            a2 = int(r.get("arrival_epoch") or 0)
+            a2 = ep(r)
             if (r.get("mission_code") == f.get("mission_code")
                     and r.get("origin") == f.get("origin")
                     and r.get("destination") == f.get("destination")
                     and a2 > a1):
                 f["return_arrival_epoch"] = a2
                 f["return_arrival_text"] = r.get("arrival_text", "")
+                # Salida derivada (viaje simétrico SIN estancia): solo una ESTIMACIÓN, y errónea
+                # en misiones con espera (expedición). Se descarta si sale negativa o anterior a
+                # la 1ª vez vista; el reversal del DOM, si lo hay, ya habrá puesto la exacta.
                 if not f.get("departure_epoch"):
-                    f["departure_epoch"] = 2 * a1 - a2
+                    dep = 2 * a1 - a2
+                    fs = int(f.get("first_seen") or 0)
+                    if dep > 0 and (not fs or dep >= fs):
+                        f["departure_epoch"] = dep
+                        f["departure_estimated"] = True
                 used.add(i)
                 break
     drop = {id(returns[i]) for i in used}
@@ -347,6 +361,16 @@ def build_flights(mvs, now, prev=None):
             if abs_ep <= 0 and int(pm.get("arrival_epoch") or 0) > 0:
                 f["arrival_epoch"] = int(pm["arrival_epoch"])
             f["first_seen"] = int(pm.get("first_seen") or 0) or now
+            # Conservar la SALIDA y la vuelta a casa ya calculadas. El ciclo (página de
+            # movimientos) lee el reversal y la pata de vuelta; el event_list no, así que sin
+            # esto el dato exacto parpadearía y se degradaría a estimado en cada lectura ligera.
+            if not f.get("departure_epoch") and int(pm.get("departure_epoch") or 0) > 0:
+                f["departure_epoch"] = int(pm["departure_epoch"])
+                if pm.get("departure_estimated"):
+                    f["departure_estimated"] = True
+            if not f.get("return_arrival_epoch") and int(pm.get("return_arrival_epoch") or 0) > 0:
+                f["return_arrival_epoch"] = int(pm["return_arrival_epoch"])
+                f["return_arrival_text"] = pm.get("return_arrival_text", "")
         else:
             f["first_seen"] = now
         flights.append(f)
@@ -1034,6 +1058,9 @@ class Brain:
         if not planets:
             self.log.warning("Sin planetas legibles; revisa selectores.")
             return
+        # En cuanto se leen, para que todo lo que corre después en este ciclo (p.ej. la
+        # detección de espionaje en update_imperial_stats) vea las coords propias actuales.
+        self.last_planets = planets
 
         slot_info = self.client.read_fleet_slots()
         # Leemos movimientos siempre: sirven de fallback para el conteo de slots y, sobre
@@ -1244,8 +1271,6 @@ class Brain:
 
         # 11. Actualizar estadísticas imperiales
         self.update_imperial_stats()
-
-        self.last_planets = planets
 
     # ------------------------------------------------------------------ #
     def _economy_step(self, planet):

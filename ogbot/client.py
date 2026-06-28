@@ -2234,6 +2234,31 @@ class GameClient:
             self.log.debug("Error leyendo mensajes tab=%d: %s", tab_id, e)
             return []
 
+    def read_message_full(self, raw_id: str) -> str:
+        """Abre (expande) un mensaje ya visible en la pestaña de mensajes actual y devuelve su
+        texto completo. La fila de la lista solo trae un resumen; el cuerpo (coords del origen,
+        % de contra-espionaje, etc.) se carga al hacer clic. Devuelve '' si no se puede abrir.
+        Debe llamarse con la pestaña de mensajes ya cargada (p.ej. tras read_message_reports)."""
+        sel = f"[data-msg-id='{raw_id}'], [id='{raw_id}']"
+        try:
+            el = self.page.query_selector(sel)
+            if not el:
+                return ""
+            before = el.inner_text() or ""
+            el.click()
+            start = time.time()
+            while time.time() - start < 3:
+                time.sleep(0.3)
+                cur = self.page.query_selector(sel)
+                txt = (cur.inner_text() if cur else "") or ""
+                if len(txt) > len(before) + 15:  # el cuerpo ya cargó
+                    return txt
+            cur = self.page.query_selector(sel)
+            return (cur.inner_text() if cur else before) or before
+        except Exception as e:
+            self.log.debug("No se pudo abrir el mensaje %s: %s", raw_id, e)
+            return ""
+
     # ------------------------------------------------------------------
     #  Movimientos y escombros
     # ------------------------------------------------------------------

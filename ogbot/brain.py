@@ -3194,65 +3194,107 @@ class Brain:
             self.log.debug("Error leyendo avisos de espionaje (tab 20): %s", e)
             return
 
+        # Coords propias (planeta + luna comparten g:s:p) para distinguir "me han espiado"
+        # de mis propios informes. El OGame nuevo no usa frase: el aviso es una fila compacta
+        # (hace cuánto / nombre del espía / - / - / [tus coords]). La señal fiable e
+        # independiente del idioma es que las coords del mensaje son de un planeta MÍO.
+        own_coords = set()
+        for p in (getattr(self, "last_planets", None) or []):
+            try:
+                c = p.coords
+                own_coords.add(f"{c.galaxy}:{c.system}:{c.position}")
+            except Exception:
+                pass
+
         for m in msgs:
             msg_id = f"20-{m['id']}"
             entry = record_msg(20, m)  # registrar el texto siempre (para el visor de la GUI)
             text = m.get("text", "") or ""
             tl = text.lower()
-            # Solo las notificaciones de "me han espiado", no mis propios informes de espionaje.
-            if ("se ha detectado una flota" not in tl and "cerca de tu planeta" not in tl
-                    and "near your planet" not in tl):
+            coords = re.findall(r'\d+:\d+:\d+', text)
+            spied = next((c for c in coords if c in own_coords), None)
+            # Respaldo: algunos idiomas/servidores aún usan la frase larga.
+            phrase = ("se ha detectado una flota" in tl or "cerca de tu planeta" in tl
+                      or "near your planet" in tl)
+            if not spied and not phrase:
                 entry["summary"] = "Otro mensaje (sin aviso de espionaje)"
                 continue
 
-            coords = re.findall(r'\[(\d+:\d+:\d+)\]', text)
-            origin = coords[0] if coords else "?"
-            mine = coords[-1] if len(coords) > 1 else "?"
+            # Parseo barato (sin abrir): planeta espiado + nombre del espía de la fila. Las
+            # coords del origen y el % de contra-espionaje solo aparecen al ABRIR el mensaje,
+            # así que se rellenan más abajo y solo para los avisos nuevos (coste mínimo).
+            mine = spied or (coords[-1] if coords else "?")
+            origin = next((c for c in coords if c != mine), "?")
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            enemy = (lines[1] if len(lines) > 1
+                     and not re.fullmatch(r'[\d:\[\].\s]+', lines[1]) else "")
             ce = re.search(r'contra-?espionaje[^\d]*(\d+)\s*%', tl)
             ce_txt = f"{ce.group(1)}%" if ce else "?"
+            who = enemy or (f"[{origin}]" if origin != "?" else "?")
 
             row = ledger.get(msg_id)
             if row and row.get("notified") == "1":
-                entry["summary"] = f"🔍 Te han espiado desde [{origin}] (ya notificado)"
+                entry["summary"] = f"🔍 Te han espiado en [{mine}] (ya notificado)"
                 continue
 
             # Primer arranque (sin libro mayor): sembrar el backlog como ya notificado para no
             # soltar un alud de avisos viejos. A partir de ahí, todo mensaje nuevo se avisa.
             if row is None and not ledger_existed:
-                ledger[msg_id] = {"msg_id": msg_id, "from": origin, "to": mine,
+                ledger[msg_id] = {"msg_id": msg_id, "from": who, "to": mine,
                                   "detected_at": now_str, "notified": "1", "notified_at": now_str}
-                entry["summary"] = f"🔍 Te han espiado desde [{origin}] (backlog inicial, sin avisar)"
+                entry["summary"] = f"🔍 Te han espiado en [{mine}] (backlog inicial, sin avisar)"
                 changed = True
                 continue
 
             # Mensaje nuevo, o detectado antes pero pendiente de aviso (reintento).
             if row is None:
-                row = {"msg_id": msg_id, "from": origin, "to": mine,
+                row = {"msg_id": msg_id, "from": who, "to": mine,
                        "detected_at": now_str, "notified": "0", "notified_at": ""}
                 ledger[msg_id] = row
                 changed = True
-                self.log.info("Vigilancia de espionaje (mensaje nuevo): %s desde [%s] -> [%s]", msg_id, origin, mine)
+                self.log.info("Vigilancia de espionaje (mensaje nuevo): %s en [%s]", msg_id, mine)
 
             if not tg_ok:
-                entry["summary"] = f"🔍 Te han espiado desde [{origin}] (Telegram no configurado, pendiente)"
+                entry["summary"] = f"🔍 Te han espiado en [{mine}] (Telegram no configurado, pendiente)"
                 continue
 
+            # Abrir el mensaje (solo avisos nuevos, justo antes de notificar) para obtener las
+            # coords del origen y el % de contra-espionaje, que la fila compacta no trae.
+            if origin == "?" or ce_txt == "?":
+                try:
+                    full = self.client.read_message_full(m["id"])
+                except Exception:
+                    full = ""
+                if full:
+                    o = next((c for c in re.findall(r'\d+:\d+:\d+', full)
+                              if c not in own_coords), None)
+                    if o:
+                        origin = o
+                    fce = re.search(r'contra-?espionaje[^\d]*(\d+)\s*%', full.lower())
+                    if fce:
+                        ce_txt = f"{fce.group(1)}%"
+
+            parts = [f"• <b>Tu planeta:</b> [{mine}]"]
+            if origin != "?":
+                parts.append(f"• <b>Origen:</b> [{origin}]")
+            if enemy:
+                parts.append(f"• <b>Espía:</b> {enemy}")
+            parts.append(f"• <b>Prob. contraespionaje:</b> {ce_txt}")
             alert = (
-                f"🔍 <b>¡Te han espiado en OGame!</b> (detectado)\n\n"
-                f"• <b>Desde:</b> [{origin}]\n"
-                f"• <b>Tu ubicación:</b> [{mine}]\n"
-                f"• <b>Prob. contraespionaje:</b> {ce_txt}\n\n"
-                f"<i>Un sondeo suele preceder a un ataque.</i>"
+                "🔍 <b>¡Te han espiado en OGame!</b>\n\n" + "\n".join(parts) +
+                "\n\n<i>Un sondeo suele preceder a un ataque. Revisa o saca la flota.</i>"
             )
             ok = utils.send_telegram_message(self.cfg.telegram_token, self.cfg.telegram_chat_id,
                                              alert, logger=self.log, block=True)
+            who = enemy or (f"[{origin}]" if origin != "?" else "desconocido")
             if ok:
                 row["notified"] = "1"
                 row["notified_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                entry["summary"] = f"🔍 Te han espiado desde [{origin}] (avisado por Telegram)"
-                self.log.info("Aviso de espionaje notificado por Telegram: %s desde [%s]", msg_id, origin)
+                row["from"] = enemy or (origin if origin != "?" else "?")
+                entry["summary"] = f"🔍 Te han espiado en [{mine}] (origen {who}, avisado)"
+                self.log.info("Aviso de espionaje notificado por Telegram: %s en [%s] (origen %s)", msg_id, mine, who)
             else:
-                entry["summary"] = f"🔍 Te han espiado desde [{origin}] (fallo de Telegram, se reintentará)"
+                entry["summary"] = f"🔍 Te han espiado en [{mine}] (fallo de Telegram, se reintentará)"
                 self.log.warning("Fallo al notificar espionaje %s; se reintentará el próximo ciclo.", msg_id)
             changed = True
 

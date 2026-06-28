@@ -184,6 +184,61 @@ def _reversal_departure(reversal_epoch, reversal_text, now):
     return 0
 
 
+def _dedup_flights(flights):
+    """Colapsa vuelos que son el MISMO evento físico leído dos veces (misma misión, ruta y
+    llegada EXACTA). OGame a veces expone una fila de "vuelta" espuria junto a la de ida con
+    idéntica hora de llegada; las patas de ida y vuelta REALES tienen llegadas distintas y NO
+    se tocan. Al fusionar gana: la fila con datos (naves/carga), el tipo de cuerpo más
+    específico (luna/escombros sobre el 'planeta' por defecto) y la ida sobre la vuelta."""
+    seen, out = {}, []
+    for f in flights:
+        ep = int(f.get("arrival_epoch") or 0)
+        key = (str(f.get("mission_code", "")), f.get("origin", ""),
+               f.get("destination", ""), ep if ep else f.get("arrival_text", ""))
+        a = seen.get(key)
+        if a is None:
+            seen[key] = f
+            out.append(f)
+            continue
+        if not a.get("ships") and f.get("ships"):
+            a["ships"] = f["ships"]
+        if not any((a.get("cargo") or {}).values()) and any((f.get("cargo") or {}).values()):
+            a["cargo"] = f["cargo"]
+        for k in ("origin_type", "dest_type"):
+            if a.get(k, "planet") == "planet" and f.get(k, "planet") != "planet":
+                a[k] = f[k]
+        if a.get("is_return") and not f.get("is_return"):
+            a["is_return"] = False
+        a["is_hostile"] = a.get("is_hostile") or f.get("is_hostile")
+        if not a.get("departure_epoch") and f.get("departure_epoch"):
+            a["departure_epoch"] = f["departure_epoch"]
+    return out
+
+
+def _pair_departures(flights):
+    """Deriva la SALIDA (para la 'hora de vuelta si se recupera ahora') emparejando cada vuelo
+    de ida con su pata de vuelta del MISMO vuelo (misma misión y ruta) que llega después.
+    Viaje simétrico sin estancia: salida = 2*llegada_ida − llegada_vuelta. Solo rellena los
+    que no tengan ya 'departure_epoch' del reversal del DOM (p.ej. el despliegue, de una sola
+    ida, necesita el reversal del juego)."""
+    returns = [f for f in flights if f.get("is_return") and int(f.get("arrival_epoch") or 0)]
+    if not returns:
+        return
+    for f in flights:
+        if f.get("is_return") or f.get("departure_epoch"):
+            continue
+        a1 = int(f.get("arrival_epoch") or 0)
+        if not a1:
+            continue
+        for r in returns:
+            if (r.get("mission_code") == f.get("mission_code")
+                    and r.get("origin") == f.get("origin")
+                    and r.get("destination") == f.get("destination")
+                    and int(r.get("arrival_epoch") or 0) > a1):
+                f["departure_epoch"] = 2 * a1 - int(r["arrival_epoch"])
+                break
+
+
 def build_flights(mvs, now, prev=None):
     """Convierte movimientos crudos de read_movements() en vuelos para la GUI.
 
@@ -239,6 +294,8 @@ def build_flights(mvs, now, prev=None):
                 f["ships"] = pf.get("ships", {}) or {}
                 f["cargo"] = pf.get("cargo", {}) or {"metal": 0, "crystal": 0, "deut": 0}
         flights.append(f)
+    flights = _dedup_flights(flights)
+    _pair_departures(flights)
     return flights
 
 

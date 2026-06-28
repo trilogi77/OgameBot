@@ -337,8 +337,9 @@ _JS_READ_MOVEMENTS = """() => {
             mv.reversal_text = revTxt;
 
             // 7. Flags
+            const rf = row.getAttribute('data-return-flight');
             mv.is_return = row.classList.contains('is_return') ||
-                           row.getAttribute('data-return-flight') === 'true' ||
+                           rf === 'true' || rf === '1' ||
                            !!row.querySelector('.return_flight, .returnflight');
 
             mv.is_hostile = row.classList.contains('hostile') ||
@@ -2246,10 +2247,25 @@ class GameClient:
         except Exception:
             pass
         try:
-            return self.page.evaluate(_JS_READ_MOVEMENTS) or []
+            data = self.page.evaluate(_JS_READ_MOVEMENTS) or []
         except Exception as e:
             self.log.debug("Error leyendo movimientos: %s", e)
             return []
+        # Diagnóstico opcional: vuelca el HTML crudo de las filas de flota para depurar el
+        # parseo (tipo luna/planeta, reversal/hora de vuelta). Activar con OGBOT_DUMP_MOVEMENTS=1.
+        if os.environ.get("OGBOT_DUMP_MOVEMENTS"):
+            try:
+                html = self.page.evaluate(
+                    "() => Array.from(document.querySelectorAll("
+                    "'.eventFleet, .fleetDetails, .fleet_row, tr.flightEventRow'))"
+                    ".map(r => r.outerHTML).join('\\n\\n<!-- ===== fila ===== -->\\n\\n')"
+                )
+                with open("movement_debug.html", "w", encoding="utf-8") as f:
+                    f.write(html or "")
+                self.log.info("Volcado de movimientos en movement_debug.html (%d filas).", len(data))
+            except Exception as e:
+                self.log.debug("No se pudo volcar movement_debug.html: %s", e)
+        return data
 
     def read_fleet_slots(self) -> Optional[Dict[str, int]]:
         """Lee el indicador real Flotas: X/Y y Expediciones: X/Y del juego."""
@@ -2477,8 +2493,9 @@ class GameClient:
                     const rowDest = destEl ? destEl.textContent.replace(/[\\\\[\\\\]\\\\s]/g, '') : '';
                     if (rowDest !== destination) continue;
 
+                    const rrf = row.getAttribute('data-return-flight');
                     const is_return = row.classList.contains('is_return') ||
-                                   row.getAttribute('data-return-flight') === 'true' ||
+                                   rrf === 'true' || rrf === '1' ||
                                    !!row.querySelector('.return_flight, .returnflight');
                     if (is_return) continue;
 

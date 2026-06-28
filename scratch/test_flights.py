@@ -71,4 +71,27 @@ mv_dt = [{"mission": "3", "origin": "1:2:3", "destination": "1:2:4", "arrival_te
 dep = build_flights(mv_dt, now_dt)[0]["departure_epoch"]
 assert abs(dep - (ret - 1200)) <= 2, dep   # salida = 2*now - ret = ret - 1200
 
+# Dedup: una fila de "vuelta" espuria con la MISMA llegada exacta que la ida se fusiona en
+# una sola, conservando naves y el tipo de cuerpo más específico (luna).
+dup = build_flights([
+    {"mission": "4", "origin": "4:168:8", "destination": "1:125:8", "arrival_epoch": 5000,
+     "is_return": True, "dest_type": "moon", "ships": {}},
+    {"mission": "4", "origin": "4:168:8", "destination": "1:125:8", "arrival_epoch": 5000,
+     "is_return": False, "dest_type": "planet", "ships": {"Nave grande de carga": 13}},
+], 1000.0)
+assert len(dup) == 1, dup
+assert dup[0]["is_return"] is False and dup[0]["dest_type"] == "moon", dup[0]
+assert dup[0]["ships"] == {"Nave grande de carga": 13}, dup[0]["ships"]
+
+# Patas de ida y vuelta REALES (distinta llegada) NO se fusionan; la ida deriva su salida.
+pair = build_flights([
+    {"mission": "3", "origin": "1:2:3", "destination": "1:2:4", "arrival_epoch": 1600,
+     "is_return": False, "ships": {"Nave grande de carga": 20}},
+    {"mission": "3", "origin": "1:2:3", "destination": "1:2:4", "arrival_epoch": 2200,
+     "is_return": True, "ships": {}},
+], 1000.0)
+assert len(pair) == 2, pair
+out = [f for f in pair if not f["is_return"]][0]
+assert out["departure_epoch"] == 2 * 1600 - 2200, out["departure_epoch"]   # = 1000
+
 print("OK")

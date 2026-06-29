@@ -2310,8 +2310,9 @@ class Brain:
     def _feed_step(self, planets, movements=None):
         """Manda el excedente de los planetas-fuente a los planetas-destino que no
         pueden pagar su próxima construcción (p.ej. lab a 12). Destino y fuentes se
-        marcan a mano en la pestaña 'Por Planeta'. La luna propia de cada destino
-        alimenta primero (automático, sin marcarla)."""
+        marcan a mano en la pestaña 'Por Planeta'. La luna propia de cada destino es
+        candidata automática (sin marcarla). Prioridad de fuente: 1) menos transportes
+        (si una sola lo cubre todo, se manda junto); 2) la más cercana."""
         destinos = [p for p in planets if self._get_planet_setting(p, "feed_target", False)]
         fuentes = [p for p in planets if self._get_planet_setting(p, "feed_source", False)]
         # La luna propia de cada destino alimenta primero (no hace falta marcarla), así que
@@ -2354,17 +2355,28 @@ class Brain:
             need = self._feed_deficit(dst)
             if not need:
                 continue
-            # Prioridad: la propia luna del destino (misma coords, sin gasto de vuelo).
-            # Luego las fuentes marcadas, la más cercana primero (menos deut, llega antes).
+            # Candidatos: la luna propia del destino (sin gasto de vuelo) + las fuentes
+            # marcadas. Se excluye el propio destino (un planeta no se alimenta a sí mismo;
+            # su luna, misma coords, SÍ vale).
             own_moon = getattr(dst, "moon", None) if getattr(dst, "has_moon", False) else None
-            srcs = sorted(fuentes, key=lambda s: gd.distance(s.coords.tuple(), dst.coords.tuple()))
-            ordered_srcs = ([own_moon] if own_moon else []) + srcs
+            candidates = ([own_moon] if own_moon else []) + [
+                s for s in fuentes if s is not dst and s.coords.tuple() != dst.coords.tuple()
+            ]
+            if not candidates:
+                continue
+            dist = lambda s: gd.distance(s.coords.tuple(), dst.coords.tuple())
+            # Prioridad: 1) MENOS transportes -> si una sola ubicación puede mandarlo TODO,
+            # usarla (1 envío) en vez de repartir en varios; 2) la más cercana. Si nadie
+            # cubre todo, el que más aporte primero (menos envíos), desempatando por cercanía.
+            full = [s for s in candidates
+                    if self._feed_sendable(s, need).total() >= need.total() - 1.0]
+            if full:
+                ordered_srcs = sorted(full, key=dist)
+            else:
+                ordered_srcs = sorted(
+                    candidates,
+                    key=lambda s: (-self._feed_sendable(s, need).total(), dist(s)))
             for src in ordered_srcs:
-                # No alimentar un planeta desde sí mismo; la luna (misma coords) sí vale.
-                if src is not own_moon and src.coords.tuple() == dst.coords.tuple():
-                    continue
-                if src is dst:
-                    continue
                 if not self._has_free_slots_for_mission():
                     self.log.info("Alimentación: sin slots de flota libres; sigo el próximo ciclo.")
                     return
@@ -2433,9 +2445,10 @@ class Brain:
                       int(need.metal), int(need.crystal), int(need.deut))
         return need
 
-    def _feed_transport(self, src, dst, need):
-        """Envía el excedente de 'src' hacia 'dst' (lo que falte y quepa). Devuelve los
-        Resources realmente enviados, o None."""
+    def _feed_sendable(self, src, need) -> Resources:
+        """Cuánto (Resources) podría enviar 'src' hacia 'need' en UN transporte, sin pasar
+        de su excedente (keep_resources_buffer) ni de la capacidad de sus cargueros. Solo
+        estima (no envía); se usa para ordenar fuentes y dentro de _feed_transport."""
         buf = 1 - self.cfg.keep_resources_buffer
         avail = Resources(src.resources.metal * buf,
                           src.resources.crystal * buf,
@@ -2443,6 +2456,21 @@ class Brain:
         send = Resources(min(avail.metal, need.metal),
                          min(avail.crystal, need.crystal),
                          min(avail.deut, need.deut))
+        ships = fleet_mod.pick_cargo_ships(src.ships, send.total())
+        if not ships:
+            return Resources(0.0, 0.0, 0.0)
+        # No sobrecargar: limitar a la capacidad real de los cargueros elegidos.
+        cap = tgt.cargo_capacity(ships)
+        total = send.total()
+        if total > cap and total > 0:
+            f = cap / total
+            send = Resources(send.metal * f, send.crystal * f, send.deut * f)
+        return send
+
+    def _feed_transport(self, src, dst, need):
+        """Envía el excedente de 'src' hacia 'dst' (lo que falte y quepa). Devuelve los
+        Resources realmente enviados, o None."""
+        send = self._feed_sendable(src, need)
         floor = getattr(self.cfg, "feed_min_send", 5000)
         if send.total() < floor:
             self.log.info("Alimentación: %s -> %s omitido: solo %d enviables (< feed_min_send=%d). "
@@ -2455,13 +2483,6 @@ class Brain:
             self.log.info("Alimentación: %s no tiene cargueros para alimentar a %s.",
                           src.coords, dst.coords)
             return None
-
-        # No sobrecargar: limitar lo enviado a la capacidad real de los cargueros elegidos.
-        cap = tgt.cargo_capacity(ships)
-        total = send.total()
-        if total > cap and total > 0:
-            f = cap / total
-            send = Resources(send.metal * f, send.crystal * f, send.deut * f)
 
         if self._guard():
             ok = self.client.send_fleet(src.coords, dst.coords, ships,

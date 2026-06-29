@@ -410,8 +410,9 @@ _JS_RECALL_DIAG = """() => {
             o: oEl ? norm(oEl.textContent) : null,
             d: dEl ? norm(dEl.textContent) : null,
             m: row.getAttribute('data-mission-type') || '',
-            ret: !!(row.classList.contains('is_return') || row.getAttribute('data-return-flight') ||
-                    row.querySelector('.return_flight, .returnflight')),
+            ret_cls: row.classList.contains('is_return'),
+            rrf: row.getAttribute('data-return-flight'),
+            ret_sel: !!row.querySelector('.return_flight, .returnflight'),
             hasRecall: !!recall,
             recallCls: recall ? (recall.className || recall.getAttribute('onclick') || '') : null,
             anchors: anchors.slice(0, 12),
@@ -2568,9 +2569,13 @@ class GameClient:
                     if (rowDest !== destination) continue;
 
                     const rrf = row.getAttribute('data-return-flight');
+                    // OJO: NO usar querySelector('.return_flight,...') aquí. En muchos servidores
+                    // las filas RECUPERABLES (de ida) muestran la "hora de vuelta si la regresas"
+                    // en un elemento con esa clase, lo que marcaba toda flota de ida como retorno
+                    // y la saltaba. Una flota que YA regresa no trae botón recallFleet, así que el
+                    // propio botón (más abajo) ya la excluye.
                     const is_return = row.classList.contains('is_return') ||
-                                   rrf === 'true' || rrf === '1' ||
-                                   !!row.querySelector('.return_flight, .returnflight');
+                                   rrf === 'true' || rrf === '1';
                     if (is_return) continue;
 
                     let rowMission = row.getAttribute('data-mission-type') || '';
@@ -2632,9 +2637,12 @@ class GameClient:
         try:
             import json as _json
             diag = self.page.evaluate(_JS_RECALL_DIAG)
-            self.log.warning("Recall DIAG (buscando %s -> %s mision=%s): %s filas %s",
+            # Solo las filas relevantes (mismo origen o destino), ENTERAS y sin truncar, para
+            # ver exactamente por qué no casa la fila buscada (misión / is_return / botón).
+            rel = [r for r in diag if r.get("o") == origin or r.get("d") == destination]
+            self.log.warning("Recall DIAG (%s -> %s mision=%s): %d filas; coincidentes=%s",
                              origin, destination, mission, len(diag),
-                             _json.dumps(diag, ensure_ascii=False)[:2000])
+                             _json.dumps(rel, ensure_ascii=False))
         except Exception as e:
             self.log.debug("Recall DIAG falló: %s", e)
         return False

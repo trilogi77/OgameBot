@@ -120,7 +120,12 @@ full10 = ("43m 30s\nStadtholder Hubble\n-\n-\n[1:125:8]\nInforme de espionaje en
           "planeta Luna [1:125:8]. La probabilidad de contra-espionaje es del 0 %")
 run(make_fake([spy("7"), spy("8"), spy("9"), spy_compact("10")], planets, {"10": full10}))
 assert len(sent) == 1 and "Te han espiado" in sent[0][1], sent
-assert "[1:201:8]" in sent[0][1] and "Stadtholder Hubble" in sent[0][1], sent
+assert "[1:201:8]" in sent[0][1], sent
+# El espía REAL va entre paréntesis en el cuerpo (FINAL BOSS), NO el dueño de la fila
+# (Stadtholder Hubble, que es nuestro propio nombre).
+assert "FINAL BOSS" in sent[0][1], sent
+assert "Stadtholder Hubble" not in sent[0][1], sent
+assert "Tu luna" in sent[0][1], sent     # cuerpo dice "tu planeta Luna [...]" -> es mi luna
 assert "0%" in sent[0][1], sent          # contra-espionaje sacado del cuerpo
 assert "13.223.208" in sent[0][1], sent  # recursos del planeta
 assert "nave grande de carga: 2.386" in sent[0][1], sent  # flota del planeta

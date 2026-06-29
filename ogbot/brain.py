@@ -3380,17 +3380,15 @@ class Brain:
                 entry["summary"] = "Otro mensaje (sin aviso de espionaje)"
                 continue
 
-            # Parseo barato (sin abrir): planeta espiado + nombre del espía de la fila. Las
-            # coords del origen y el % de contra-espionaje solo aparecen al ABRIR el mensaje,
-            # así que se rellenan más abajo y solo para los avisos nuevos (coste mínimo).
+            # Parseo barato (sin abrir): planeta espiado. El origen, el % de contraespionaje y
+            # el nombre REAL del espía solo aparecen al ABRIR el mensaje (la fila compacta trae
+            # NUESTRO propio nombre, no el del espía), así que se rellenan más abajo y solo para
+            # los avisos nuevos (coste mínimo).
             mine = spied or (coords[-1] if coords else "?")
             origin = next((c for c in coords if c != mine), "?")
-            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-            enemy = (lines[1] if len(lines) > 1
-                     and not re.fullmatch(r'[\d:\[\].\s]+', lines[1]) else "")
             ce = re.search(r'contra-?espionaje[^\d]*(\d+)\s*%', tl)
             ce_txt = f"{ce.group(1)}%" if ce else "?"
-            who = enemy or (f"[{origin}]" if origin != "?" else "?")
+            who = f"[{origin}]" if origin != "?" else "?"
 
             row = ledger.get(msg_id)
             if row and row.get("notified") == "1":
@@ -3418,27 +3416,42 @@ class Brain:
                 entry["summary"] = f"🔍 Te han espiado en [{mine}] (Telegram no configurado, pendiente)"
                 continue
 
-            # Abrir el mensaje (solo avisos nuevos, justo antes de notificar) para obtener las
-            # coords del origen y el % de contra-espionaje, que la fila compacta no trae.
-            if origin == "?" or ce_txt == "?":
-                try:
-                    full = self.client.read_message_full(m["id"])
-                except Exception:
-                    full = ""
-                if full:
+            # Abrir el mensaje (solo avisos nuevos, justo antes de notificar). La fila compacta
+            # NO trae: coords de origen, % de contraespionaje, el nombre REAL del espía (va entre
+            # paréntesis tras las coords de origen; el de la fila es NUESTRO propio nombre) ni si
+            # nos espiaron la LUNA o el PLANETA.
+            spy_name = ""
+            mine_is_moon = None
+            try:
+                full = self.client.read_message_full(m["id"])
+            except Exception:
+                full = ""
+            if full:
+                if origin == "?":
                     o = next((c for c in re.findall(r'\d+:\d+:\d+', full)
                               if c not in own_coords), None)
                     if o:
                         origin = o
+                if ce_txt == "?":
                     fce = re.search(r'contra-?espionaje[^\d]*(\d+)\s*%', full.lower())
                     if fce:
                         ce_txt = f"{fce.group(1)}%"
+                sm = re.search(r'\(([^)]{2,40})\)', full)   # nombre del espía, entre paréntesis
+                if sm:
+                    spy_name = sm.group(1).strip()
+                # ¿Mi LUNA o mi PLANETA? Lo que precede a mis coords en "cerca de tu planeta".
+                bm = re.search(r'(?:cerca de tu planeta|near your planet)\s+(.*?)\[' +
+                               re.escape(mine), full, re.I)
+                if bm:
+                    mine_is_moon = bool(re.search(r'luna|moon', bm.group(1), re.I))
 
-            parts = [f"• <b>Tu planeta:</b> [{mine}]"]
+            who = spy_name or (f"[{origin}]" if origin != "?" else "desconocido")
+            mi_loc = "luna" if mine_is_moon else ("planeta" if mine_is_moon is False else "ubicación")
+            parts = [f"• <b>Tu {mi_loc}:</b> [{mine}]"]
             if origin != "?":
                 parts.append(f"• <b>Origen:</b> [{origin}]")
-            if enemy:
-                parts.append(f"• <b>Espía:</b> {enemy}")
+            if spy_name:
+                parts.append(f"• <b>Espía:</b> {spy_name}")
             parts.append(f"• <b>Prob. contraespionaje:</b> {ce_txt}")
             loc_summary = self._own_location_summary(mine)
             if loc_summary:
@@ -3449,12 +3462,11 @@ class Brain:
             )
             ok = utils.send_telegram_message(self.cfg.telegram_token, self.cfg.telegram_chat_id,
                                              alert, logger=self.log, block=True)
-            who = enemy or (f"[{origin}]" if origin != "?" else "desconocido")
             if ok:
                 row["notified"] = "1"
                 row["notified_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                row["from"] = enemy or (origin if origin != "?" else "?")
-                entry["summary"] = f"🔍 Te han espiado en [{mine}] (origen {who}, avisado)"
+                row["from"] = spy_name or (origin if origin != "?" else "?")
+                entry["summary"] = f"🔍 Te han espiado en [{mine}] (espía {who}, avisado)"
                 self.log.info("Aviso de espionaje notificado por Telegram: %s en [%s] (origen %s)", msg_id, mine, who)
             else:
                 entry["summary"] = f"🔍 Te han espiado en [{mine}] (fallo de Telegram, se reintentará)"

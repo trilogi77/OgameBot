@@ -2545,25 +2545,34 @@ class GameClient:
         en aparecer. Devuelve True si lo pulsó."""
         js = r"""() => {
             const norm = t => (t || '').trim().toLowerCase().replace(/\s+/g, ' ');
-            const YES = ['sí','si','yes','ja','oui','aceptar','confirmar','confirm','ok'];
-            const isYes = el => el && el.offsetParent !== null &&
-                                YES.includes(norm(el.textContent || el.value));
-            // 1) Dentro de un contenedor de diálogo/confirmación/overlay (lo más fiable).
-            const boxes = document.querySelectorAll(
+            const YES = ['sí','si','yes','ja','oui'];
+            const NO  = ['no','não','nein','non'];
+            const vis = el => el && el.offsetParent !== null;
+            // El diálogo de confirmación REAL tiene a la vez un botón "Sí" y uno "No" en el
+            // mismo contenedor. Exigir ambos evita pulsar cualquier "sí" suelto de la página
+            // (lo que pasaba antes, dejando el diálogo abierto).
+            const scan = root => {
+                let yesEl = null, hasNo = false;
+                for (const el of root.querySelectorAll('a,button,input,span,div')) {
+                    if (!vis(el)) continue;
+                    const t = norm(el.textContent || el.value);
+                    if (!yesEl && YES.includes(t)) yesEl = el;
+                    else if (NO.includes(t)) hasNo = true;
+                }
+                return (yesEl && hasNo) ? yesEl : null;
+            };
+            const click = y => { (y.closest('a,button,[onclick],[role="button"]') || y).click(); };
+            const conts = document.querySelectorAll(
                 '[class*="confirm"],[id*="confirm"],.ui-dialog,[class*="dialog"],' +
                 '[class*="overlay"],[class*="popup"],#box,.modal');
-            for (const box of boxes) {
-                for (const el of box.querySelectorAll('a,button,input[type="button"],input[type="submit"],span,div')) {
-                    if (isYes(el)) { el.click(); return 'box'; }
-                }
-            }
-            // 2) Fallback: cualquier botón/enlace visible cuyo texto sea exactamente "Sí".
-            for (const el of document.querySelectorAll('a,button,input[type="button"],input[type="submit"]')) {
-                if (isYes(el)) { el.click(); return 'any'; }
-            }
+            for (const c of conts) { const y = scan(c); if (y) { click(y); return 'cont'; } }
+            const y = scan(document.body);   // último recurso
+            if (y) { click(y); return 'body'; }
             return false;
         }"""
-        for _ in range(8):
+        # El diálogo tarda "un par de segundos" en aparecer tras clicar 'devolver'.
+        time.sleep(2.0)
+        for _ in range(10):
             try:
                 r = self.page.evaluate(js)
                 if r:
@@ -2571,7 +2580,7 @@ class GameClient:
                     return True
             except Exception as e:
                 self.log.debug("Regreso: error buscando el 'Sí': %s", e)
-            time.sleep(0.5)
+            time.sleep(0.6)
         # No encontrado: volcar los botones visibles para ajustar el selector si hiciera falta.
         try:
             import json as _json
@@ -2598,7 +2607,7 @@ class GameClient:
 
         # Marcador de versión: si NO ves "recall v3" en el log al pedir un regreso, el contenedor
         # corre una imagen vieja -> reconstruye con `docker compose up -d --build`.
-        self.log.info("recall v5 (confirma dialogo Si): buscando %s -> %s", origin, destination)
+        self.log.info("recall v6 (espera+confirma Si): buscando %s -> %s", origin, destination)
         self._goto("movement")
         try:
             self.page.wait_for_selector(

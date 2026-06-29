@@ -492,6 +492,15 @@ class Brain:
     def _loc_key(self, coords) -> str:
         return f"{coords.galaxy}:{coords.system}:{coords.position}:{coords.type}"
 
+    def _build_finish_pending(self, loc) -> bool:
+        """True si la caché sabe de un build en esta ubicación cuyo fin estimado aún no ha
+        llegado. Red de seguridad para cuando la lectura en vivo de building_in_progress da
+        un falso negativo (el overview hace fail-open)."""
+        entry = self.state_cache["planets"].get(self._loc_key(loc.coords))
+        if not entry:
+            return False
+        return (entry.get("build_finish_epoch", 0.0) or 0.0) > time.time()
+
     def _load_state_cache(self):
         import json
         import os
@@ -688,13 +697,27 @@ class Brain:
         self.client.read_planet_light(loc)
 
         finished = entry.get("build_finish_epoch", 0.0)
-        if finished and time.time() >= finished and not loc.building_in_progress:
+        now = time.time()
+        if finished and now >= finished and not loc.building_in_progress:
             self.log.info("Estado %s: construcción terminada -> refresco niveles de edificios.", loc.coords)
             self._refresh_buildings(loc)
             self._cache_store_location(loc)
         else:
             entry["build_queue"] = list(loc.building_queue)
-            entry["build_finish_epoch"] = (time.time() + loc.building_remaining_seconds) if loc.building_in_progress else 0.0
+            if loc.building_in_progress:
+                entry["build_finish_epoch"] = now + loc.building_remaining_seconds
+            elif finished and now < finished:
+                # La lectura en vivo del overview dice "libre", pero la caché sabe de un build
+                # cuyo fin estimado aún no ha llegado. El overview hace fail-open (carreras de
+                # render/navegación -> False), así que esto suele ser un FALSO NEGATIVO:
+                # conservamos el epoch y mantenemos el planeta ocupado para no alimentar/encolar
+                # de más.
+                # ponytail: techo = si el build se acelera (materia oscura) el planeta queda
+                # "ocupado" hasta el epoch o el próximo resync; se autocorrige.
+                loc.building_in_progress = True
+                loc.building_remaining_seconds = int(finished - now)
+            else:
+                entry["build_finish_epoch"] = 0.0
             self._save_state_cache()
 
     def _read_research_smart(self):
@@ -1422,10 +1445,15 @@ class Brain:
 
         # 1. Template de flota de ataque
         use_probes = bool(getattr(self.cfg, "farm_with_probes", False))
-        template = {k: v for k, v in
-                    (self.cfg.attacker_fleet_template or {}).items() if v > 0}
-        if not template:
-            template = {"espionage_probe": 1} if use_probes else {"large_cargo": 5}
+        if use_probes:
+            # Raid con sondas: van SOLAS, sin escoltas ni otras naves (mezclarlas no
+            # tiene sentido). Se ignora attacker_fleet_template.
+            template = {"espionage_probe": 1}
+        else:
+            template = {k: v for k, v in
+                        (self.cfg.attacker_fleet_template or {}).items() if v > 0}
+            if not template:
+                template = {"large_cargo": 5}
 
         # Dimensionado de la flota de ataque según el modo (sondas con bodega vs cargueros).
         def size_fleet(p, full_loot):
@@ -2282,10 +2310,13 @@ class Brain:
     def _feed_step(self, planets, movements=None):
         """Manda el excedente de los planetas-fuente a los planetas-destino que no
         pueden pagar su próxima construcción (p.ej. lab a 12). Destino y fuentes se
-        marcan a mano en la pestaña 'Por Planeta'."""
+        marcan a mano en la pestaña 'Por Planeta'. La luna propia de cada destino
+        alimenta primero (automático, sin marcarla)."""
         destinos = [p for p in planets if self._get_planet_setting(p, "feed_target", False)]
         fuentes = [p for p in planets if self._get_planet_setting(p, "feed_source", False)]
-        if not destinos or not fuentes:
+        # La luna propia de cada destino alimenta primero (no hace falta marcarla), así que
+        # basta con tener destinos: si no hay fuentes marcadas, las lunas pueden cubrirlo.
+        if not destinos:
             return
 
         # Destinos que YA tienen un TRANSPORTE entrante (la alimentación siempre usa
@@ -2306,8 +2337,9 @@ class Brain:
 
         for dst in destinos:
             # Si ya está construyendo algo, lo que pediría está en cola y pagado: no
-            # mandar recursos para una subida en curso (evita mandar de más).
-            if getattr(dst, "building_in_progress", False):
+            # mandar recursos para una subida en curso (evita mandar de más). Respaldamos
+            # el flag en vivo (que puede dar falso negativo) con el epoch de la caché.
+            if getattr(dst, "building_in_progress", False) or self._build_finish_pending(dst):
                 self.log.info("Alimentación: %s ya está construyendo algo; espero a que termine.",
                               dst.coords)
                 continue
@@ -2322,10 +2354,16 @@ class Brain:
             need = self._feed_deficit(dst)
             if not need:
                 continue
-            # Fuente más cercana primero: menos deut de vuelo y llega antes.
+            # Prioridad: la propia luna del destino (misma coords, sin gasto de vuelo).
+            # Luego las fuentes marcadas, la más cercana primero (menos deut, llega antes).
+            own_moon = getattr(dst, "moon", None) if getattr(dst, "has_moon", False) else None
             srcs = sorted(fuentes, key=lambda s: gd.distance(s.coords.tuple(), dst.coords.tuple()))
-            for src in srcs:
-                if src.coords.tuple() == dst.coords.tuple():
+            ordered_srcs = ([own_moon] if own_moon else []) + srcs
+            for src in ordered_srcs:
+                # No alimentar un planeta desde sí mismo; la luna (misma coords) sí vale.
+                if src is not own_moon and src.coords.tuple() == dst.coords.tuple():
+                    continue
+                if src is dst:
                     continue
                 if not self._has_free_slots_for_mission():
                     self.log.info("Alimentación: sin slots de flota libres; sigo el próximo ciclo.")
@@ -2342,8 +2380,11 @@ class Brain:
     def _target_next_build(self, planet):
         """(nombre, coste) de lo próximo que el planeta-destino quiere construir, o None.
         Prioriza los objetivos de instalaciones (lab, astillero...) y, si no hay,
-        usa la siguiente construcción que pediría la economía (minas/energía)."""
+        usa la siguiente construcción que pediría la economía (minas/energía).
+        Devuelve None si el objetivo de instalación está BLOQUEADO por una investigación
+        pendiente: no tiene sentido alimentar algo que aún no se puede construir."""
         from .prereqs import resolve_prerequisites
+        pending_blocked = False
         for facility in ("robotics_factory", "shipyard", "research_lab", "nanite_factory"):
             target_val = self._get_planet_setting(planet, f"target_{facility}", 0)
             if planet.lvl(facility) < target_val:
@@ -2351,6 +2392,13 @@ class Brain:
                                             planet, self.research_levels)
                 if res and res[0] == "building":
                     return res[1], gd.building_cost(res[1], res[2])
+                # Objetivo pendiente pero bloqueado (espera una investigación que no se
+                # construye alimentando este planeta).
+                pending_blocked = True
+                self.log.info("Alimentación: %s objetivo %s espera investigación (%s); no alimento.",
+                              planet.coords, facility, res)
+        if pending_blocked:
+            return None
         plasma = self.research_levels.get("plasma_tech", 0)
         return economy.next_build(planet, self.cfg, plasma=plasma,
                                   research_levels=self.research_levels)

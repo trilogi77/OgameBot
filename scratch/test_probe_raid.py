@@ -19,10 +19,15 @@ p2 = types.SimpleNamespace(ships={"espionage_probe": 6})
 f2 = fleet.size_attack_fleet_probes(p2, Resources(1000, 0, 0), {"espionage_probe": 1}, 5)
 assert f2 == {"espionage_probe": 6}, f2
 
-# Mantiene escoltas del template; sin sondas -> solo escoltas.
+# Sondas SOLAS: se ignoran escoltas del template. Sin sondas -> {}.
 p3 = types.SimpleNamespace(ships={"espionage_probe": 0, "light_fighter": 50})
 f3 = fleet.size_attack_fleet_probes(p3, Resources(100, 0, 0), {"espionage_probe": 1, "light_fighter": 10}, 5)
-assert f3 == {"light_fighter": 10}, f3
+assert f3 == {}, f3
+
+# Con escoltas en el template y sondas disponibles: van SOLO sondas.
+p5 = types.SimpleNamespace(ships={"espionage_probe": 1000, "light_fighter": 50})
+f5 = fleet.size_attack_fleet_probes(p5, Resources(40, 30, 30), {"espionage_probe": 1, "light_fighter": 10}, 5)
+assert f5 == {"espionage_probe": 20}, f5
 
 # Botín 0 -> al menos 1 sonda.
 f4 = fleet.size_attack_fleet_probes(p, Resources(0, 0, 0), {"espionage_probe": 1}, 5)

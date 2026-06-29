@@ -2555,7 +2555,8 @@ class GameClient:
                     if (want && norm(rowMission) && norm(rowMission) !== want) continue;
 
                     const recallBtn = row.querySelector(
-                        'a.reversal, .reversal_flight a, a.reversal_flight, a[onclick*="sendRecall"], a[class*="reversal"]'
+                        'a.recallFleet, a[class*="recall"], a[onclick*="sendRecall"], ' +
+                        'a.reversal, .reversal_flight a, a.reversal_flight, a[class*="reversal"]'
                     );
                     if (!recallBtn) continue;
 

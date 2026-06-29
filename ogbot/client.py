@@ -2539,6 +2539,57 @@ class GameClient:
             self.log.info("Escombros encontrados: %d campos.", len(debris_list))
         return debris_list
 
+    def _confirm_recall_dialog(self) -> bool:
+        """Tras clicar el enlace de regreso, OGame abre un diálogo de confirmación
+        ('Retirar flota', botones Sí/No). Pulsa 'Sí'. Reintenta unos segundos por si tarda
+        en aparecer. Devuelve True si lo pulsó."""
+        js = r"""() => {
+            const norm = t => (t || '').trim().toLowerCase().replace(/\s+/g, ' ');
+            const YES = ['sí','si','yes','ja','oui','aceptar','confirmar','confirm','ok'];
+            const isYes = el => el && el.offsetParent !== null &&
+                                YES.includes(norm(el.textContent || el.value));
+            // 1) Dentro de un contenedor de diálogo/confirmación/overlay (lo más fiable).
+            const boxes = document.querySelectorAll(
+                '[class*="confirm"],[id*="confirm"],.ui-dialog,[class*="dialog"],' +
+                '[class*="overlay"],[class*="popup"],#box,.modal');
+            for (const box of boxes) {
+                for (const el of box.querySelectorAll('a,button,input[type="button"],input[type="submit"],span,div')) {
+                    if (isYes(el)) { el.click(); return 'box'; }
+                }
+            }
+            // 2) Fallback: cualquier botón/enlace visible cuyo texto sea exactamente "Sí".
+            for (const el of document.querySelectorAll('a,button,input[type="button"],input[type="submit"]')) {
+                if (isYes(el)) { el.click(); return 'any'; }
+            }
+            return false;
+        }"""
+        for _ in range(8):
+            try:
+                r = self.page.evaluate(js)
+                if r:
+                    self.log.info("Regreso: confirmado 'Sí' en el diálogo (%s).", r)
+                    return True
+            except Exception as e:
+                self.log.debug("Regreso: error buscando el 'Sí': %s", e)
+            time.sleep(0.5)
+        # No encontrado: volcar los botones visibles para ajustar el selector si hiciera falta.
+        try:
+            import json as _json
+            diag = self.page.evaluate(r"""() => {
+                const out = [];
+                for (const el of document.querySelectorAll('a,button,input')) {
+                    if (el.offsetParent === null) continue;
+                    const t = (el.textContent || el.value || '').trim();
+                    if (t) out.push({t: t.slice(0,20), c: (el.className||'').slice(0,40), tag: el.tagName});
+                }
+                return out.slice(0, 30);
+            }""")
+            self.log.warning("Regreso: NO encontré el 'Sí' de confirmación. Botones visibles: %s",
+                             _json.dumps(diag, ensure_ascii=False))
+        except Exception:
+            pass
+        return False
+
     def recall_fleet(self, origin: str, destination: str, mission: str = "deploy",
                      arrival: int = 0) -> bool:
         desc = f"Retornar flota de {origin} -> {destination} ({mission})"
@@ -2547,7 +2598,7 @@ class GameClient:
 
         # Marcador de versión: si NO ves "recall v3" en el log al pedir un regreso, el contenedor
         # corre una imagen vieja -> reconstruye con `docker compose up -d --build`.
-        self.log.info("recall v4 (args destructurados): buscando %s -> %s", origin, destination)
+        self.log.info("recall v5 (confirma dialogo Si): buscando %s -> %s", origin, destination)
         self._goto("movement")
         try:
             self.page.wait_for_selector(
@@ -2643,12 +2694,19 @@ class GameClient:
         try:
             result = self.page.evaluate(js_recall, (origin, destination, mission, int(arrival or 0)))
             if result:
-                self.log.info("Recall ejecutado en UI para flota %s -> %s", origin, destination)
-                try:
-                    self.page.wait_for_load_state("networkidle", timeout=5000)
-                except Exception:
-                    time.sleep(2)
-                return True
+                self.log.info("Regreso: enlace clicado para %s -> %s; confirmando diálogo...",
+                              origin, destination)
+                # OGame pide confirmación ('Retirar flota', Sí/No): sin pulsar 'Sí' NO se retira.
+                if self._confirm_recall_dialog():
+                    self.log.info("Recall ejecutado en UI para flota %s -> %s", origin, destination)
+                    try:
+                        self.page.wait_for_load_state("networkidle", timeout=5000)
+                    except Exception:
+                        time.sleep(2)
+                    return True
+                self.log.warning("Regreso %s -> %s: clicado el enlace pero no pude confirmar 'Sí'.",
+                                 origin, destination)
+                return False
         except Exception as e:
             self.log.error("Excepción al intentar hacer recall de flota: %s", e)
         # No casó ninguna fila: volcar lo que ve el DOM (origen/destino/misión/retorno y las

@@ -968,9 +968,18 @@ function originSelectHTML(cls, val) {
     const v = val || "both";
     const opt = (k, t) => `<option value="${k}" ${v === k ? "selected" : ""}>${t}</option>`;
     return `<select class="${cls}" title="¿Desde dónde se lanza?" `
-        + `style="font-size:11px;margin:0 0 8px 22px;">`
+        + `style="font-size:11px;width:100%;">`
         + opt("both", "🪐+🌙 Ambos") + opt("planet", "🪐 Planeta") + opt("moon", "🌙 Luna")
         + `</select>`;
+}
+
+// Casilla de una función con (opcional) selector de origen debajo, en la MISMA celda de la
+// rejilla, para que el selector quede alineado bajo su función. Sin luna -> solo la casilla.
+function toggleWithOrigin(cls, label, checked, hasMoon, fromCls, fromVal) {
+    const lbl = `<label class="planet-toggle"><input type="checkbox" class="${cls}" `
+        + `${checked ? "checked" : ""}><span>${label}</span></label>`;
+    if (!hasMoon) return lbl;
+    return `<div class="planet-toggle-group">${lbl}${originSelectHTML(fromCls, fromVal)}</div>`;
 }
 
 function renderPlanetsList() {
@@ -1029,30 +1038,14 @@ function renderPlanetsList() {
                     <input type="checkbox" class="planet-lifeforms" ${isLifeforms ? "checked" : ""}>
                     <span>Lifeforms</span>
                 </label>
-                <label class="planet-toggle">
-                    <input type="checkbox" class="planet-expeditions" ${isExpeditions ? "checked" : ""}>
-                    <span>Expediciones</span>
-                </label>
-                ${hasMoon ? originSelectHTML("planet-expeditions-from", config.expeditions_from) : ""}
+                ${toggleWithOrigin("planet-expeditions", "Expediciones", isExpeditions, hasMoon, "planet-expeditions-from", config.expeditions_from)}
                 <label class="planet-toggle">
                     <input type="checkbox" class="planet-fleet-building" ${isFleet ? "checked" : ""}>
                     <span>Crear Flota</span>
                 </label>
-                <label class="planet-toggle">
-                    <input type="checkbox" class="planet-farming" ${isFarming ? "checked" : ""}>
-                    <span>Farmeo</span>
-                </label>
-                ${hasMoon ? originSelectHTML("planet-farming-from", config.farming_from) : ""}
-                <label class="planet-toggle">
-                    <input type="checkbox" class="planet-recycling" ${isRecycling ? "checked" : ""}>
-                    <span>Reciclaje</span>
-                </label>
-                ${hasMoon ? originSelectHTML("planet-recycling-from", config.recycling_from) : ""}
-                <label class="planet-toggle">
-                    <input type="checkbox" class="planet-night-sweep" ${isNightSweep ? "checked" : ""}>
-                    <span>Barrido nocturno</span>
-                </label>
-                ${hasMoon ? originSelectHTML("planet-night-sweep-from", config.night_sweep_from) : ""}
+                ${toggleWithOrigin("planet-farming", "Farmeo", isFarming, hasMoon, "planet-farming-from", config.farming_from)}
+                ${toggleWithOrigin("planet-recycling", "Reciclaje", isRecycling, hasMoon, "planet-recycling-from", config.recycling_from)}
+                ${toggleWithOrigin("planet-night-sweep", "Barrido nocturno", isNightSweep, hasMoon, "planet-night-sweep-from", config.night_sweep_from)}
                 <label class="planet-toggle" title="Recibe recursos de los planetas-fuente para pagar sus objetivos de construcción (p.ej. lab a 12).">
                     <input type="checkbox" class="planet-feed-target" ${isFeedTarget ? "checked" : ""}>
                     <span>Recibe recursos</span>

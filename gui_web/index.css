@@ -590,6 +590,12 @@ body {
     gap: 12px;
 }
 
+.planet-toggle-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
 .planet-toggle {
     display: flex;
     align-items: center;

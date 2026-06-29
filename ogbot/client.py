@@ -2558,14 +2558,14 @@ class GameClient:
                         '.originCoords a, .originCoords .coords, .coordsOrigin a, .coordsOrigin, ' +
                         '.originFleet a, [class*="origin"] a, [class*="orig"] a'
                     );
-                    const rowOrigin = origEl ? origEl.textContent.replace(/[\\\\[\\\\]\\\\s]/g, '') : '';
+                    const rowOrigin = origEl ? origEl.textContent.replace(/[\\[\\]\\s]/g, '') : '';
                     if (rowOrigin !== origin) continue;
 
                     const destEl = row.querySelector(
                         '.destinationCoords a, .destinationCoords .coords, .destCoords a, .destCoords .coords, ' +
                         '.coordsDest a, .coordsDest, .destFleet a, [class*="destination"] a, [class*="dest"] a'
                     );
-                    const rowDest = destEl ? destEl.textContent.replace(/[\\\\[\\\\]\\\\s]/g, '') : '';
+                    const rowDest = destEl ? destEl.textContent.replace(/[\\[\\]\\s]/g, '') : '';
                     if (rowDest !== destination) continue;
 
                     const rrf = row.getAttribute('data-return-flight');

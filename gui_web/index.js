@@ -651,6 +651,14 @@ function saveChanges() {
         localPlanetsConfig[coords].enable_recycling = card.querySelector(".planet-recycling").checked;
         const _ns = card.querySelector(".planet-night-sweep");
         if (_ns) localPlanetsConfig[coords].enable_night_sweep = _ns.checked;
+        // Origen por función (planeta/luna/ambos); solo presentes si la ubicación tiene luna.
+        [["planet-expeditions-from", "expeditions_from"],
+         ["planet-farming-from", "farming_from"],
+         ["planet-recycling-from", "recycling_from"],
+         ["planet-night-sweep-from", "night_sweep_from"]].forEach(([cls, key]) => {
+            const sel = card.querySelector("." + cls);
+            if (sel) localPlanetsConfig[coords][key] = sel.value;
+        });
         const _ft = card.querySelector(".planet-feed-target");
         if (_ft) localPlanetsConfig[coords].feed_target = _ft.checked;
         const _fs = card.querySelector(".planet-feed-source");
@@ -954,6 +962,17 @@ function saveBuildQueue() {
         .catch(e => queueStatus("Error de red: " + e, false));
 }
 
+// Selector de origen (planeta/luna/ambos) para una función. Solo tiene sentido si la
+// ubicación tiene luna; planeta y luna comparten coords, así que decide desde cuál se lanza.
+function originSelectHTML(cls, val) {
+    const v = val || "both";
+    const opt = (k, t) => `<option value="${k}" ${v === k ? "selected" : ""}>${t}</option>`;
+    return `<select class="${cls}" title="¿Desde dónde se lanza?" `
+        + `style="font-size:11px;margin:0 0 8px 22px;">`
+        + opt("both", "🪐+🌙 Ambos") + opt("planet", "🪐 Planeta") + opt("moon", "🌙 Luna")
+        + `</select>`;
+}
+
 function renderPlanetsList() {
     if (!configLoaded) return;
 
@@ -978,6 +997,8 @@ function renderPlanetsList() {
         const isNightSweep = config.enable_night_sweep === true;  // opt-in por planeta
         const isFeedTarget = config.feed_target === true;         // recibe recursos para construir
         const isFeedSource = config.feed_source === true;         // cede su excedente
+        // Selector de origen por función (solo si la ubicación tiene luna).
+        const hasMoon = !!(p.has_moon || (p.moon && p.moon.coords));
 
         const card = document.createElement("div");
         card.className = "planet-card";
@@ -1012,6 +1033,7 @@ function renderPlanetsList() {
                     <input type="checkbox" class="planet-expeditions" ${isExpeditions ? "checked" : ""}>
                     <span>Expediciones</span>
                 </label>
+                ${hasMoon ? originSelectHTML("planet-expeditions-from", config.expeditions_from) : ""}
                 <label class="planet-toggle">
                     <input type="checkbox" class="planet-fleet-building" ${isFleet ? "checked" : ""}>
                     <span>Crear Flota</span>
@@ -1020,14 +1042,17 @@ function renderPlanetsList() {
                     <input type="checkbox" class="planet-farming" ${isFarming ? "checked" : ""}>
                     <span>Farmeo</span>
                 </label>
+                ${hasMoon ? originSelectHTML("planet-farming-from", config.farming_from) : ""}
                 <label class="planet-toggle">
                     <input type="checkbox" class="planet-recycling" ${isRecycling ? "checked" : ""}>
                     <span>Reciclaje</span>
                 </label>
+                ${hasMoon ? originSelectHTML("planet-recycling-from", config.recycling_from) : ""}
                 <label class="planet-toggle">
                     <input type="checkbox" class="planet-night-sweep" ${isNightSweep ? "checked" : ""}>
                     <span>Barrido nocturno</span>
                 </label>
+                ${hasMoon ? originSelectHTML("planet-night-sweep-from", config.night_sweep_from) : ""}
                 <label class="planet-toggle" title="Recibe recursos de los planetas-fuente para pagar sus objetivos de construcción (p.ej. lab a 12).">
                     <input type="checkbox" class="planet-feed-target" ${isFeedTarget ? "checked" : ""}>
                     <span>Recibe recursos</span>

@@ -788,6 +788,16 @@ class Brain:
         p_cfg = planets_config.get(coords_str, {})
         return p_cfg.get(setting_name, getattr(self.cfg, setting_name, default_val))
 
+    def _origin_ok(self, loc, feature: str) -> bool:
+        """¿Esta ubicación es origen válido para 'feature' según el selector
+        <feature>_from por coordenada (both/planet/moon)? Default 'both'. Planeta y luna
+        comparten coords, así que este ajuste decide desde cuál de los dos se lanza."""
+        frm = self._get_planet_setting(loc, f"{feature}_from", "both")
+        if frm not in ("planet", "moon"):
+            return True   # both / valor desconocido -> ambos
+        is_moon = getattr(loc.coords, "type", "planet") == "moon"
+        return (frm == "moon") == is_moon
+
     # ------------------------------------------------------------------ #
     def run_forever(self):
         self.log.info("=== OGBot iniciado (dry_run=%s) ===", self.cfg.dry_run)
@@ -1438,7 +1448,9 @@ class Brain:
 
     def _farm(self, locations):
         # Filtrar ubicaciones origen elegibles para farmeo (planetas y lunas)
-        eligible_locations = [p for p in locations if self._get_planet_setting(p, "enable_farming", True)]
+        eligible_locations = [p for p in locations
+                              if self._get_planet_setting(p, "enable_farming", True)
+                              and self._origin_ok(p, "farming")]
         if not eligible_locations:
             self.log.info("Farmeo omitido: no hay ningún planeta o luna con farmeo activado.")
             return
@@ -1707,9 +1719,10 @@ class Brain:
         self.log.info("Farmeo completado: %d ataques en este ciclo.", attacked)
 
     def _recycle(self, locations):
-        locations_with_recyclers = [p for p in locations 
-                                    if p.ships.get("recycler", 0) >= 1 
-                                    and self._get_planet_setting(p, "enable_recycling", True)]
+        locations_with_recyclers = [p for p in locations
+                                    if p.ships.get("recycler", 0) >= 1
+                                    and self._get_planet_setting(p, "enable_recycling", True)
+                                    and self._origin_ok(p, "recycling")]
         if not locations_with_recyclers:
             self.log.debug("Reciclaje omitido: sin ubicaciones con recicladores disponibles y activos en hangar.")
             return
@@ -1847,7 +1860,8 @@ class Brain:
                 p for p in planets if p.coords.tuple() == loc.coords.tuple())
 
         enabled_locs = [loc for loc in all_locations
-                        if self._get_planet_setting(parent_of(loc), "enable_expeditions", True)]
+                        if self._get_planet_setting(parent_of(loc), "enable_expeditions", True)
+                        and self._origin_ok(loc, "expeditions")]
 
         top1 = max_find = optimal = per_exp_auto = 0
         optimal_nopf = optimal_pf = 0
@@ -2573,6 +2587,8 @@ class Brain:
             # lo que el usuario marque explícitamente, para no hacer mucha actividad.
             pkey = f"{parent.coords.galaxy}:{parent.coords.system}:{parent.coords.position}"
             if not (getattr(self.cfg, "planets_config", {}) or {}).get(pkey, {}).get("enable_night_sweep", False):
+                continue
+            if not self._origin_ok(loc, "night_sweep"):
                 continue
             self.client.read_planet_state(loc)
             flyable = {k: v for k, v in loc.ships.items() if k != "solar_satellite" and v > 0}

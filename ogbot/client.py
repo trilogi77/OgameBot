@@ -2547,7 +2547,7 @@ class GameClient:
 
         # Marcador de versión: si NO ves "recall v3" en el log al pedir un regreso, el contenedor
         # corre una imagen vieja -> reconstruye con `docker compose up -d --build`.
-        self.log.info("recall v3 (coords por match): buscando %s -> %s", origin, destination)
+        self.log.info("recall v4 (args destructurados): buscando %s -> %s", origin, destination)
         self._goto("movement")
         try:
             self.page.wait_for_selector(
@@ -2559,7 +2559,12 @@ class GameClient:
 
         # Empareja por origen+destino+misión y, si hay varias flotas iguales, por la hora de
         # llegada (data-arrival-time) más cercana a la pedida, para recuperar la correcta.
-        js_recall = """(origin, destination, mission, arrival) => {
+        js_recall = """(args) => {
+            // Playwright pasa UN solo argumento: aquí llega el array [origin, destination,
+            // mission, arrival]. Antes la función declaraba 4 params y solo el 1º recibía el
+            // array entero, así que 'origin' era el array y NINGUNA fila casaba (la causa real
+            // de que el regreso nunca funcionara). Hay que destructurar.
+            const origin = args[0], destination = args[1], mission = args[2], arrival = args[3] || 0;
             const norm = m => { m = String(m || '').toLowerCase();
                                 return (m === 'deploy' || m === '4') ? '4' : m; };
             const want = norm(mission);

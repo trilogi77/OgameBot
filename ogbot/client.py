@@ -2545,6 +2545,9 @@ class GameClient:
         if self._act(desc):
             return True
 
+        # Marcador de versión: si NO ves "recall v3" en el log al pedir un regreso, el contenedor
+        # corre una imagen vieja -> reconstruye con `docker compose up -d --build`.
+        self.log.info("recall v3 (coords por match): buscando %s -> %s", origin, destination)
         self._goto("movement")
         try:
             self.page.wait_for_selector(
@@ -2570,14 +2573,14 @@ class GameClient:
                         '.originCoords a, .originCoords .coords, .coordsOrigin a, .coordsOrigin, ' +
                         '.originFleet a, [class*="origin"] a, [class*="orig"] a'
                     );
-                    const rowOrigin = origEl ? origEl.textContent.replace(/[\\[\\]\\s]/g, '') : '';
+                    const rowOrigin = origEl ? (origEl.textContent.match(/\\d+:\\d+:\\d+/) || [''])[0] : '';
                     if (rowOrigin !== origin) continue;
 
                     const destEl = row.querySelector(
                         '.destinationCoords a, .destinationCoords .coords, .destCoords a, .destCoords .coords, ' +
                         '.coordsDest a, .coordsDest, .destFleet a, [class*="destination"] a, [class*="dest"] a'
                     );
-                    const rowDest = destEl ? destEl.textContent.replace(/[\\[\\]\\s]/g, '') : '';
+                    const rowDest = destEl ? (destEl.textContent.match(/\\d+:\\d+:\\d+/) || [''])[0] : '';
                     if (rowDest !== destination) continue;
 
                     const rrf = row.getAttribute('data-return-flight');

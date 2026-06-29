@@ -389,6 +389,38 @@ _JS_READ_MOVEMENTS = """() => {
     return results;
 }"""
 
+# Diagnóstico para el regreso de flota: por cada fila de movimiento devuelve lo que ven los
+# selectores del matcher (origen/destino/misión/retorno) y las clases de los enlaces, para
+# poder ajustar los selectores del botón de regreso cuando no se encuentra.
+_JS_RECALL_DIAG = """() => {
+    const norm = s => String(s || '').replace(/[\\[\\]\\s]/g, '');
+    const rows = document.querySelectorAll('.eventFleet, .fleetDetails, .fleet_row, tr.flightEventRow');
+    const out = [];
+    rows.forEach(row => {
+        const oEl = row.querySelector('.originCoords a, .originCoords .coords, .coordsOrigin a, .coordsOrigin, .originFleet a, [class*="origin"] a, [class*="orig"] a');
+        const dEl = row.querySelector('.destinationCoords a, .destinationCoords .coords, .destCoords a, .destCoords .coords, .coordsDest a, .coordsDest, .destFleet a, [class*="destination"] a, [class*="dest"] a');
+        const recall = row.querySelector('a.recallFleet, a[class*="recall"], a[onclick*="sendRecall"], a.reversal, .reversal_flight a, a.reversal_flight, a[class*="reversal"]');
+        const anchors = [];
+        row.querySelectorAll('a').forEach(a => {
+            const c = a.className || '';
+            const oc = a.getAttribute('onclick') || '';
+            if (c || oc) anchors.push((c || oc).toString().slice(0, 50));
+        });
+        out.push({
+            o: oEl ? norm(oEl.textContent) : null,
+            d: dEl ? norm(dEl.textContent) : null,
+            m: row.getAttribute('data-mission-type') || '',
+            ret: !!(row.classList.contains('is_return') || row.getAttribute('data-return-flight') ||
+                    row.querySelector('.return_flight, .returnflight')),
+            hasRecall: !!recall,
+            recallCls: recall ? (recall.className || recall.getAttribute('onclick') || '') : null,
+            anchors: anchors.slice(0, 12),
+            rowcls: (row.className || '').slice(0, 80)
+        });
+    });
+    return out;
+}"""
+
 # Extrae todos los informes de espionaje de la página de mensajes.
 _JS_ALL_SPY_REPORTS = """() => {
     const results = [];
@@ -2594,6 +2626,17 @@ class GameClient:
                 return True
         except Exception as e:
             self.log.error("Excepción al intentar hacer recall de flota: %s", e)
+        # No casó ninguna fila: volcar lo que ve el DOM (origen/destino/misión/retorno y las
+        # clases de los enlaces) para ajustar los selectores. Si la lista sale vacía, es que no
+        # se encontraron filas de movimiento (selector de fila incorrecto en este servidor).
+        try:
+            import json as _json
+            diag = self.page.evaluate(_JS_RECALL_DIAG)
+            self.log.warning("Recall DIAG (buscando %s -> %s mision=%s): %s filas %s",
+                             origin, destination, mission, len(diag),
+                             _json.dumps(diag, ensure_ascii=False)[:2000])
+        except Exception as e:
+            self.log.debug("Recall DIAG falló: %s", e)
         return False
 
     def _parse_duration_to_seconds(self, time_str: str) -> Optional[int]:

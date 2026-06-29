@@ -2328,22 +2328,35 @@ class Brain:
         candidata automática (sin marcarla). Prioridad de fuente: 1) menos transportes
         (si una sola lo cubre todo, se manda junto); 2) la más cercana."""
         destinos = [p for p in planets if self._get_planet_setting(p, "feed_target", False)]
-        fuentes = [p for p in planets if self._get_planet_setting(p, "feed_source", False)]
+        # Fuentes: planetas marcados como 'cede recursos' + SUS LUNAS (comparten coords; la luna
+        # también puede ceder su excedente, p.ej. lo reciclado). Así, si una sola ubicación
+        # —planeta o luna— cubre todo el déficit, se usa esa (1 transporte) en vez de repartir.
+        fuentes = []
+        for p in planets:
+            if self._get_planet_setting(p, "feed_source", False):
+                fuentes.append(p)
+                moon = getattr(p, "moon", None) if getattr(p, "has_moon", False) else None
+                if moon:
+                    fuentes.append(moon)
         # La luna propia de cada destino alimenta primero (no hace falta marcarla), así que
         # basta con tener destinos: si no hay fuentes marcadas, las lunas pueden cubrirlo.
         if not destinos:
             return
 
-        # Destinos que YA tienen un TRANSPORTE entrante (la alimentación siempre usa
-        # mission=transport): no reenviamos hasta que llegue, para no mandar de más.
-        # OJO: solo transporte, NO deploy — los fleetsave son deploy y darían falsos
-        # positivos que dejarían al destino sin alimentar.
+        # Destinos que YA tienen un vuelo entrante: no reenviamos hasta que llegue, para no
+        # mandar de más. Fail-closed: cuenta un transporte (3) o una misión DESCONOCIDA (la
+        # detección de misión a veces devuelve ''); solo se descartan misiones claramente
+        # NO-transporte. En especial deploy (4): los fleetsave son deploy y darían falso
+        # positivo. Pasarse de prudente solo retrasa un ciclo; ayuda a no repetir envíos.
+        non_transport = {"1", "2", "4", "5", "6", "7", "8", "9", "15",
+                         "attack", "deploy", "espionage", "recycle", "colonize",
+                         "expedition", "hold", "acs", "destroy"}
         inbound = {}
         for m in (movements or []):
             if m.get("is_hostile") or m.get("is_return"):
                 continue
             mission = str(m.get("mission", "")).lower()
-            if not (mission == "3" or "transport" in mission):
+            if mission in non_transport:
                 continue
             d = m.get("destination", "").replace("[", "").replace("]", "").strip()
             o = m.get("origin", "").replace("[", "").replace("]", "").strip()
@@ -2397,11 +2410,12 @@ class Brain:
                 sent = self._feed_transport(src, dst, need)
                 if sent:
                     self.active_slots += 1   # el transporte ocupa un slot hasta que vuelve
-                    need = Resources(max(0.0, need.metal - sent.metal),
-                                     max(0.0, need.crystal - sent.crystal),
-                                     max(0.0, need.deut - sent.deut))
-                if need.total() <= 0:
+                    # UN solo transporte por destino y ciclo: el mejor origen (uno que lo cubra
+                    # todo si existe; si no, el que más aporte). Lo que falte se completa en
+                    # ciclos siguientes, que la dedupe 'inbound' serializa -> nunca 2 a la vez.
+                    # ponytail: menos slots simultáneos; más lento, pero el usuario lo prefiere.
                     break
+                # Este origen no pudo enviar (p.ej. < feed_min_send): probar el siguiente.
 
     def _target_next_build(self, planet):
         """(nombre, coste) de lo próximo que el planeta-destino quiere construir, o None.

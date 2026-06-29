@@ -228,8 +228,12 @@ _JS_READ_MOVEMENTS = """() => {
     );
     rows.forEach(row => {
         try {
+            // Las filas .fleetDetails son el PANEL de detalle de la flota de arriba, NO una
+            // flota: emitirlas duplica cada movimiento (el usuario veía "2 despliegues"). Sus
+            // naves se rescatan más abajo desde la fila principal hermana.
+            if (row.classList && row.classList.contains('fleetDetails')) return;
             const mv = {};
-            
+
             // 1. Mission
             let missionVal = row.getAttribute('data-mission-type');
             if (!missionVal) {
@@ -366,6 +370,14 @@ _JS_READ_MOVEMENTS = """() => {
                             tmp.innerHTML = html;
                             table = tmp.querySelector('table');
                         }
+                    }
+                }
+                if (!table) {
+                    // Desglose por nave en la fila de DETALLE hermana (.fleetDetails), ahora
+                    // que esa fila ya no se emite como flota aparte.
+                    const sib = row.nextElementSibling;
+                    if (sib && sib.classList && sib.classList.contains('fleetDetails')) {
+                        table = sib.querySelector('.fleetinfos table, table.fleetinfo, .fleetinfo, table');
                     }
                 }
                 if (!table) return;

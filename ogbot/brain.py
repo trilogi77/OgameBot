@@ -825,6 +825,10 @@ class Brain:
 
                 if utils.within_active_hours(self.cfg.active_hours):
                     if getattr(self.cfg, "monitor_only", False):
+                        # En monitoreo cycle() no corre, así que recargamos aquí para captar
+                        # que desactiven el modo desde la GUI sin reiniciar el bot.
+                        self._reload_config()
+                    if getattr(self.cfg, "monitor_only", False):
                         self.log.info("Modo solo-monitoreo: vigilando ataques/espionaje y fleetsave (sin economía/farming/expediciones).")
                     else:
                         try:
@@ -1076,10 +1080,10 @@ class Brain:
     def _has_ships(self, planets, ship_type: str, min_count: int = 1) -> bool:
         return sum(p.ships.get(ship_type, 0) for p in planets) >= min_count
 
-    def cycle(self):
-        self.log.info("--- Nuevo ciclo ---")
+    def _reload_config(self):
+        """Recarga config.yaml para capturar cambios hechos desde la GUI sin reiniciar
+        (incluye activar/desactivar el modo solo-monitoreo)."""
         try:
-            # Recargar configuración del disco para capturar cambios desde la GUI sin reiniciar el bot
             path = getattr(self.cfg, "_path", "config.yaml")
             new_cfg = Config.load(path)
             for k, v in new_cfg.__dict__.items():
@@ -1088,6 +1092,10 @@ class Brain:
             self.log.info("Configuración recargada desde el disco.")
         except Exception as e:
             self.log.warning("No se pudo recargar la configuración desde el disco: %s", e)
+
+    def cycle(self):
+        self.log.info("--- Nuevo ciclo ---")
+        self._reload_config()
 
         # Correcciones de nivel / re-lectura forzada pedidas desde la GUI.
         self._apply_pending_gui_requests()

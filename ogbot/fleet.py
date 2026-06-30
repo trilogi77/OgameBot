@@ -246,12 +246,15 @@ def expedition_rotation_system(home_system: int, system_range: int, index: int) 
 
 
 def optimal_expedition_cargo(max_find_units: int, cargo_ship: str = "large_cargo",
-                             safety: float = 1.0) -> int:
+                             safety: float = 1.0, hyperspace_level: int = 0) -> int:
     """
     Nº de naves de carga necesarias para sostener el botín máximo sin perder
     recursos. Más cargueros que esto no es rentable (capacidad ociosa).
+    La bodega se ajusta por el nivel de Hiperespacio (+5%/nivel).
     """
-    cap = gd.SHIPS[cargo_ship].cargo if cargo_ship in gd.SHIPS else gd.SHIPS["large_cargo"].cargo
+    cap = gd.effective_cargo(cargo_ship, hyperspace_level)
+    if cap <= 0:
+        cap = gd.effective_cargo("large_cargo", hyperspace_level)
     if cap <= 0:
         return 1
     target = max_find_units * max(safety, 0.0)

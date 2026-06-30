@@ -121,7 +121,9 @@ class Config:
     expedition_send_probe: bool = False          # enviar también sonda(s) de espionaje con cada expedición
     expedition_probe_count: int = 1              # nº de sondas por expedición
     expedition_discoverer_class: bool = False    # clase Descubridor (x1.5 botín)
+    expedition_destroyer_count: int = 0          # destructores por expedición (0 = ninguno; defienden contra combates)
     expedition_top1_points: int = 0              # override puntos Top-1 (0 = leer de la API)
+    expedition_hyperspace_level: int = 0         # override nivel Hiperespacio para la bodega (0 = leer del juego)
     expedition_find_safety: float = 1.0          # escala el botín objetivo (1.0 = tope)
     expedition_min_cargo: int = 1                # mínimo de cargueros por expedición
     expedition_max_cargo: int = 0                # tope de cargueros por expedición (0 = sin tope)
@@ -154,6 +156,9 @@ class Config:
     max_colonies: int = 9
 
     # --- Seguridad / fleetsave / humanización ---
+    # Modo solo-monitoreo: el bot NO hace economía/farming/expediciones/defensa/investigación.
+    # Solo vigila ataques y espionaje entrantes y ejecuta la salvación de flota (fleetsave).
+    monitor_only: bool = False
     enable_fleetsave: bool = True
     enable_attack_escape: bool = True       # Huir de ataques enemigos de forma automática
     # Intervalo entre comprobaciones de ataque: aleatorio en [min,max] segundos para

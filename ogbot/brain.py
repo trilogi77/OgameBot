@@ -824,11 +824,14 @@ class Brain:
                         self.log.debug("Error en comprobación prioritaria de ataques: %s", e)
 
                 if utils.within_active_hours(self.cfg.active_hours):
-                    try:
-                        self.cycle()
-                        self._continue_until_idle()
-                    except Exception as e:
-                        self.log.exception("Error en ciclo: %s", e)
+                    if getattr(self.cfg, "monitor_only", False):
+                        self.log.info("Modo solo-monitoreo: vigilando ataques/espionaje y fleetsave (sin economía/farming/expediciones).")
+                    else:
+                        try:
+                            self.cycle()
+                            self._continue_until_idle()
+                        except Exception as e:
+                            self.log.exception("Error en ciclo: %s", e)
 
                     sleep_s = utils.jitter(random.uniform(self.cfg.cycle_interval_min_s,
                                                            self.cfg.cycle_interval_max_s))
@@ -1872,11 +1875,14 @@ class Brain:
             discoverer = bool(getattr(self.cfg, "expedition_discoverer_class", False))
             # Dimensionado distinto con/sin pathfinder: solo se dobla el botín en las
             # expediciones que de verdad llevan un pathfinder (no en todas).
+            hyper = int(getattr(self.cfg, "expedition_hyperspace_level", 0) or 0)
+            if hyper <= 0:
+                hyper = int(self.research_levels.get("hyperspace_tech", 0)) if self.research_levels else 0
             base_find = gd.expedition_max_find_units(top1, self.cfg.universe_speed, discoverer, False)
-            optimal_nopf = fleet_mod.optimal_expedition_cargo(base_find, cargo_ship, safety)
+            optimal_nopf = fleet_mod.optimal_expedition_cargo(base_find, cargo_ship, safety, hyper)
             if use_pf:
                 pf_find = gd.expedition_max_find_units(top1, self.cfg.universe_speed, discoverer, True)
-                optimal_pf = fleet_mod.optimal_expedition_cargo(pf_find, cargo_ship, safety)
+                optimal_pf = fleet_mod.optimal_expedition_cargo(pf_find, cargo_ship, safety, hyper)
             else:
                 pf_find = base_find
                 optimal_pf = optimal_nopf
@@ -1916,6 +1922,12 @@ class Brain:
                     ships = dict(manual_ships)
                     if not all(loc.ships.get(s, 0) >= q for s, q in ships.items()):
                         ships = None
+                    else:
+                        # Escolta de destructores (capada al hangar; no bloquea la expedición
+                        # si tienes menos). Solo si no los listaste ya a mano.
+                        dest_n = int(getattr(self.cfg, "expedition_destroyer_count", 0) or 0)
+                        if dest_n > 0 and "destroyer" not in ships and loc.ships.get("destroyer", 0) > 0:
+                            ships["destroyer"] = min(dest_n, loc.ships.get("destroyer", 0))
                 if not ships:
                     break
 
@@ -1951,6 +1963,10 @@ class Brain:
         ships = {cargo_ship: n}
         if will_pf:
             ships["pathfinder"] = 1
+        # Destructor(es) opcionales para sobrevivir/ganar combates de expedición (si los hay)
+        dest_n = int(getattr(self.cfg, "expedition_destroyer_count", 0) or 0)
+        if dest_n > 0 and cargo_ship != "destroyer" and avail.get("destroyer", 0) > 0:
+            ships["destroyer"] = min(dest_n, avail.get("destroyer", 0))
         # Sonda(s) de espionaje opcionales con cada expedición (si las hay en el hangar)
         if getattr(self.cfg, "expedition_send_probe", False) and cargo_ship != "espionage_probe":
             pc = max(1, int(getattr(self.cfg, "expedition_probe_count", 1) or 1))

@@ -146,6 +146,16 @@
                             </div>
                             <div class="form-group flex-row">
                                 <label class="switch-container">
+                                    <input type="checkbox" id="monitor_only">
+                                    <span class="slider"></span>
+                                </label>
+                                <div class="switch-label">
+                                    <strong>Solo Monitoreo de Amenazas</strong>
+                                    <span>El bot no hace economía, farming, expediciones ni defensa: solo vigila ataques/espionaje y salva la flota (fleetsave). Requiere "Esquivar Ataques" y "Fleetsave" activados.</span>
+                                </div>
+                            </div>
+                            <div class="form-group flex-row">
+                                <label class="switch-container">
                                     <input type="checkbox" id="enable_attack_escape">
                                     <span class="slider"></span>
                                 </label>
@@ -558,6 +568,11 @@
                                                 <span class="exp-inline-label">Tengo la clase Descubridor (x1.5 botín)</span>
                                             </div>
                                             <div class="exp-field-row">
+                                                <label for="expedition_hyperspace_level">Nivel de Hiperespacio</label>
+                                                <input type="number" id="expedition_hyperspace_level" min="0" placeholder="0">
+                                                <span class="exp-help">+5% bodega/nivel. 0 = el bot lo lee de tu investigación. Pon tu nivel si aún no ha escaneado.</span>
+                                            </div>
+                                            <div class="exp-field-row">
                                                 <label for="expedition_top1_points">Puntos del Top-1 del universo</label>
                                                 <input type="number" id="expedition_top1_points" min="0" placeholder="0">
                                                 <span class="exp-help">0 = el bot los lee de la API del universo.</span>
@@ -579,6 +594,11 @@
                                             </div>
                                         </div>
                                         <div id="expAutoPreview" class="exp-preview">Inicia el bot para ver el cálculo en vivo.</div>
+                                    </div>
+                                    <div class="exp-field-row" style="margin-top:10px;">
+                                        <label for="expedition_destroyer_count">Destructores / expedición (escolta)</label>
+                                        <input type="number" id="expedition_destroyer_count" min="0" placeholder="0">
+                                        <span class="exp-help">0 = ninguno. Se añaden a la flota (auto o manual) para ganar combates de expedición; se limita a los que tengas en el hangar.</span>
                                     </div>
                                 </div>
                             </div>

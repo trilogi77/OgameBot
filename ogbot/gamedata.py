@@ -295,6 +295,17 @@ SHIP_DRIVES = {
 }
 
 
+def effective_cargo(ship: str, hyperspace_level: int = 0) -> int:
+    """
+    Bodega real de una nave con el bonus de Tecnología de Hiperespacio (+5% por
+    nivel sobre la base). Ej.: NGC base 25.000 con hiperespacio 10 -> 37.500.
+    ponytail: ignora el bonus de clase Recolector (+25% carga) y formas de vida;
+    el factor de seguridad de config cubre el residuo.
+    """
+    base = SHIPS[ship].cargo if ship in SHIPS else 0
+    return int(base * (1 + 0.05 * max(hyperspace_level, 0)))
+
+
 def effective_speed(ship: str, research_levels: dict = None) -> int:
     """
     Velocidad real de una nave incluyendo el bonus de su motor (la velocidad base

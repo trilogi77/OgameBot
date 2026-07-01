@@ -387,6 +387,7 @@ function mapConfigToUI(cfg) {
     // Globales
     setVal("universe", cfg.universe);
     setVal("country", cfg.country);
+    setVal("universe_speed", cfg.universe_speed !== undefined ? cfg.universe_speed : 1);
     setVal("server_url", cfg.server_url);
     setVal("username", cfg.username || "");
     setVal("password", cfg.password || "");
@@ -512,6 +513,7 @@ function saveChanges() {
     // Actualizar globalConfig desde la UI
     globalConfig.universe = getVal("universe");
     globalConfig.country = getVal("country");
+    globalConfig.universe_speed = parseFloat(getVal("universe_speed")) || 1;
     globalConfig.server_url = getVal("server_url");
     globalConfig.username = getVal("username");
     globalConfig.password = getVal("password");

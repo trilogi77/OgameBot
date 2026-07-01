@@ -411,12 +411,17 @@ _JS_RECALL_DIAG = """() => {
     rows.forEach(row => {
         const oEl = row.querySelector('.originCoords a, .originCoords .coords, .coordsOrigin a, .coordsOrigin, .originFleet a, [class*="origin"] a, [class*="orig"] a');
         const dEl = row.querySelector('.destinationCoords a, .destinationCoords .coords, .destCoords a, .destCoords .coords, .coordsDest a, .coordsDest, .destFleet a, [class*="destination"] a, [class*="dest"] a');
-        const recall = row.querySelector('a.recallFleet, a[class*="recall"], a[onclick*="sendRecall"], a.reversal, .reversal_flight a, a.reversal_flight, a[class*="reversal"]');
+        const recall = row.querySelector('a.recallFleet, a[class*="recall"], a[onclick*="sendRecall"], a.reversal, a.reversal_flight, a[class*="reversal"], a[href*="return="]');
+        // Contenedor de regreso (span/div) aunque el <a> interno tenga clase vacía: sin esto el
+        // diagnóstico no mostraba la estructura real (p.ej. <span class="reversal reversal_time">).
+        const revBox = row.querySelector('[class*="reversal"], .return_flight, .returnflight');
+        const revA = revBox ? revBox.querySelector('a') : null;
         const anchors = [];
         row.querySelectorAll('a').forEach(a => {
             const c = a.className || '';
             const oc = a.getAttribute('onclick') || '';
-            if (c || oc) anchors.push((c || oc).toString().slice(0, 50));
+            const hr = a.getAttribute('href') || '';
+            anchors.push((c || oc || hr).toString().slice(0, 60));
         });
         out.push({
             o: oEl ? norm(oEl.textContent) : null,
@@ -426,7 +431,9 @@ _JS_RECALL_DIAG = """() => {
             rrf: row.getAttribute('data-return-flight'),
             ret_sel: !!row.querySelector('.return_flight, .returnflight'),
             hasRecall: !!recall,
-            recallCls: recall ? (recall.className || recall.getAttribute('onclick') || '') : null,
+            recallCls: recall ? (recall.className || recall.getAttribute('onclick') || recall.getAttribute('href') || '') : null,
+            revBox: revBox ? (revBox.tagName + '.' + (revBox.className || '').slice(0, 40)) : null,
+            revA: revA ? ((revA.className || '') + ' href=' + (revA.getAttribute('href') || '').slice(0, 70)) : null,
             anchors: anchors.slice(0, 12),
             rowcls: (row.className || '').slice(0, 80)
         });
@@ -2599,15 +2606,41 @@ class GameClient:
             pass
         return False
 
+    def _verify_recalled(self, origin: str, destination: str, fid: str = "") -> bool:
+        """Confirma que la flota quedó EN RETORNO tras el recall. OGame marca la fila con
+        data-return-flight="true"/"1" (y un '(R)' en la misión); el enlace de reversal
+        desaparece y la llegada baja. Relee la página de movimiento y empareja por ruta
+        (origen+destino), que se conserva aunque el botón de reversal ya no esté."""
+        try:
+            self._goto("movement")
+            time.sleep(2)
+            return bool(self.page.evaluate(
+                """(args) => {
+                    const origin = args[0], destination = args[1];
+                    const rows = document.querySelectorAll(
+                        '.eventFleet, .fleetDetails, .fleet_row, tr.flightEventRow');
+                    for (const row of rows) {
+                        const t = row.textContent || '';
+                        if (t.indexOf(origin) < 0 || t.indexOf(destination) < 0) continue;
+                        const rrf = row.getAttribute('data-return-flight');
+                        if (row.classList.contains('is_return') || rrf === 'true' || rrf === '1')
+                            return true;
+                    }
+                    return false;
+                }""", (origin, destination)))
+        except Exception as e:
+            self.log.debug("verify_recalled error: %s", e)
+            return False
+
     def recall_fleet(self, origin: str, destination: str, mission: str = "deploy",
                      arrival: int = 0) -> bool:
         desc = f"Retornar flota de {origin} -> {destination} ({mission})"
         if self._act(desc):
             return True
 
-        # Marcador de versión: si NO ves "recall v3" en el log al pedir un regreso, el contenedor
+        # Marcador de versión: si NO ves "recall v8" en el log al pedir un regreso, el contenedor
         # corre una imagen vieja -> reconstruye con `docker compose up -d --build`.
-        self.log.info("recall v6 (espera+confirma Si): buscando %s -> %s", origin, destination)
+        self.log.info("recall v8 (navega al href return=, verifica retorno): buscando %s -> %s", origin, destination)
         self._goto("movement")
         try:
             self.page.wait_for_selector(
@@ -2671,53 +2704,90 @@ class GameClient:
                     // recuperar otra flota distinta en la misma ruta.
                     if (want && norm(rowMission) && norm(rowMission) !== want) continue;
 
-                    const recallBtn = row.querySelector(
-                        'a.recallFleet, a[class*="recall"], a[onclick*="sendRecall"], ' +
-                        'a.reversal, .reversal_flight a, a.reversal_flight, a[class*="reversal"]'
-                    );
-                    if (!recallBtn) continue;
-
-                    let rowArr = parseInt(row.getAttribute('data-arrival-time') || '0') || 0;
-                    if (!rowArr) {
-                        const ae = row.querySelector('[data-arrival-time]');
-                        if (ae) rowArr = parseInt(ae.getAttribute('data-arrival-time') || '0') || 0;
+                    // El regreso REAL de OGame es un GET a
+                    // '?...&component=movement&return=FLEETID&token=...'. La fila de detalle
+                    // (.fleetDetails) trae ese <a href>; la del event_list a veces SOLO trae
+                    // <a class="recallFleet" data-fleet-id> SIN href (se dispara por JS). El código
+                    // viejo clicaba esa ancla-sin-href + confirmaba un 'Sí' y la flota NO revertía
+                    // (éxito en falso). Preferimos SIEMPRE el href (determinista). Guardamos el
+                    // fleet-id para verificar el retorno después.
+                    let href = '', fid = '';
+                    const aHref = row.querySelector('a[href*="return="]');
+                    if (aHref) {
+                        href = aHref.href || aHref.getAttribute('href') || '';
+                        const mm = href.match(/return=(\\d+)/); if (mm) fid = mm[1];
                     }
-                    candidates.push({ btn: recallBtn, arr: rowArr });
+                    const aRecall = row.querySelector(
+                        'a.recallFleet, a[onclick*="sendRecall"], a[class*="recall"], [class*="reversal"] a');
+                    if (!fid && aRecall) fid = aRecall.getAttribute('data-fleet-id') || '';
+                    if (!href && !aRecall) continue;   // sin control de regreso en esta fila
+
+                    const rowArr = parseInt(row.getAttribute('data-arrival-time') || '0') || 0;
+                    candidates.push({ href: href, fid: fid, arr: rowArr });
                 } catch(e) {}
             }
-            if (!candidates.length) return false;
-            let chosen = candidates[0];
+            if (!candidates.length) return { found: false };
+            // Preferir candidatos con href navegable (determinista). Entre varios, la llegada
+            // más cercana a la pedida desambigua dos flotas en la misma ruta.
+            const pool = candidates.some(c => c.href) ? candidates.filter(c => c.href) : candidates;
+            let chosen = pool[0];
             if (arrival) {
                 let bestDiff = 1e15;
-                for (const c of candidates) {
-                    if (c.arr) {
-                        const d = Math.abs(c.arr - arrival);
-                        if (d < bestDiff) { bestDiff = d; chosen = c; }
-                    }
+                for (const c of pool) {
+                    if (c.arr) { const d = Math.abs(c.arr - arrival); if (d < bestDiff) { bestDiff = d; chosen = c; } }
                 }
-                // si ninguna trae hora, nos quedamos con la primera
             }
-            chosen.btn.click();
-            return true;
+            return { found: true, href: chosen.href || '', fid: chosen.fid || '' };
         }"""
         try:
             result = self.page.evaluate(js_recall, (origin, destination, mission, int(arrival or 0)))
-            if result:
-                self.log.info("Regreso: enlace clicado para %s -> %s; confirmando diálogo...",
-                              origin, destination)
-                # OGame pide confirmación ('Retirar flota', Sí/No): sin pulsar 'Sí' NO se retira.
-                if self._confirm_recall_dialog():
-                    self.log.info("Recall ejecutado en UI para flota %s -> %s", origin, destination)
-                    try:
-                        self.page.wait_for_load_state("networkidle", timeout=5000)
-                    except Exception:
-                        time.sleep(2)
-                    return True
-                self.log.warning("Regreso %s -> %s: clicado el enlace pero no pude confirmar 'Sí'.",
-                                 origin, destination)
-                return False
         except Exception as e:
-            self.log.error("Excepción al intentar hacer recall de flota: %s", e)
+            self.log.error("Excepción al buscar la flota a retornar: %s", e)
+            result = None
+
+        if result and result.get("found"):
+            href = (result.get("href") or "").strip()
+            fid = (result.get("fid") or "").strip()
+            if href:
+                # Regreso DETERMINISTA: navegar al enlace real de OGame revierte la flota
+                # server-side (sin diálogo). Es lo que hace el juego al pulsar la flecha de vuelta.
+                self.log.info("Regreso: navegando al enlace de reversal (fleet %s) %s -> %s",
+                              fid or "?", origin, destination)
+                try:
+                    self.page.goto(href, wait_until="domcontentloaded", timeout=15000)
+                except Exception as e:
+                    self.log.warning("Regreso %s -> %s: fallo al navegar al enlace: %s",
+                                     origin, destination, e)
+                    return False
+                if self._verify_recalled(origin, destination, fid):
+                    self.log.info("Recall CONFIRMADO: la flota %s -> %s ya está de vuelta.",
+                                  origin, destination)
+                    return True
+                self.log.warning("Regreso %s -> %s: navegué al enlace pero la flota NO figura en "
+                                 "retorno (data-return-flight).", origin, destination)
+                return False
+            # Servidores sin href: clic en el ancla recallFleet + confirmar 'Sí', y VERIFICAR.
+            self.log.info("Regreso: sin href, clic en recallFleet (fleet %s) y confirmar diálogo.",
+                          fid or "?")
+            clicked = False
+            try:
+                clicked = bool(self.page.evaluate(
+                    """(fid) => {
+                        let el = null;
+                        if (fid) el = document.querySelector('[data-fleet-id="' + fid + '"]');
+                        el = el || document.querySelector('a.recallFleet, a[onclick*="sendRecall"]');
+                        if (!el) return false;
+                        (el.closest('a,button,[onclick],[role="button"]') || el).click();
+                        return true;
+                    }""", fid))
+            except Exception as e:
+                self.log.debug("Regreso: error al clicar recallFleet: %s", e)
+            if clicked and self._confirm_recall_dialog() and self._verify_recalled(origin, destination, fid):
+                self.log.info("Recall CONFIRMADO (vía clic) para flota %s -> %s.", origin, destination)
+                return True
+            self.log.warning("Regreso %s -> %s: el clic+confirmación no dejó la flota en retorno.",
+                             origin, destination)
+            return False
         # No casó ninguna fila: volcar lo que ve el DOM (origen/destino/misión/retorno y las
         # clases de los enlaces) para ajustar los selectores. Si la lista sale vacía, es que no
         # se encontraron filas de movimiento (selector de fila incorrecto en este servidor).

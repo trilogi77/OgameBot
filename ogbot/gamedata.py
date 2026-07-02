@@ -176,6 +176,13 @@ def solar_energy(level: int) -> float:
     return 20 * level * (1.1 ** level)
 
 
+def fusion_deut_consumption(level: int, speed: float = 1.0) -> float:
+    """Consumo horario de deuterio del reactor de fusión."""
+    if level <= 0:
+        return 0.0
+    return 10 * level * (1.1 ** level) * speed
+
+
 def energy_consumption(name: str, level: int) -> float:
     table = {"metal_mine": 10, "crystal_mine": 10, "deut_synth": 20}
     if name not in table:
@@ -245,7 +252,7 @@ DEFENSES: Dict[str, Unit] = {
     "light_laser":     Unit("light_laser", 2000, 25, 100, 0, 0, 0, Cost(1500, 500)),
     "heavy_laser":     Unit("heavy_laser", 8000, 100, 250, 0, 0, 0, Cost(6000, 2000)),
     "gauss_cannon":    Unit("gauss_cannon", 35000, 200, 1100, 0, 0, 0, Cost(20000, 15000, 2000)),
-    "ion_cannon":      Unit("ion_cannon", 8000, 500, 150, 0, 0, 0, Cost(5000, 3000)),
+    "ion_cannon":      Unit("ion_cannon", 8000, 500, 150, 0, 0, 0, Cost(2000, 6000)),
     "plasma_turret":   Unit("plasma_turret", 100000, 300, 3000, 0, 0, 0, Cost(50000, 50000, 30000)),
     "small_shield_dome": Unit("small_shield_dome", 2000, 2000, 0, 0, 0, 0, Cost(10000, 10000)),
     "large_shield_dome": Unit("large_shield_dome", 10000, 10000, 0, 0, 0, 0, Cost(50000, 50000)),
@@ -270,9 +277,10 @@ def distance(a: tuple, b: tuple) -> int:
 
 def flight_time(dist: int, ship_speed: int, speed_percent: float = 1.0,
                 universe_fleet_speed: float = 1.0) -> float:
-    """Devuelve segundos. ship_speed = velocidad de la nave MÁS LENTA de la flota."""
-    eff_speed = ship_speed * universe_fleet_speed
-    return ((3500 / speed_percent) * math.sqrt((10 * dist) / eff_speed) + 10)
+    """Devuelve segundos. ship_speed = velocidad de la nave MÁS LENTA de la flota.
+    La velocidad del universo divide el tiempo TOTAL (no entra en la raíz)."""
+    t = (3500 / speed_percent) * math.sqrt((10 * dist) / ship_speed) + 10
+    return t / max(universe_fleet_speed, 0.01)
 
 
 # Motor principal de cada nave y bonus de velocidad por nivel de tecnología.

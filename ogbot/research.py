@@ -104,10 +104,11 @@ def next_research(
         if tech not in gd.RESEARCH_COST:
             continue
 
-        # Verificar si se alcanzó el límite voluntario de utilidad
+        # Verificar si se alcanzó el límite voluntario de utilidad.
+        # Un cap 0 o vacío (la GUI puede guardar 0) significa "sin límite".
         cap = caps.get(tech)
         current_lvl = research.get(tech, 0)
-        if cap is not None and current_lvl >= cap:
+        if cap is not None and cap > 0 and current_lvl >= cap:
             continue
 
         target_lvl = current_lvl + 1

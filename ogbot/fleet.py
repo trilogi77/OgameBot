@@ -148,7 +148,9 @@ def size_attack_fleet_probes(planet: Planet, loot: Resources, template: Dict[str
 
 
 def fleetsave_plan(origin: Coords, all_planets: List[Coords], cfg: Config,
-                   offline_hours: float = 8.0) -> Optional[dict]:
+                   offline_hours: float = 8.0,
+                   fleet_ships: Optional[Dict[str, int]] = None,
+                   research_levels: Optional[dict] = None) -> Optional[dict]:
     """
     Devuelve un plan de fleetsave que retorna pasado ~offline_hours.
     Estrategia: 'deploy' a tu planeta/luna al % de velocidad adecuado.
@@ -156,12 +158,18 @@ def fleetsave_plan(origin: Coords, all_planets: List[Coords], cfg: Config,
     if not cfg.enable_fleetsave:
         return None
 
-    candidates = [p for p in all_planets if p.tuple() != origin.tuple()]
+    # Excluir solo la ubicación EXACTA (misma tupla Y mismo tipo): la luna del
+    # propio planeta comparte tupla g,s,p y es el mejor destino (distancia 5).
+    origin_type = getattr(origin, "type", "planet")
+    candidates = [p for p in all_planets
+                  if not (p.tuple() == origin.tuple()
+                          and getattr(p, "type", "planet") == origin_type)]
     if not candidates:
         # fallback: expedición (16ª posición del propio sistema), vuelve sola
         exp_dest = Coords(origin.galaxy, origin.system, 16)
         return {"mission": "expedition", "destination": exp_dest,
-                "speed_percent": 1.0, "hold_hours": min(offline_hours, 1.0)}
+                "speed_percent": 1.0, "hold_hours": min(offline_hours, 1.0),
+                "fallback": "expedition", "phalanx_exposed": True}
 
     # Si se conecta a mitad de la noche para retornar los despliegues,
     # el tiempo de ida debe ser al menos la mitad del offline_hours.
@@ -171,12 +179,21 @@ def fleetsave_plan(origin: Coords, all_planets: List[Coords], cfg: Config,
     else:
         target_t = offline_hours * 3600
 
+    # Velocidad de la nave más lenta de la flota real; sin flota, small_cargo.
+    if fleet_ships:
+        slowest = min((gd.effective_speed(n, research_levels)
+                       for n, q in fleet_ships.items()
+                       if q > 0 and n in gd.SHIPS and gd.effective_speed(n, research_levels) > 0),
+                      default=gd.effective_speed("small_cargo", research_levels))
+    else:
+        slowest = gd.effective_speed("small_cargo", research_levels)
+
     if cfg.fleetsave_mission == "deploy":
         options = []
         for dest in candidates:
             dist = gd.distance(origin.tuple(), dest.tuple())
             for sp in (1.0, 0.5, 0.4, 0.3, 0.2, 0.1):
-                t = gd.flight_time(dist, gd.SHIPS["small_cargo"].speed, sp, cfg.fleet_speed)
+                t = gd.flight_time(dist, slowest, sp, cfg.fleet_speed)
                 options.append({
                     "destination": dest,
                     "speed_percent": sp,
@@ -188,7 +205,8 @@ def fleetsave_plan(origin: Coords, all_planets: List[Coords], cfg: Config,
 
         # Preferir destinos LUNA: una luna no se puede escanear con sensor phalanx,
         # así que esconde mejor la flota (luna->luna mejor que luna->planeta).
-        prefer_moon = getattr(cfg, "fleetsave_prefer_moon", True)
+        # Si el origen ya es una luna, luna->luna es totalmente invisible: forzar preferencia.
+        prefer_moon = getattr(cfg, "fleetsave_prefer_moon", True) or origin_type == "moon"
         moons_of = lambda lst: [o for o in lst if getattr(o["destination"], "type", "planet") == "moon"]
 
         if prefer_moon and moons_of(valid_options):
@@ -208,13 +226,15 @@ def fleetsave_plan(origin: Coords, all_planets: List[Coords], cfg: Config,
             "mission": "deploy",
             "destination": best["destination"],
             "speed_percent": best["speed_percent"],
-            "flight_s": best["flight_s"]
+            "flight_s": best["flight_s"],
+            "phalanx_exposed": getattr(best["destination"], "type", "planet") != "moon"
         }
 
     # fallback para otras misiones (expedición / transport)
     exp_dest = Coords(origin.galaxy, origin.system, 16)
     return {"mission": "expedition", "destination": exp_dest,
-            "speed_percent": 1.0, "hold_hours": min(offline_hours, 1.0)}
+            "speed_percent": 1.0, "hold_hours": min(offline_hours, 1.0),
+            "fallback": "expedition", "phalanx_exposed": True}
 
 
 def expedition_plan(home: Coords, cfg: Config, destination: Optional[Coords] = None,

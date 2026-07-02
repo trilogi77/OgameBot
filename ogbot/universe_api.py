@@ -46,6 +46,7 @@ class UniverseAPI:
         self.ttl = cache_ttl
         self.log = logger
         self._cache: Dict[str, tuple] = {}
+        self._occupied_cache: Optional[tuple] = None  # (timestamp, set de posiciones)
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "ogbot-intel/1.0"
 
@@ -143,20 +144,27 @@ class UniverseAPI:
                 })
         return data
 
-    # --- composición: candidatos inactivos ------------------------------
-    def inactive_targets(self, max_rank_safe: int = 0) -> List[dict]:
+    # --- composición: candidatos a farmear -------------------------------
+    def farm_targets(self, only_inactive: bool = True, max_rank_safe: int = 0) -> List[dict]:
         """
         Cruza players + universe + highscore para devolver planetas de jugadores
-        inactivos (y no protegidos), enriquecidos con su ranking económico.
+        farmeables (no protegidos: sin vacaciones/baneo), enriquecidos con su
+        ranking económico. Con only_inactive=False incluye también activos.
+        max_rank_safe > 0 excluye jugadores con rank <= max_rank_safe
+        (rank 1 = el más fuerte del universo).
         """
         players = self.players()
         scores = self.highscore(category=1, type_=1)  # economía
         targets: List[dict] = []
         for pl in self.universe():
             owner = players.get(pl.get("player"))
-            if not owner or not owner.is_inactive or owner.is_protected:
+            if not owner or owner.is_protected:
+                continue
+            if only_inactive and not owner.is_inactive:
                 continue
             rank = scores.get(owner.id, {}).get("rank", 999999)
+            if max_rank_safe > 0 and rank <= max_rank_safe:
+                continue
             targets.append({
                 "coords": pl["coords"],
                 "player_id": owner.id,
@@ -168,3 +176,28 @@ class UniverseAPI:
         # Inactivos con mejor economía suelen tener más recursos acumulados
         targets.sort(key=lambda t: t["econ_rank"])
         return targets
+
+    def inactive_targets(self, max_rank_safe: int = 0) -> List[dict]:
+        """Planetas de jugadores inactivos (y no protegidos). Ver farm_targets."""
+        return self.farm_targets(True, max_rank_safe)
+
+    # --- posiciones ocupadas ----------------------------------------------
+    def occupied_positions(self) -> set:
+        """
+        Set de tuplas (galaxia, sistema, posición) de todos los planetas del
+        universo. Cacheado en memoria con el mismo TTL que universe().
+        """
+        now = time.time()
+        if self._occupied_cache is not None and now - self._occupied_cache[0] < self.ttl:
+            return self._occupied_cache[1]
+        occupied: set = set()
+        for pl in self.universe():
+            coords = (pl.get("coords") or "").split(":")
+            if len(coords) != 3:
+                continue
+            try:
+                occupied.add((int(coords[0]), int(coords[1]), int(coords[2])))
+            except ValueError:
+                continue
+        self._occupied_cache = (now, occupied)
+        return occupied

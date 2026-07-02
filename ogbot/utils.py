@@ -5,7 +5,9 @@ Herramientas transversales: logging, comportamiento humanizado y rate limiting.
 La "humanización" reduce (no elimina) el riesgo de detección.
 """
 from __future__ import annotations
+import json
 import logging
+import os
 import random
 import time
 from collections import deque
@@ -159,4 +161,171 @@ def send_telegram_message(token: str, chat_id: str, text: str, logger=None, bloc
         return _send()
     threading.Thread(target=_send, daemon=True).start()
     return None
+
+
+def atomic_write_json(path: str, obj, indent: int = 2) -> None:
+    """Escritura atómica (tmp + os.replace): la GUI sondea estos JSON y no debe
+    ver nunca un fichero a medio escribir."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=indent, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def parse_localized_number(text) -> float:
+    """Parsea números del DOM de OGame en cualquier locale ('1.234.567', '1,5M',
+    '12k', '3,5', '1 234'...). Devuelve 0.0 para None/''/'-' o texto no numérico."""
+    if text is None:
+        return 0.0
+    s = str(text).strip()
+    if s in ("", "-"):
+        return 0.0
+    # espacios normales, nbsp, finos y de cifra usados como separador de miles
+    for ch in (" ", " ", " ", " ", " "):
+        s = s.replace(ch, "")
+    if not s:
+        return 0.0
+    neg = s.startswith("-")
+    if s[0] in "+-":
+        s = s[1:]
+
+    mult = 1.0
+    low = s.lower()
+    # multi-letra antes que 'm'/'g'/'b' sueltas para no recortar de menos
+    for suf, m in (("mio", 1e6), ("mrd", 1e9), ("k", 1e3), ("m", 1e6), ("g", 1e9), ("b", 1e9)):
+        if low.endswith(suf):
+            s = s[: -len(suf)]
+            mult = m
+            break
+
+    if mult != 1.0:
+        # con sufijo el separador es decimal ("1,5M" -> 1.5 millones)
+        s = s.replace(",", ".")
+        if s.count(".") > 1:
+            head, _, tail = s.rpartition(".")
+            s = head.replace(".", "") + "." + tail
+    else:
+        has_dot = "." in s
+        has_comma = "," in s
+        if has_dot and has_comma:
+            # el ÚLTIMO separador es el decimal, el otro es de miles
+            if s.rfind(".") > s.rfind(","):
+                dec, thou = ".", ","
+            else:
+                dec, thou = ",", "."
+            s = s.replace(thou, "").replace(dec, ".")
+        elif has_dot or has_comma:
+            sep = "." if has_dot else ","
+            parts = s.split(sep)
+            looks_thousands = (
+                all(len(p) == 3 for p in parts[1:])
+                and 1 <= len(parts[0]) <= 3
+                and parts[0] != "0"
+            )
+            if looks_thousands:
+                s = s.replace(sep, "")
+            elif len(parts) > 2:
+                s = "".join(parts[:-1]) + "." + parts[-1]
+            else:
+                s = s.replace(sep, ".")
+    try:
+        val = float(s)
+    except ValueError:
+        return 0.0
+    return (-val if neg else val) * mult
+
+
+def tg_escape(text) -> str:
+    """Escapa &, < y > para enviar texto con parse_mode=HTML de Telegram."""
+    if text is None:
+        return ""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def send_telegram_photo(token, chat_id, photo_path, caption="", logger=None, block=False):
+    """Envía una foto a un chat de Telegram (sendPhoto). Mismo patrón que
+    send_telegram_message: asíncrono por defecto; con block=True devuelve True/False.
+    Multipart construido a mano con urllib para no depender de requests."""
+    if not token or not chat_id:
+        return False
+    import threading
+    import urllib.request
+    import uuid
+
+    def _send() -> bool:
+        try:
+            with open(photo_path, "rb") as f:
+                photo = f.read()
+            boundary = uuid.uuid4().hex
+            parts = []
+            for name, value in (("chat_id", str(chat_id)),
+                                ("caption", caption or ""),
+                                ("parse_mode", "HTML")):
+                parts.append((
+                    f"--{boundary}\r\n"
+                    f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                    f"{value}\r\n"
+                ).encode("utf-8"))
+            filename = os.path.basename(str(photo_path))
+            parts.append((
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'
+                f"Content-Type: application/octet-stream\r\n\r\n"
+            ).encode("utf-8"))
+            parts.append(photo)
+            parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendPhoto",
+                data=b"".join(parts),
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}
+            )
+            with urllib.request.urlopen(req, timeout=30) as response:
+                response.read()
+            return True
+        except Exception as e:
+            if logger:
+                logger.debug("Error al enviar foto de Telegram: %s", e)
+            return False
+
+    if block:
+        return _send()
+    threading.Thread(target=_send, daemon=True).start()
+    return None
+
+
+def telegram_get_updates(token, offset=0, timeout=0) -> list:
+    """GET a /getUpdates (long-poll opcional). Nunca lanza: devuelve [] ante
+    cualquier error. Timeout HTTP corto para no colgar el hilo llamante."""
+    if not token:
+        return []
+    import urllib.request
+    import urllib.parse
+    try:
+        qs = urllib.parse.urlencode({"offset": offset, "timeout": timeout})
+        url = f"https://api.telegram.org/bot{token}/getUpdates?{qs}"
+        with urllib.request.urlopen(url, timeout=min(timeout + 5, 10)) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        if data.get("ok"):
+            return data.get("result") or []
+    except Exception:
+        pass
+    return []
+
+
+if __name__ == "__main__":
+    assert parse_localized_number('1.234.567') == 1234567
+    assert parse_localized_number('1,5M') == 1500000
+    assert parse_localized_number('12k') == 12000
+    assert parse_localized_number('3,5') == 3.5
+    assert parse_localized_number('1,234,567') == 1234567
+    assert parse_localized_number('') == 0
+    assert parse_localized_number(None) == 0
+    assert parse_localized_number('-') == 0
+    assert parse_localized_number('1 234 567') == 1234567
+    assert parse_localized_number('1.234,56') == 1234.56
+    assert parse_localized_number('2Mio') == 2000000
+    assert parse_localized_number('1,2mrd') == 1200000000
+    assert parse_localized_number('-12.345') == -12345
+    assert tg_escape('a<b & c>d') == 'a&lt;b &amp; c&gt;d'
+    print("utils.py: asserts OK")
 

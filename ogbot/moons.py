@@ -2,7 +2,7 @@
 moons.py + colonizer  (lógica pura)
 ===================================
 moon_chance / plan_moonshot:
-  La probabilidad de luna = min(0.20, escombros_totales / 100000).
+  La probabilidad de luna = 1% por cada 100.000 de escombros, cap 20% (a 2M).
   Para forzar una luna creamos un campo de escombros sobre NUESTRO planeta
   sacrificando naves (típicamente cazas ligeros) — atacándonos a nosotros mismos
   no se puede, así que el método habitual es:
@@ -24,7 +24,8 @@ from .config import Config
 
 
 def moon_chance(debris_total: float) -> float:
-    return min(0.20, debris_total / 100_000.0)
+    # 1% por cada 100.000 de escombros, cap 20% (a 2M)
+    return min(0.20, debris_total / 10_000_000.0)
 
 
 def ships_for_debris(target_debris: int, ship: str, debris_factor: float) -> int:

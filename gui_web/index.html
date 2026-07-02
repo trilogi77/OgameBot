@@ -65,6 +65,8 @@
                     <button class="tab-btn" data-tab="tab-planets">Por Planeta</button>
                     <button class="tab-btn" data-tab="tab-targets">Objetivos</button>
                     <button class="tab-btn" data-tab="tab-stats">Estadísticas</button>
+                    <button class="tab-btn" data-tab="tab-history">Histórico</button>
+                    <button class="tab-btn" data-tab="tab-simulator">¿Ataco?</button>
                     <button class="tab-btn" data-tab="tab-flights">Vuelos</button>
                     <button class="tab-btn" data-tab="tab-messages">Mensajes</button>
                     <button class="tab-btn" data-tab="tab-session">Resumen de Sesión</button>
@@ -126,8 +128,45 @@
                                 <input type="number" id="active_hours_end" min="0" max="24" placeholder="Ej: 24">
                             </div>
                             
+                            <div class="form-group col-span-2 section-title">Perfil de riesgo</div>
+
+                            <div class="form-group col-span-2 risk-profile-row">
+                                <button type="button" class="btn btn-secondary risk-btn" id="btnRiskParanoid">🛡️ Paranoico</button>
+                                <button type="button" class="btn btn-secondary risk-btn" id="btnRiskNormal">⚖️ Normal</button>
+                                <button type="button" class="btn btn-secondary risk-btn" id="btnRiskAggressive">🔥 Agresivo</button>
+                                <span class="risk-profile-badge" id="riskProfileBadge">normal</span>
+                            </div>
+                            <div class="form-group col-span-2">
+                                <span style="font-size: 12px; color: var(--text-secondary);">Los botones solo rellenan los campos de ritmo y límites de abajo (y los de "Comprobar ataques" y "Máx ataques/ciclo"). Revisa los valores y pulsa <b>Guardar Cambios</b> para aplicarlos.</span>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Ciclo principal cada (segundos, aleatorio)</label>
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <input type="number" id="cycle_interval_min_s" min="60" step="1" placeholder="600" style="width: 90px;">
+                                    <span style="color: var(--text-secondary);">a</span>
+                                    <input type="number" id="cycle_interval_max_s" min="60" step="1" placeholder="1500" style="width: 90px;">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Delay entre acciones (segundos, aleatorio)</label>
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <input type="number" id="min_action_delay_s" min="0" step="0.5" placeholder="3" style="width: 90px;">
+                                    <span style="color: var(--text-secondary);">a</span>
+                                    <input type="number" id="max_action_delay_s" min="0" step="0.5" placeholder="11" style="width: 90px;">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="max_actions_per_hour">Máx. acciones por hora</label>
+                                <input type="number" id="max_actions_per_hour" min="1" step="1" placeholder="40" style="width: 90px;">
+                            </div>
+                            <div class="form-group">
+                                <label for="farming_attack_cooldown_hours">No re-atacar la misma granja (horas)</label>
+                                <input type="number" id="farming_attack_cooldown_hours" min="0" step="0.5" placeholder="2" style="width: 90px;">
+                            </div>
+
                             <div class="form-group col-span-2 section-title">Seguridad y Ejecución</div>
-                            
+
                             <div class="form-group flex-row">
                                 <label class="switch-container">
                                     <input type="checkbox" id="dry_run">
@@ -964,6 +1003,77 @@
                                 <h4>Naves Encontradas en Expediciones</h4>
                                 <div class="ships-found-container" id="stats_ships_found">
                                     <div class="text-muted" style="font-size: 13px;">Aún no se han encontrado naves.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TAB: HISTORICO DIARIO -->
+                    <div class="tab-pane" id="tab-history">
+                        <div class="stats-container">
+                            <div class="stats-summary-card">
+                                <h3>Histórico Diario</h3>
+                                <p class="text-muted" style="font-size: 12px; margin-top: -6px;">Evolución de tus recursos y de los acumulados del bot. El bot guarda un punto al día en stats_history.jsonl.</p>
+                            </div>
+                            <div id="history_empty" class="text-muted" style="font-size: 13px; padding: 12px 4px;">Aún no hay histórico (se genera 1 punto al día).</div>
+                            <div id="history_charts" style="display: none;">
+                                <div class="chart-card">
+                                    <h4>Recursos totales por día</h4>
+                                    <canvas id="chart_resources" class="chart-canvas" width="760" height="260"></canvas>
+                                    <div class="chart-legend" id="legend_resources"></div>
+                                </div>
+                                <div class="chart-card" id="history_session_card">
+                                    <h4>Acumulados de sesión (botín, hallazgos…)</h4>
+                                    <canvas id="chart_session" class="chart-canvas" width="760" height="260"></canvas>
+                                    <div class="chart-legend" id="legend_session"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TAB: SIMULADOR ¿ATACO? -->
+                    <div class="tab-pane" id="tab-simulator">
+                        <div class="stats-container">
+                            <div class="stats-summary-card">
+                                <h3>Simulador de Combate: ¿Ataco?</h3>
+                                <p class="text-muted" style="font-size: 12px; margin-top: -6px;">Introduce tu flota y lo que viste en el informe de espionaje del defensor. El simulador (Monte Carlo) estima probabilidad de victoria, pérdidas y escombros.</p>
+                            </div>
+                            <div class="sim-grid">
+                                <div class="sim-group">
+                                    <h4>⚔️ Tu flota de ataque</h4>
+                                    <div class="sim-inputs" id="sim_attacker_ships"></div>
+                                    <h4 style="margin-top: 12px;">Tus tecnologías</h4>
+                                    <div class="sim-inputs" id="sim_attacker_tech"></div>
+                                </div>
+                                <div class="sim-group">
+                                    <h4>🛡️ Flota del defensor</h4>
+                                    <div class="sim-inputs" id="sim_defender_ships"></div>
+                                    <h4 style="margin-top: 12px;">Defensa del defensor</h4>
+                                    <div class="sim-inputs" id="sim_defender_defense"></div>
+                                    <h4 style="margin-top: 12px;">Tecnologías del defensor</h4>
+                                    <div class="sim-inputs" id="sim_defender_tech"></div>
+                                </div>
+                            </div>
+                            <div style="margin-top: 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                                <button type="button" id="btnRunSimulation" class="btn btn-primary">⚔️ Simular</button>
+                                <span class="text-muted" id="sim_status" style="font-size: 13px;"></span>
+                            </div>
+                            <div id="sim_results" style="display: none; margin-top: 16px;">
+                                <div class="sim-verdict" id="sim_verdict"></div>
+                                <div class="stats-cards-grid" style="margin-top: 12px;">
+                                    <div class="stat-card">
+                                        <h4>Probabilidad de victoria</h4>
+                                        <div class="stat-row"><span>Victorias:</span><strong id="sim_win_rate">—</strong></div>
+                                    </div>
+                                    <div class="stat-card">
+                                        <h4>Pérdidas medias (atacante)</h4>
+                                        <div class="stat-row"><span>Valor (met+cri+deut):</span><strong id="sim_losses">—</strong></div>
+                                    </div>
+                                    <div class="stat-card">
+                                        <h4>Escombros medios</h4>
+                                        <div class="stat-row"><span>Metal:</span><strong id="sim_debris_metal">—</strong></div>
+                                        <div class="stat-row"><span>Cristal:</span><strong id="sim_debris_crystal">—</strong></div>
+                                    </div>
                                 </div>
                             </div>
                         </div>

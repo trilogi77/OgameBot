@@ -32,6 +32,7 @@ from . import economy, research as research_mod, targets as tgt, fleet as fleet_
 from . import combat
 from .models import Coords, Resources, Planet
 from . import utils
+from .stats import StatsMixin
 
 import re as _re
 
@@ -396,7 +397,7 @@ def _retain_unlanded(new_flights, prev, now):
     return kept
 
 
-class Brain:
+class Brain(StatsMixin):
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.log = utils.setup_logger("ogbot", cfg.log_file, cfg.log_level)
@@ -411,8 +412,10 @@ class Brain:
         self.active_slots = 0
         self.active_expe_slots = 0
         self.total_fleet_slots = 0
-        self.total_expe_slots = 0
+        self.total_expe_slots: Optional[int] = None   # None = aún no leído del juego
         self.escaped_fleets: List[dict] = []
+        self.sent_fleetsaves: List[dict] = []   # fleetsaves nocturnos enviados (para el recall)
+        self.inflight_dests: Dict[str, set] = {}  # destino "g:s:p" -> misiones propias en vuelo
         self.attack_history: Dict[str, float] = {}
         self.telegram_notified_attacks: Dict[str, float] = {}
         self._spy_seen: Dict[str, float] = {}   # cooldown de avisos de espionaje por origen->destino
@@ -427,6 +430,12 @@ class Brain:
         self._expedition_top1_cache: Tuple[float, int] = (0.0, 0)
         self.expedition_flight_cal = 1.0  # factor real/estimado de vuelo (autocalibrado)
         self.next_build_event = 0.0       # despertar para encolar la siguiente construcción
+        self.paused_until = 0.0           # pausa remota (/pausa por Telegram); persistido
+        self._tg_offset = 0               # offset de getUpdates de Telegram; persistido
+        self._tg_last_poll = 0.0          # throttle del sondeo de comandos Telegram
+        self._phalanx_warned = set()      # avisos de phalanx: uno por origen y noche
+        self._last_history_date = ""      # última fecha volcada a stats_history.jsonl
+        self._next_cycle_eta = 0.0        # hora aprox. del próximo ciclo (para /status)
         self._load_state()
         # Memoria de estado (niveles de edificios/investigación/defensas)
         self.state_cache = {"research": {}, "planets": {}}
@@ -452,6 +461,24 @@ class Brain:
                     self.next_expedition_event = data.get("next_expedition_event", 0.0)
                     self._expedition_returns = data.get("expedition_returns", [])
                     self.expedition_flight_cal = data.get("expedition_flight_cal", 1.0)
+                    self.sent_fleetsaves = data.get("sent_fleetsaves", []) or []
+                    self.paused_until = float(data.get("paused_until", 0.0) or 0.0)
+                    self._tg_offset = int(data.get("tg_offset", 0) or 0)
+                    self._last_history_date = data.get("last_history_date", "") or ""
+                    # Coords no es JSON-serializable: se guarda como dict plano y se reconstruye.
+                    self.escaped_fleets = []
+                    for e in data.get("escaped_fleets", []) or []:
+                        try:
+                            self.escaped_fleets.append({
+                                "origin": Coords(int(e["origin"]["galaxy"]), int(e["origin"]["system"]),
+                                                 int(e["origin"]["position"]), e["origin"].get("type", "planet")),
+                                "destination": Coords(int(e["destination"]["galaxy"]), int(e["destination"]["system"]),
+                                                      int(e["destination"]["position"]), e["destination"].get("type", "planet")),
+                                "escaped_at": float(e.get("escaped_at", 0.0)),
+                                "is_sibling": bool(e.get("is_sibling", False)),
+                            })
+                        except Exception:
+                            continue
                     self.log.info("Historial de cooldown de ataques cargado: %d registros.", len(self.attack_history))
             except Exception as e:
                 self.log.debug("No se pudo cargar state.json: %s", e)
@@ -467,20 +494,32 @@ class Brain:
             }
             spy_cd = max(3600, int(getattr(self.cfg, "spy_watch_cooldown_mins", 30)) * 60)
             self._spy_seen = {k: t for k, t in self._spy_seen.items() if t > now - spy_cd}
-            with open(self.cfg.state_file, "w", encoding="utf-8") as f:
-                json.dump({
-                    "attack_history": self.attack_history,
-                    "telegram_notified_attacks": self.telegram_notified_attacks,
-                    "spy_seen": self._spy_seen,
-                    "last_economy_run_time": self.last_economy_run_time,
-                    "last_farming_run_time": self.last_farming_run_time,
-                    "last_expeditions_run_time": self.last_expeditions_run_time,
-                    "last_recycling_run_time": self.last_recycling_run_time,
-                    "expedition_rotation_index": self.expedition_rotation_index,
-                    "next_expedition_event": self.next_expedition_event,
-                    "expedition_returns": [e for e in self._expedition_returns if e > now],
-                    "expedition_flight_cal": self.expedition_flight_cal,
-                }, f, indent=2)
+
+            def c2d(c):
+                return {"galaxy": c.galaxy, "system": c.system, "position": c.position, "type": c.type}
+            utils.atomic_write_json(self.cfg.state_file, {
+                "attack_history": self.attack_history,
+                "telegram_notified_attacks": self.telegram_notified_attacks,
+                "spy_seen": self._spy_seen,
+                "last_economy_run_time": self.last_economy_run_time,
+                "last_farming_run_time": self.last_farming_run_time,
+                "last_expeditions_run_time": self.last_expeditions_run_time,
+                "last_recycling_run_time": self.last_recycling_run_time,
+                "expedition_rotation_index": self.expedition_rotation_index,
+                "next_expedition_event": self.next_expedition_event,
+                "expedition_returns": [e for e in self._expedition_returns if e > now],
+                "expedition_flight_cal": self.expedition_flight_cal,
+                "sent_fleetsaves": [e for e in self.sent_fleetsaves
+                                    if now - e.get("sent_at", 0) <= 86400],
+                "paused_until": self.paused_until,
+                "tg_offset": self._tg_offset,
+                "last_history_date": self._last_history_date,
+                "escaped_fleets": [{"origin": c2d(e["origin"]),
+                                    "destination": c2d(e["destination"]),
+                                    "escaped_at": e.get("escaped_at", 0.0),
+                                    "is_sibling": bool(e.get("is_sibling", False))}
+                                   for e in self.escaped_fleets],
+            })
         except Exception as e:
             self.log.debug("No se pudo guardar state.json: %s", e)
 
@@ -516,10 +555,8 @@ class Brain:
                 self.log.debug("No se pudo cargar game_state_cache.json: %s", e)
 
     def _save_state_cache(self):
-        import json
         try:
-            with open(self.STATE_CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.state_cache, f, indent=2)
+            utils.atomic_write_json(self.STATE_CACHE_FILE, self.state_cache)
         except Exception as e:
             self.log.debug("No se pudo guardar game_state_cache.json: %s", e)
 
@@ -583,8 +620,7 @@ class Brain:
                 if os.path.exists(src):
                     with open(src, "r", encoding="utf-8") as f:
                         existing = json.load(f) or []
-                with open(src, "w", encoding="utf-8") as f:
-                    json.dump(failed + existing, f, ensure_ascii=False, indent=2)
+                utils.atomic_write_json(src, failed + existing)
             except Exception as e:
                 self.log.debug("No se pudo re-encolar regresos fallidos: %s", e)
 
@@ -777,8 +813,7 @@ class Brain:
             r = self.state_cache.get("research", {})
             if r.get("finish_epoch", 0.0) and r["finish_epoch"] > now:
                 out["research"] = {"tech": r.get("tech", ""), "finish_epoch": r["finish_epoch"]}
-            with open("build_status.json", "w", encoding="utf-8") as f:
-                json.dump(out, f, indent=2)
+            utils.atomic_write_json("build_status.json", out)
         except Exception as e:
             self.log.debug("No se pudo guardar build_status.json: %s", e)
 
@@ -824,12 +859,17 @@ class Brain:
                         self.log.debug("Error en comprobación prioritaria de ataques: %s", e)
 
                 if utils.within_active_hours(self.cfg.active_hours):
+                    # Nueva franja activa: se rearman los avisos de phalanx de la próxima noche.
+                    self._phalanx_warned.clear()
                     if getattr(self.cfg, "monitor_only", False):
                         # En monitoreo cycle() no corre, así que recargamos aquí para captar
                         # que desactiven el modo desde la GUI sin reiniciar el bot.
                         self._reload_config()
                     if getattr(self.cfg, "monitor_only", False):
                         self.log.info("Modo solo-monitoreo: vigilando ataques/espionaje y fleetsave (sin economía/farming/expediciones).")
+                    elif time.time() < self.paused_until:
+                        self.log.info("Pausado vía Telegram hasta %s: sin ciclo, solo vigilancia de ataques/regresos.",
+                                      time.strftime("%H:%M", time.localtime(self.paused_until)))
                     else:
                         try:
                             self.cycle()
@@ -839,6 +879,7 @@ class Brain:
 
                     sleep_s = utils.jitter(random.uniform(self.cfg.cycle_interval_min_s,
                                                            self.cfg.cycle_interval_max_s))
+                    self._next_cycle_eta = time.time() + sleep_s
                     self.log.info("Próximo ciclo en %.0f min.", sleep_s / 60)
                     
                     # Esperar al siguiente ciclo en pequeños intervalos
@@ -881,6 +922,12 @@ class Brain:
                             self._process_recall_requests()
                         except Exception as e:
                             self.log.debug("Error procesando regresos de flota (espera): %s", e)
+
+                        # Comandos remotos de Telegram (/status, /fleetsave, /pausa...).
+                        try:
+                            self._poll_telegram_commands()
+                        except Exception as e:
+                            self.log.debug("Error atendiendo comandos de Telegram (espera): %s", e)
 
                         time.sleep(5)
                 else:
@@ -930,11 +977,22 @@ class Brain:
                             self._process_recall_requests()
                         except Exception as e:
                             self.log.debug("Error procesando regresos de flota (noche): %s", e)
+                        # Comandos remotos de Telegram también durante el descanso.
+                        try:
+                            self._poll_telegram_commands()
+                        except Exception as e:
+                            self.log.debug("Error atendiendo comandos de Telegram (noche): %s", e)
                         if night_sweep and (time.time() - last_sweep) >= sweep_interval_s:
                             last_sweep = time.time()
                             self.log.info("Barrido nocturno: despertando para vaciar planetas...")
                             try:
                                 if self.client.login():
+                                    # Aprovechar este despertar (ya con login) para vigilar ataques.
+                                    if getattr(self.cfg, "enable_attack_escape", True):
+                                        try:
+                                            self._check_and_escape_attacks()
+                                        except Exception as ae:
+                                            self.log.debug("Error comprobando ataques antes del barrido nocturno: %s", ae)
                                     self._night_sweep()
                             except Exception as e:
                                 self.log.error("Error en barrido nocturno: %s", e)
@@ -1061,24 +1119,38 @@ class Brain:
                            "(¿sin desglose de naves en el tooltip?)", len(movements))
         return totals
 
+    def _total_expe_slots_effective(self) -> int:
+        """Slots de expedición totales: lo leído del juego, o el cálculo por astrofísica
+        si aún no se ha leído (None). Sin astrofísica NO hay expediciones (0 slots)."""
+        if self.total_expe_slots is not None:
+            return self.total_expe_slots
+        astro = self.research_levels.get("astrophysics", 0) if self.research_levels else 0
+        return max(0, gd.expedition_slots(astro))
+
     def _has_free_expe_slots(self) -> bool:
-        total = self.total_expe_slots if self.total_expe_slots > 0 else 1
+        total = self._total_expe_slots_effective()
+        if total <= 0:
+            return False
         return self.active_expe_slots < total
 
     def _has_free_slots_for_mission(self) -> bool:
         total = self.total_fleet_slots if self.total_fleet_slots else (
             self.research_levels.get("computer_tech", 0) + 1 if self.research_levels else 1)
         free = total - self.active_slots
-        return free >= 1
+        reserve = max(0, int(getattr(self.cfg, "keep_free_fleet_slots", 1)))
+        return free >= 1 + reserve
 
     def _has_free_slots_for_espionage(self) -> bool:
-        total = self.total_fleet_slots if self.total_fleet_slots else (
-            self.research_levels.get("computer_tech", 0) + 1 if self.research_levels else 1)
-        free = total - self.active_slots
-        return free >= 1
+        return self._has_free_slots_for_mission()
 
     def _has_ships(self, planets, ship_type: str, min_count: int = 1) -> bool:
         return sum(p.ships.get(ship_type, 0) for p in planets) >= min_count
+
+    def _deduct_ships(self, loc, ships: dict):
+        """Descuenta del inventario local de 'loc' las naves de un send_fleet exitoso
+        (floor 0), para que el resto del ciclo no cuente naves ya en vuelo."""
+        for s, q in (ships or {}).items():
+            loc.ships[s] = max(0, loc.ships.get(s, 0) - q)
 
     def _reload_config(self):
         """Recarga config.yaml para capturar cambios hechos desde la GUI sin reiniciar
@@ -1118,17 +1190,28 @@ class Brain:
         if slot_info:
             self.active_slots = slot_info.get("fleet_used", 0)
             self.total_fleet_slots = slot_info.get("fleet_total", 0)
-            self.total_expe_slots = slot_info.get("expe_total", 0)
+            # Si el juego no reportó expediciones, dejar None (desconocido) para que el
+            # cálculo por astrofísica siga aplicando en vez de bloquear con 0.
+            self.total_expe_slots = slot_info.get("expe_total")
             self.active_expe_slots = slot_info.get("expe_used", 0)
             self.log.info("Slots reales del juego: Flotas %d/%d, Expediciones %d/%d",
                           self.active_slots, self.total_fleet_slots,
-                          self.active_expe_slots, self.total_expe_slots)
+                          self.active_expe_slots, self._total_expe_slots_effective())
         else:
             self.active_slots = self._count_our_active_fleets(mvs, planets)
             self.active_expe_slots = self._count_our_active_expeditions(mvs)
-            self.total_expe_slots = int(self.research_levels.get("astrophysics", 0) ** 0.5)
+            self.total_expe_slots = gd.expedition_slots(self.research_levels.get("astrophysics", 0))
             self.log.info("Slots de flota (fallback movimientos): %d activos, Expediciones %d/%d",
                           self.active_slots, self.active_expe_slots, self.total_expe_slots)
+
+        # Registro de misiones propias en vuelo por destino (dedup de recolecciones, etc.)
+        self.inflight_dests = {}
+        for m in mvs:
+            if m.get("is_return") or m.get("is_hostile"):
+                continue
+            d = m.get("destination", "")
+            if d:
+                self.inflight_dests.setdefault(d, set()).add(str(m.get("mission", "")))
 
         ships_in_motion = self._aggregate_ships_in_motion(mvs, planets)
 
@@ -1170,10 +1253,8 @@ class Brain:
                         "buildings": p.moon.buildings
                     }
                 planets_data.append(p_data)
-            with open("planets_cache.json", "w", encoding="utf-8") as f:
-                json.dump(planets_data, f, indent=2)
-            with open("fleet_in_motion.json", "w", encoding="utf-8") as f:
-                json.dump(ships_in_motion, f, indent=2)
+            utils.atomic_write_json("planets_cache.json", planets_data)
+            utils.atomic_write_json("fleet_in_motion.json", ships_in_motion)
             # Lista de vuelos para la pestaña "Vuelos" (datos completos: naves y carga). Si la
             # lectura vino vacía (fallo transitorio), NO vaciamos el panel: conservamos los
             # vuelos previos aún en curso (_retain_unlanded).
@@ -1185,9 +1266,9 @@ class Brain:
                 prev_flights = []
             now_ts = time.time()
             new_flights = build_flights(mvs, now_ts, prev=prev_flights)
-            with open("fleet_flights.json", "w", encoding="utf-8") as f:
-                json.dump({"flights": _retain_unlanded(new_flights, prev_flights, now_ts),
-                           "updated": now_ts}, f, ensure_ascii=False, indent=2)
+            utils.atomic_write_json("fleet_flights.json",
+                                    {"flights": _retain_unlanded(new_flights, prev_flights, now_ts),
+                                     "updated": now_ts})
         except Exception as e:
             self.log.debug("No se pudo guardar planets_cache.json: %s", e)
 
@@ -1317,6 +1398,12 @@ class Brain:
 
         # 11. Actualizar estadísticas imperiales
         self.update_imperial_stats()
+
+        # 12. Histórico diario (una línea por día para las gráficas de la GUI)
+        try:
+            self._append_daily_history()
+        except Exception as e:
+            self.log.debug("No se pudo actualizar el histórico diario: %s", e)
 
     # ------------------------------------------------------------------ #
     def _economy_step(self, planet):
@@ -1492,7 +1579,12 @@ class Brain:
             return
 
         self.log.info("Buscando objetivos (API)...")
-        candidates = self.api.inactive_targets()
+        # avoid_strong_players: los 100 primeros del ranking se consideran "fuertes"
+        # y se excluyen (rank 1 = el más fuerte del universo).
+        max_rank_safe = 100 if getattr(self.cfg, "avoid_strong_players", True) else 0
+        candidates = self.api.farm_targets(
+            only_inactive=bool(getattr(self.cfg, "only_inactive_targets", True)),
+            max_rank_safe=max_rank_safe)
 
         # Filtrar candidatos por cooldown de ataques
         cooldown_s = getattr(self.cfg, "farming_attack_cooldown_hours", 2.0) * 3600
@@ -1544,6 +1636,7 @@ class Brain:
                 origin_planet.coords, coords, {"espionage_probe": probes}, mission="espionage"
             )
             if ok:
+                self._deduct_ships(origin_planet, {"espionage_probe": probes})
                 self.active_slots += 1
                 spied.append(coords)
                 self.log.debug("Sondas enviadas desde %s -> %s", origin_planet.coords, coords)
@@ -1711,10 +1804,7 @@ class Brain:
 
             ok = self.client.send_fleet(origin.coords, coords, fleet_to_send, mission="attack")
             if ok:
-                # Actualizar el inventario local de naves del origen
-                for ship, qty in fleet_to_send.items():
-                    if ship in origin.ships:
-                        origin.ships[ship] = max(0, origin.ships[ship] - qty)
+                self._deduct_ships(origin, fleet_to_send)
                 self.active_slots += 1
                 attacked += 1
                 self.log.info("Ataque desde %s: %s loot~%d score=%.0f (distancia=%d)",
@@ -1755,6 +1845,13 @@ class Brain:
                 break
             
             target_coords = tgt.parse_coords(f["coords"])
+            # No duplicar recolecciones: si ya vuela una misión de recolección a esas
+            # coords (leída de movimientos en este ciclo), saltar este campo.
+            dest_key = f"{target_coords.galaxy}:{target_coords.system}:{target_coords.position}"
+            if self.inflight_dests.get(dest_key, set()) & {"8", "harvest", "recycle"}:
+                self.log.info("Reciclaje: omitido en %s: ya hay una recolección en vuelo hacia esas coordenadas.",
+                              target_coords)
+                continue
             origin_loc = get_best_recycle_origin(target_coords)
             if not origin_loc:
                 self.log.info("Reciclaje: sin ubicaciones con recicladores disponibles para %s.", target_coords)
@@ -1799,7 +1896,8 @@ class Brain:
             ok = self.client.send_fleet(plan["origin"], plan["destination"],
                                    plan["ships"], mission="harvest")
             if ok:
-                origin_loc.ships["recycler"] = max(0, origin_loc.ships["recycler"] - n)
+                self._deduct_ships(origin_loc, plan["ships"])
+                self.inflight_dests.setdefault(dest_key, set()).add("harvest")
                 self.active_slots += 1
 
     def _expeditions(self, home: Coords, ships: Optional[dict] = None,
@@ -1809,7 +1907,7 @@ class Brain:
             return False
         if not self._has_free_expe_slots():
             self.log.info("Expedición: deteniendo envío por falta de slots de expedición libres (%d/%d).",
-                          self.active_expe_slots, self.total_expe_slots)
+                          self.active_expe_slots, self._total_expe_slots_effective())
             return False
         destination = None
         if target_system is not None:
@@ -1843,9 +1941,16 @@ class Brain:
                 if real_oneway and ftime > 0:
                     ratio = real_oneway / ftime
                     if 0.02 <= ratio <= 5.0:
-                        self.expedition_flight_cal = ratio
-                        self.log.info("Calibración de vuelo de expedición: real=%.0fs estimado=%.0fs -> factor %.2f",
-                                      real_oneway, ftime, ratio)
+                        prev_cal = getattr(self, "expedition_flight_cal", None)
+                        if prev_cal is None or prev_cal == 1.0:
+                            # Primera muestra (valor por defecto): adoptarla tal cual.
+                            self.expedition_flight_cal = ratio
+                        else:
+                            # EMA para que una muestra atípica no descalibre el factor.
+                            self.expedition_flight_cal = 0.7 * prev_cal + 0.3 * ratio
+                        self.log.info("Calibración de vuelo de expedición: real=%.0fs estimado=%.0fs "
+                                      "-> muestra %.2f, factor %.2f",
+                                      real_oneway, ftime, ratio, self.expedition_flight_cal)
                 # Feature #2: registrar la vuelta (real si la tenemos) para reactivarse
                 ret_oneway = real_oneway if real_oneway else est_oneway
                 self._expedition_returns.append(time.time() + 2 * ret_oneway + plan["hold_hours"] * 3600)
@@ -1898,7 +2003,7 @@ class Brain:
             if max_cargo > 0:
                 optimal_nopf = min(optimal_nopf, max_cargo)
                 optimal_pf = min(optimal_pf, max_cargo)
-            free_slots = max(1, (self.total_expe_slots or 1) - self.active_expe_slots)
+            free_slots = max(1, (self._total_expe_slots_effective() or 1) - self.active_expe_slots)
             total_avail = sum(loc.ships.get(cargo_ship, 0) for loc in enabled_locs)
             # ¿Hay NGC de sobra para llenar todos los slots al óptimo? Si no, repartir
             # las disponibles entre todos los slots para maximizar el nº de expediciones.
@@ -1948,8 +2053,7 @@ class Brain:
 
                 if self._expeditions(loc.coords, ships=ships, target_system=target_system):
                     self.expedition_rotation_index += 1
-                    for s, q in ships.items():
-                        loc.ships[s] = max(0, loc.ships.get(s, 0) - q)
+                    self._deduct_ships(loc, ships)
                 else:
                     break
 
@@ -2033,18 +2137,24 @@ class Brain:
                 "system_range": int(getattr(self.cfg, "expedition_system_range", 15)),
                 "rotation_index": self.expedition_rotation_index,
                 "active_expe_slots": self.active_expe_slots,
-                "total_expe_slots": self.total_expe_slots,
+                "total_expe_slots": self._total_expe_slots_effective(),
                 "next_event_epoch": self.next_expedition_event,
                 "returns_epochs": returns,
                 "updated_at": now,
             }
-            with open("expedition_status.json", "w", encoding="utf-8") as f:
-                json.dump(status, f, indent=2)
+            utils.atomic_write_json("expedition_status.json", status)
         except Exception as e:
             self.log.debug("No se pudo guardar expedition_status.json: %s", e)
 
     def _colonize(self, planets):
         occupied = {p.coords.tuple() for p in planets}
+        # Añadir las posiciones ocupadas de TODO el universo (API): sin esto solo se
+        # evitaban nuestras propias coordenadas y se intentaba colonizar sitios llenos.
+        if self.api:
+            try:
+                occupied |= self.api.occupied_positions()
+            except Exception as e:
+                self.log.debug("No se pudieron leer posiciones ocupadas del universo: %s", e)
         if len(planets) >= self.cfg.max_colonies:
             return
         if not self._has_ships(planets, "colony_ship"):
@@ -2059,6 +2169,7 @@ class Brain:
             ok = self.client.send_fleet(planets[0].coords, dest,
                                    {"colony_ship": 1}, mission="colonize")
             if ok:
+                self._deduct_ships(planets[0], {"colony_ship": 1})
                 self.active_slots += 1
 
     def _moonshot(self, planets):
@@ -2547,6 +2658,7 @@ class Brain:
                 src.resources.metal -= send.metal
                 src.resources.crystal -= send.crystal
                 src.resources.deut -= send.deut
+                self._deduct_ships(src, ships)
                 return send
         return None
 
@@ -2582,19 +2694,25 @@ class Brain:
             if not flyable_ships:
                 continue
 
-            plan = fleet_mod.fleetsave_plan(loc.coords, coords, self.cfg, offline_hours)
+            plan = fleet_mod.fleetsave_plan(loc.coords, coords, self.cfg, offline_hours,
+                                            fleet_ships=flyable_ships,
+                                            research_levels=self.research_levels)
             if not plan:
                 continue
+            self._warn_phalanx_exposure(loc.coords, plan)
             # Fleetsave is safety-critical and must run even if hourly action rate limits are reached.
             self.rate.record()
             self.client._delay()
             self.log.info("Fleetsave %s -> %s (objetivo: %.2fh)", loc.coords, plan["destination"], target_dur / 3600)
             res = "all" if getattr(self.cfg, "fleetsave_carry_resources", True) else None
-            self.client.send_fleet(loc.coords, plan["destination"], {},
-                                   mission=plan["mission"],
-                                   resources=res,
-                                   speed_percent=plan.get("speed_percent", 1.0),
-                                   target_duration_s=target_dur)
+            ok = self.client.send_fleet(loc.coords, plan["destination"], {},
+                                        mission=plan["mission"],
+                                        resources=res,
+                                        speed_percent=plan.get("speed_percent", 1.0),
+                                        target_duration_s=target_dur)
+            if ok:
+                self._register_sent_fleetsave(loc.coords, plan["destination"])
+        self._save_state()
 
     def _night_sweep(self):
         """
@@ -2632,42 +2750,225 @@ class Brain:
             flyable = {k: v for k, v in loc.ships.items() if k != "solar_satellite" and v > 0}
             if not flyable:
                 continue
-            plan = fleet_mod.fleetsave_plan(loc.coords, coords, self.cfg, remaining_h)
+            plan = fleet_mod.fleetsave_plan(loc.coords, coords, self.cfg, remaining_h,
+                                            fleet_ships=flyable,
+                                            research_levels=self.research_levels)
             if not plan:
                 continue
+            self._warn_phalanx_exposure(loc.coords, plan)
             self.rate.record()
             self.client._delay()
             res = "all" if getattr(self.cfg, "fleetsave_carry_resources", True) else None
             self.log.info("Barrido nocturno: vaciando %s -> %s (vuelve en ~%.1fh)",
                           loc.coords, plan["destination"], remaining_h)
-            self.client.send_fleet(loc.coords, plan["destination"], {},
-                                   mission=plan["mission"], resources=res,
-                                   speed_percent=plan.get("speed_percent", 1.0),
-                                   target_duration_s=remaining_h * 3600)
-            swept += 1
+            ok = self.client.send_fleet(loc.coords, plan["destination"], {},
+                                        mission=plan["mission"], resources=res,
+                                        speed_percent=plan.get("speed_percent", 1.0),
+                                        target_duration_s=remaining_h * 3600)
+            if ok:
+                self._register_sent_fleetsave(loc.coords, plan["destination"])
+                swept += 1
+        self._save_state()
         self.log.info("Barrido nocturno completado: %d ubicación(es) vaciada(s).", swept)
 
-    def _recall_sleep_fleetsaves(self):
-        planets = self.client.read_planets()
-        if not planets:
+    def _register_sent_fleetsave(self, origin: Coords, dest: Coords):
+        """Registra un fleetsave enviado para que el recall nocturno retorne SOLO estos
+        despliegues (y no arrastre evasiones de ataque u otros deploys)."""
+        self.sent_fleetsaves.append({
+            "origin": f"{origin.galaxy}:{origin.system}:{origin.position}",
+            "origin_type": origin.type,
+            "dest": f"{dest.galaxy}:{dest.system}:{dest.position}",
+            "dest_type": dest.type,
+            "sent_at": time.time(),
+        })
+
+    def _warn_phalanx_exposure(self, origin: Coords, plan: dict):
+        """Aviso por Telegram (UNO por origen y noche) cuando el plan de fleetsave queda
+        expuesto a un sensor phalanx (destino planeta, o fallback a expedición real)."""
+        if not plan.get("phalanx_exposed"):
             return
-        # Construir lista de todas las ubicaciones (planetas y lunas)
-        all_locations = []
-        for p in planets:
-            all_locations.append(p)
-            if p.has_moon and p.moon:
-                all_locations.append(p.moon)
+        if not getattr(self.cfg, "fleetsave_warn_phalanx", True):
+            return
+        token = getattr(self.cfg, "telegram_token", "")
+        chat_id = getattr(self.cfg, "telegram_chat_id", "")
+        if not token or not chat_id:
+            return
+        key = f"{origin.galaxy}:{origin.system}:{origin.position}:{origin.type}"
+        if key in self._phalanx_warned:
+            return
+        self._phalanx_warned.add(key)
+        dest = plan.get("destination")
+        if plan.get("fallback") == "expedition":
+            msg = (f"ATENCIÓN: fleetsave de {origin} sin destino seguro: la flota sale en una "
+                   f"EXPEDICIÓN REAL a {dest} (riesgo de pérdidas y visible en phalanx). "
+                   f"Considera crear/usar una luna.")
+        else:
+            msg = (f"Fleetsave de {origin} expuesto a phalanx (destino planeta {dest}). "
+                   f"Considera crear/usar una luna.")
+        utils.send_telegram_message(token, chat_id, utils.tg_escape(msg), logger=self.log)
+
+    def _recall_sleep_fleetsaves(self):
+        now = time.time()
+        # Poda: un despliegue de fleetsave no vive más de 24h.
+        self.sent_fleetsaves = [e for e in self.sent_fleetsaves
+                                if now - e.get("sent_at", 0) <= 86400]
+        if not self.sent_fleetsaves:
+            self.log.info("Retorno nocturno: sin fleetsaves registrados que retornar.")
+            return
 
         mvs = self.client.read_movements()
-        our_coords_str = {f"{loc.coords.galaxy}:{loc.coords.system}:{loc.coords.position}" for loc in all_locations}
-        
+        escaped_origins = {f"{e['origin'].galaxy}:{e['origin'].system}:{e['origin'].position}"
+                           for e in self.escaped_fleets}
         for mv in mvs:
-            if (mv.get("mission") in ("4", "deploy")) and not mv.get("is_return", False):
-                origin = mv.get("origin")
-                dest = mv.get("destination")
-                if origin in our_coords_str and dest in our_coords_str and origin != dest:
-                    self.log.info("Retornando despliegue de fleetsave: %s -> %s", origin, dest)
-                    self.client.recall_fleet(origin, dest, mission="deploy")
+            if mv.get("mission") not in ("4", "deploy") or mv.get("is_return", False):
+                continue
+            origin = mv.get("origin")
+            dest = mv.get("destination")
+            if not origin or not dest or origin == dest:
+                continue
+            if origin in escaped_origins:
+                self.log.info("Retorno nocturno: %s -> %s omitido (es una evasión de ataque).",
+                              origin, dest)
+                continue
+            matches = [e for e in self.sent_fleetsaves
+                       if e.get("origin") == origin and e.get("dest") == dest]
+            if not matches:
+                continue
+            # Si hay varias entradas con las mismas coords (planeta y luna comparten g:s:p),
+            # preferir la que case también en tipo.
+            entry = next((e for e in matches
+                          if e.get("origin_type") == mv.get("origin_type")
+                          and e.get("dest_type") == mv.get("dest_type")), matches[0])
+            self.log.info("Retornando despliegue de fleetsave: %s -> %s", origin, dest)
+            ok = self.client.recall_fleet(origin, dest, mission="deploy")
+            if ok:
+                self.sent_fleetsaves.remove(entry)
+        self._save_state()
+
+    # ------------------------------------------------------------------ #
+    #  Comandos remotos por Telegram (/status, /fleetsave, /recall, /pausa...)
+    # ------------------------------------------------------------------ #
+    def _poll_telegram_commands(self):
+        if not getattr(self.cfg, "enable_telegram_commands", False):
+            return
+        token = getattr(self.cfg, "telegram_token", "")
+        chat_id = str(getattr(self.cfg, "telegram_chat_id", "") or "")
+        if not token or not chat_id:
+            return
+        now = time.time()
+        if now - self._tg_last_poll < 15:
+            return
+        self._tg_last_poll = now
+        updates = utils.telegram_get_updates(token, self._tg_offset)
+        if not updates:
+            return
+        # Primer arranque (offset 0): descartar el backlog de mensajes antiguos
+        # para no ejecutar comandos enviados antes de encender el bot.
+        skip_backlog = self._tg_offset == 0
+        offset_changed = False
+        for upd in updates:
+            uid = int(upd.get("update_id", 0) or 0)
+            if uid >= self._tg_offset:
+                self._tg_offset = uid + 1
+                offset_changed = True
+            if skip_backlog:
+                continue
+            msg = upd.get("message") or upd.get("edited_message") or {}
+            # Solo obedecer al chat configurado (cualquier otro chat se ignora).
+            if str((msg.get("chat") or {}).get("id", "")) != chat_id:
+                continue
+            text = (msg.get("text") or "").strip()
+            if not text.startswith("/"):
+                continue
+            try:
+                self._handle_telegram_command(text, token, chat_id)
+            except Exception as e:
+                self.log.debug("Error ejecutando comando de Telegram %r: %s", text, e)
+        if offset_changed:
+            self._save_state()
+
+    def _handle_telegram_command(self, text: str, token: str, chat_id: str):
+        parts = text.split()
+        cmd = parts[0].lower().split("@")[0]  # soporta "/status@MiBot"
+        args = parts[1:]
+
+        def send(body: str):
+            utils.send_telegram_message(token, chat_id, body, logger=self.log)
+
+        if cmd == "/status":
+            m = c = d = 0
+            for p in self.last_planets:
+                for loc in [p] + ([p.moon] if getattr(p, "moon", None) else []):
+                    r = getattr(loc, "resources", None)
+                    if r is not None:
+                        m += int(r.metal); c += int(r.crystal); d += int(r.deut)
+            fmt = lambda v: f"{v:,}".replace(",", ".")
+            total_expe = self.total_expe_slots if self.total_expe_slots is not None else "?"
+            lines = [
+                f"Planetas: {len(self.last_planets)}",
+                f"Recursos: M {fmt(m)} · C {fmt(c)} · D {fmt(d)}",
+                f"Slots flota: {self.active_slots}/{self.total_fleet_slots} · Expe: {self.active_expe_slots}/{total_expe}",
+                f"Monitor: {'sí' if getattr(self.cfg, 'monitor_only', False) else 'no'} · Dry-run: {'sí' if self.cfg.dry_run else 'no'}",
+            ]
+            if time.time() < self.paused_until:
+                lines.append(f"Pausado hasta {time.strftime('%H:%M', time.localtime(self.paused_until))}")
+            if self._next_cycle_eta > time.time():
+                lines.append(f"Próximo ciclo ~{time.strftime('%H:%M', time.localtime(self._next_cycle_eta))}")
+            send(utils.tg_escape("\n".join(lines)))
+        elif cmd == "/fleetsave":
+            if utils.within_active_hours(self.cfg.active_hours):
+                hours = 8.0
+            else:
+                hours = max(1.0, utils.hours_until_active(self.cfg.active_hours))
+            send(utils.tg_escape(f"Ejecutando fleetsave (~{hours:.1f}h)..."))
+            self.client.login()
+            self._fleetsave_all(offline_hours=hours)
+            send("Fleetsave completado.")
+        elif cmd == "/recall":
+            self.client.login()
+            n_fs_before = len(self.sent_fleetsaves)
+            self._recall_sleep_fleetsaves()
+            n_fs = n_fs_before - len(self.sent_fleetsaves)
+            # Retornar también las evasiones de ataque (mismo mecanismo que el bloque
+            # de "ataque retirado"); los despliegues hermano son permanentes y se omiten.
+            n_esc = 0
+            still_escaped = []
+            for esc in self.escaped_fleets:
+                if esc.get("is_sibling"):
+                    still_escaped.append(esc)
+                    continue
+                o, dst = esc["origin"], esc["destination"]
+                ok = self.client.recall_fleet(f"{o.galaxy}:{o.system}:{o.position}",
+                                              f"{dst.galaxy}:{dst.system}:{dst.position}",
+                                              mission="deploy")
+                if ok:
+                    n_esc += 1
+                else:
+                    still_escaped.append(esc)
+            self.escaped_fleets = still_escaped
+            self._save_state()
+            send(utils.tg_escape(f"Recall: {n_fs} fleetsave(s) y {n_esc} evasión(es) retornadas."))
+        elif cmd == "/pausa":
+            mins = 60
+            if args:
+                try:
+                    mins = max(1, int(args[0]))
+                except ValueError:
+                    pass
+            self.paused_until = time.time() + mins * 60
+            self._save_state()
+            send(utils.tg_escape(
+                f"Bot pausado {mins} min (hasta {time.strftime('%H:%M', time.localtime(self.paused_until))})."))
+        elif cmd == "/reanudar":
+            self.paused_until = 0.0
+            self._save_state()
+            send("Bot reanudado.")
+        elif cmd == "/ayuda":
+            send("Comandos:\n/status - estado del imperio\n/fleetsave - guardar flotas ya\n"
+                 "/recall - retornar fleetsaves y evasiones\n/pausa [min] - pausar el bot (60 por defecto)\n"
+                 "/reanudar - quitar la pausa\n/ayuda - esta lista")
+        else:
+            send(utils.tg_escape(f"Comando desconocido: {cmd}. Usa /ayuda."))
 
     def _last_known_ships(self, coords) -> dict:
         """Naves conocidas (del último ciclo) en una ubicación, para las alertas de
@@ -2678,6 +2979,17 @@ class Brain:
                 if loc.coords.tuple() == coords.tuple() and loc.coords.type == coords.type:
                     return getattr(loc, "ships", {}) or {}
         return {}
+
+    def _last_known_loc(self, coords_str: str, ltype: str):
+        """Ubicación propia (planeta o luna) con coords 'g:s:p' y ese tipo exacto, con los
+        datos del último ciclo (last_planets). None si no se conoce."""
+        for p in self.last_planets:
+            locs = [p] + ([p.moon] if getattr(p, "moon", None) else [])
+            for loc in locs:
+                c = loc.coords
+                if f"{c.galaxy}:{c.system}:{c.position}" == coords_str and c.type == ltype:
+                    return loc
+        return None
 
     def _attack_check_interval(self) -> float:
         """Segundos hasta la próxima comprobación de ataque: aleatorio en [min,max]
@@ -2710,12 +3022,32 @@ class Brain:
                 continue
             self._spy_seen[key] = now
             self._save_state()
+            # Enriquecer con el tipo real del objetivo (planeta/luna) y los últimos datos
+            # conocidos de ESA ubicación exacta (recursos y naves volables).
+            dest_type = mv.get("dest_type") or "planet"
+            tipo = "luna" if dest_type == "moon" else "planeta"
+            info_extra = ""
+            loc = self._last_known_loc(dest, dest_type)
+            if loc is not None:
+                r = getattr(loc, "resources", None)
+                if r is not None:
+                    info_extra += (f"• <b>Recursos conocidos:</b> "
+                                   f"M:{int(r.metal):,} C:{int(r.crystal):,} D:{int(r.deut):,}\n")
+                flyable = {k: v for k, v in (getattr(loc, "ships", {}) or {}).items()
+                           if k != "solar_satellite" and v > 0}
+                if flyable:
+                    info_extra += ("• <b>Naves conocidas:</b> "
+                                   + utils.tg_escape(", ".join(f"{k}: {v}" for k, v in flyable.items()))
+                                   + "\n")
+                else:
+                    info_extra += "• <b>Naves conocidas:</b> ninguna voladora en hangar.\n"
             msg = (
                 f"🔍 <b>¡Te están sondeando en OGame!</b>\n\n"
-                f"• <b>Origen:</b> [{origin}]\n"
-                f"• <b>Destino:</b> [{dest}]\n"
-                f"• <b>Llegada de las sondas:</b> {mv.get('arrival_text', '')}\n\n"
-                f"<i>Un sondeo suele preceder a un ataque. Revisa o saca la flota.</i>"
+                f"• <b>Origen:</b> [{utils.tg_escape(origin)}]\n"
+                f"• <b>Destino:</b> [{utils.tg_escape(dest)}] ({tipo})\n"
+                f"• <b>Llegada de las sondas:</b> {utils.tg_escape(mv.get('arrival_text', ''))}\n"
+                + info_extra +
+                f"\n<i>Un sondeo suele preceder a un ataque. Revisa o saca la flota.</i>"
             )
             self.log.info("Vigilancia de espionaje: sondeo entrante %s", key)
             utils.send_telegram_message(self.cfg.telegram_token, self.cfg.telegram_chat_id,
@@ -2736,9 +3068,9 @@ class Brain:
                 with open("fleet_flights.json", "r", encoding="utf-8") as f:
                     prev = json.load(f).get("flights", [])
             now_ts = time.time()
-            with open("fleet_flights.json", "w", encoding="utf-8") as f:
-                json.dump({"flights": _retain_unlanded(build_flights(mvs, now_ts, prev=prev), prev, now_ts),
-                           "updated": now_ts}, f, ensure_ascii=False, indent=2)
+            utils.atomic_write_json("fleet_flights.json",
+                                    {"flights": _retain_unlanded(build_flights(mvs, now_ts, prev=prev), prev, now_ts),
+                                     "updated": now_ts})
         except Exception as e:
             self.log.debug("No se pudo refrescar fleet_flights.json: %s", e)
         planets = self.client.read_planets()
@@ -2763,8 +3095,12 @@ class Brain:
         # Etiquetas reales de misión hostil (9 = destrucción de luna, no espionaje)
         mission_labels = {"1": "Ataque", "2": "Ataque (ACS)", "9": "Destrucción de luna"}
 
-        # 1. Encontrar planetas/lunas bajo ataque con su tiempo de llegada mínimo
+        # 1. Encontrar planetas/lunas bajo ataque con su tiempo de llegada mínimo.
+        # under_attack (por coords, ambos tipos) decide QUÉ evacuar; attacked_exact
+        # (con el dest_type REAL del movimiento) decide si el hermano está libre.
         under_attack = {}
+        attacked_exact = set()
+        seen_attack_keys = set()
         for mv in mvs:
             if not ((mv.get("is_hostile") or mv.get("mission") in ("1", "2", "9")) and not mv.get("is_return", False)):
                 continue
@@ -2774,9 +3110,14 @@ class Brain:
                 continue
 
             arr_text = mv.get("arrival_text", "")
-            arr_sec = parse_time_to_seconds(arr_text)
-            if arr_sec is None:
-                arr_sec = 999999  # valor por defecto si no es parseable
+            # El epoch absoluto del DOM es más fiable que parsear el contador.
+            arr_epoch_mv = mv.get("arrival_epoch") or 0
+            if arr_epoch_mv:
+                arr_sec = max(0, int(arr_epoch_mv - time.time()))
+            else:
+                arr_sec = parse_time_to_seconds(arr_text)
+                if arr_sec is None:
+                    arr_sec = 999999  # valor por defecto si no es parseable
 
             # Marcar bajo ataque TODAS las ubicaciones propias en esas coordenadas
             for loc in targets:
@@ -2787,18 +3128,25 @@ class Brain:
             # Registrar / notificar una vez por movimiento hostil
             origin_coords_str = mv.get("origin", "Desconocido")
             dest_type = mv.get("dest_type", "planet")
+            # Tipo exacto atacado, según el movimiento (ante la duda, ambos tipos).
+            if mv.get("dest_type"):
+                attacked_exact.add(f"{dest_coords}:{mv['dest_type']}")
+            else:
+                attacked_exact.add(f"{dest_coords}:planet")
+                attacked_exact.add(f"{dest_coords}:moon")
             mission_str = mission_labels.get(str(mv.get("mission", "")), "Ataque")
             self.record_session_action("hostile_attacks", f"{mission_str} desde {origin_coords_str}", arr_sec, dest_coords)
 
+            # Clave estable por ataque (sin epoch: el countdown parseado deriva y duplicaba alertas)
+            attack_key = f"{origin_coords_str}->{dest_coords}:{mission_str}"
+            seen_attack_keys.add(attack_key)
+
             # Enviar notificación de Telegram si está configurado
             if getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""):
-                now = time.time()
-                arr_epoch = now + arr_sec
-                arr_epoch_rounded = int(arr_epoch / 60) * 60  # redondear a 60s
-                attack_key = f"{origin_coords_str}->{dest_coords}:{mission_str}:{arr_epoch_rounded}"
-
-                if attack_key not in self.telegram_notified_attacks:
-                    self.telegram_notified_attacks[attack_key] = arr_epoch
+                is_new_attack = attack_key not in self.telegram_notified_attacks
+                # Refrescar "última vez visto" en cada barrido mientras el ataque siga visible.
+                self.telegram_notified_attacks[attack_key] = time.time()
+                if is_new_attack:
                     self._save_state()
 
                     disp = next((l for l in targets if l.coords.type == dest_type), targets[0])
@@ -2853,7 +3201,7 @@ class Brain:
                 # Comprobar si ya evadimos esta ubicación específica (el tipo de coordenada coincide)
                 already_escaped = any(e["origin"].tuple() == loc.coords.tuple() and e["origin"].type == loc.coords.type for e in self.escaped_fleets)
                 if not already_escaped:
-                    self._escape_attack_loc(loc, all_locations, under_attack)
+                    self._escape_attack_loc(loc, all_locations, under_attack, attacked_exact)
                 
                 # Comprobar pánico (menos de 5 minutos para el impacto) - solo en planeta por simplicidad
                 if arrival_seconds < 300 and t == "planet":
@@ -2890,10 +3238,20 @@ class Brain:
                         still_escaped.append(esc)
             else:
                 still_escaped.append(esc)
-                 
+
         self.escaped_fleets = still_escaped
- 
-    def _escape_attack_loc(self, origin_loc: Planet, all_locations: List[Planet], under_attack: dict):
+
+        # 4. Purgar del dedup de Telegram los ataques que ya no están visibles: si vuelven
+        # a atacar más tarde, la alerta se dispara de nuevo. Con mvs vacío no se purga
+        # (puede ser un fallo de lectura y purgar duplicaría alertas de ataques vigentes).
+        if mvs:
+            stale_keys = [k for k in self.telegram_notified_attacks if k not in seen_attack_keys]
+            for k in stale_keys:
+                del self.telegram_notified_attacks[k]
+        self._save_state()
+
+    def _escape_attack_loc(self, origin_loc: Planet, all_locations: List[Planet], under_attack: dict,
+                           attacked_exact: Optional[set] = None):
         has_any_ships = any(count > 0 for count in origin_loc.ships.values())
         if not has_any_ships:
             self.log.debug("Evasión de ataque en %s omitida: no hay naves.", origin_loc.coords)
@@ -2915,7 +3273,11 @@ class Brain:
         sibling_under_attack = False
         if sibling_loc:
             sibling_key = f"{sibling_loc.coords.galaxy}:{sibling_loc.coords.system}:{sibling_loc.coords.position}:{sibling_loc.coords.type}"
-            if sibling_key in under_attack:
+            # under_attack marca planeta Y luna en las coords atacadas (para evacuar ante la
+            # duda), así que el hermano SIEMPRE parecería atacado. Para decidir si el hermano
+            # es refugio válido se usa attacked_exact, construido con el dest_type REAL.
+            exact = attacked_exact if attacked_exact is not None else set(under_attack.keys())
+            if sibling_key in exact:
                 sibling_under_attack = True
 
         if sibling_loc and not sibling_under_attack:
@@ -2947,597 +3309,53 @@ class Brain:
                 "escaped_at": time.time(),
                 "is_sibling": is_sibling_escape
             })
+            # Persistir ya: un reinicio no debe perder el recall pendiente de la evasión.
+            self._save_state()
         else:
             self.log.error("Fallo al enviar la flota de evasión desde %s.", origin_loc.coords)
-    def initialize_session_stats(self):
-        """Inicializa las estadísticas a 0 para la nueva sesión e ignora mensajes existentes."""
-        self.log.info("Inicializando estadísticas de la sesión (ignorando mensajes previos)...")
+
+    def _append_daily_history(self):
+        """Histórico diario para las gráficas de la GUI: la primera vez que cambia la fecha
+        local se appendea UNA línea JSON compacta a stats_history.jsonl con los recursos
+        totales del imperio y los acumulados de sesión de ogbot_stats.json."""
         import json
         import os
-
-        stats_file = "ogbot_stats.json"
-        stats = {
-            "total_farming": {"metal": 0, "crystal": 0, "deut": 0},
-            "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
-            "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}},
-            "parsed_messages": [],
-            "session_actions": {
-                "buildings": {},
-                "research": [],
-                "fleet": {},
-                "defense": {},
-                "farming": {},
-                "expeditions": {},
-                "hostile_attacks": {},
-                "espionage": {}
-            }
-        }
-
-        # Combate/expedición/reciclaje: marcamos los previos como vistos (no contabilizamos
-        # loot antiguo). El espionaje (tab 20) NO se toca aquí: su dedup/notificación vive en
-        # spy_notifications.csv (libro mayor persistente entre reinicios), que siembra su
-        # propio backlog la primera vez y avisa de TODO mensaje nuevo a partir de entonces.
-        tabs = [21, 22, 24]
-        for tab_id in tabs:
-            try:
-                msgs = self.client.read_message_reports(tab_id)
-                for m in msgs:
-                    msg_id = f"{tab_id}-{m['id']}"
-                    if msg_id not in stats["parsed_messages"]:
-                        stats["parsed_messages"].append(msg_id)
-            except Exception as e:
-                self.log.warning("No se pudieron leer mensajes previos del tab %d durante la inicialización: %s", tab_id, e)
-
-        try:
-            with open(stats_file, "w", encoding="utf-8") as f:
-                json.dump(stats, f, indent=2)
-            self.log.info("Estadísticas de sesión inicializadas con éxito. %d mensajes previos marcados como leídos o ignorados.", len(stats["parsed_messages"]))
-        except Exception as e:
-            self.log.error("No se pudo escribir el archivo de estadísticas inicial: %s", e)
-
-    def record_session_action(self, action_type: str, name: str, value, planet_coords: str = None):
-        """
-        Registra una acción de la sesión (edificio, investigación, naves, defensa, farmeo, expedición, ataque hostil o espionaje) en ogbot_stats.json.
-        """
-        import json
-        import os
-        import time
-
-        stats_file = "ogbot_stats.json"
-        stats = {
-            "total_farming": {"metal": 0, "crystal": 0, "deut": 0},
-            "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
-            "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}},
-            "parsed_messages": [],
-            "session_actions": {
-                "buildings": {},
-                "research": [],
-                "fleet": {},
-                "defense": {},
-                "farming": {},
-                "expeditions": {},
-                "hostile_attacks": {},
-                "espionage": {}
-            }
-        }
-
-        if os.path.exists(stats_file):
-            try:
-                with open(stats_file, "r", encoding="utf-8") as f:
-                    stats = json.load(f)
-            except Exception:
-                pass
-
-        if "session_actions" not in stats:
-            stats["session_actions"] = {
-                "buildings": {},
-                "research": [],
-                "fleet": {},
-                "defense": {},
-                "farming": {},
-                "expeditions": {},
-                "hostile_attacks": {},
-                "espionage": {}
-            }
-        elif "espionage" not in stats["session_actions"]:
-            stats["session_actions"]["espionage"] = {}
-
-        timestamp_str = time.strftime("%Y-%m-%d %H:%M:%S")
-
-        action_data = {
-            "name": name,
-            "value": value,
-            "timestamp": timestamp_str
-        }
-
-        if action_type == "research":
-            stats["session_actions"]["research"].append(action_data)
-        else:
-            if not planet_coords:
-                planet_coords = "Empire"
-            actions_dict = stats["session_actions"].setdefault(action_type, {})
-            planet_list = actions_dict.setdefault(planet_coords, [])
-            
-            # Evitar duplicar alertas de ataque hostil o espionajes idénticos
-            if action_type in ("hostile_attacks", "espionage"):
-                for existing in planet_list:
-                    if existing["name"] == name:
-                        existing["value"] = value
-                        existing["timestamp"] = timestamp_str
-                        try:
-                            with open(stats_file, "w", encoding="utf-8") as f:
-                                json.dump(stats, f, indent=2)
-                        except Exception:
-                            pass
-                        return
-                        
-            planet_list.append(action_data)
-
-        try:
-            with open(stats_file, "w", encoding="utf-8") as f:
-                json.dump(stats, f, indent=2)
-        except Exception as e:
-            self.log.debug("No se pudo escribir ogbot_stats.json en record_session_action: %s", e)
-
-    def update_imperial_stats(self):
-        """Lee los mensajes recientes de combates, expediciones y reciclaje para compilar estadísticas."""
-        self.log.info("Actualizando estadísticas imperiales desde mensajes...")
-        import json
-        import os
-        import re
-
-        stats_file = "ogbot_stats.json"
-        stats = {
-            "total_farming": {"metal": 0, "crystal": 0, "deut": 0},
-            "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
-            "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}},
-            "parsed_messages": []
-        }
-
-        if os.path.exists(stats_file):
-            try:
-                with open(stats_file, "r", encoding="utf-8") as f:
-                    stats = json.load(f)
-            except Exception:
-                pass
-
-        parsed_set = set(stats.get("parsed_messages", []))
-        changed = False
-
-        # --- Visor de mensajes leídos (lo consume la GUI vía /api/messages) ---
-        msg_log_file = "messages_read.json"
-        msg_log = []
-        if os.path.exists(msg_log_file):
-            try:
-                with open(msg_log_file, "r", encoding="utf-8") as f:
-                    msg_log = json.load(f).get("messages", [])
-            except Exception:
-                msg_log = []
-        log_index = {e.get("key"): e for e in msg_log}
-        log_changed = [False]
-        cat_names = {21: "Combate", 22: "Expedición", 24: "Reciclaje", 20: "Espionaje"}
-        ship_es = {k: v[0] for k, v in EXPEDITION_SHIP_NAMES}
-
-        def record_msg(tab_id, m):
-            """Registra (una vez) el texto íntegro de un mensaje leído. Devuelve su entrada."""
-            key = f"{tab_id}-{m['id']}"
-            if key in log_index:
-                return log_index[key]
-            txt = (m.get("text", "") or "").strip()
-            if len(txt) > 4000:
-                txt = txt[:4000] + "…"
-            entry = {
-                "key": key, "tab": tab_id,
-                "category": cat_names.get(tab_id, str(tab_id)),
-                "ts": time.strftime("%Y-%m-%d %H:%M"),
-                "text": txt, "summary": "",
-            }
-            msg_log.append(entry)
-            log_index[key] = entry
-            log_changed[0] = True
-            return entry
-
-        def fmt_extracted(metal, crystal, deut, dark_matter, ships):
-            f = lambda n: f"{n:,}".replace(",", ".")
-            parts = []
-            if metal: parts.append(f"Metal {f(metal)}")
-            if crystal: parts.append(f"Cristal {f(crystal)}")
-            if deut: parts.append(f"Deuterio {f(deut)}")
-            if dark_matter: parts.append(f"Materia oscura {f(dark_matter)}")
-            for sk, q in (ships or {}).items():
-                parts.append(f"+{f(q)} {ship_es.get(sk, sk)}")
-            return " · ".join(parts) if parts else "Sin recursos ni naves"
-
-        tabs = {
-            21: "total_farming",
-            22: "total_expeditions",
-            24: "total_recycling"
-        }
-
-        def clean_num(s):
-            """Convierte '1.234.567' / '1 234 567' / '1,234,567' -> 1234567."""
-            if isinstance(s, (int, float)):
-                return int(s)
-            return int(re.sub(r'[^\d]', '', str(s))) if s and re.search(r'\d', str(s)) else 0
-
-        def num_from_raw(raw, *keys):
-            for k in keys:
-                if k in raw:
-                    n = clean_num(str(raw[k]))
-                    if n:
-                        return n
-            return 0
-
-        def loot_from_raw(raw):
-            """El botín de combate suele venir como JSON en data-raw-loot/resources o data-raw-result."""
-            # 1. Chequear data-raw-result (para reportes de combate)
-            if "result" in raw:
-                try:
-                    res_data = json.loads(raw["result"])
-                    resources_list = res_data.get("loot", {}).get("resources", [])
-                    m, c, d = 0, 0, 0
-                    for res in resources_list:
-                        name = res.get("resource", "").lower()
-                        amount = clean_num(res.get("amount"))
-                        if "metal" in name:
-                            m = amount
-                        elif "crystal" in name:
-                            c = amount
-                        elif "deuterium" in name:
-                            d = amount
-                    if m or c or d:
-                        return m, c, d
-                except Exception:
-                    pass
-
-            # 2. Chequear data-raw-cargo (para transportes y expediciones)
-            if "cargo" in raw:
-                try:
-                    cargo_data = json.loads(raw["cargo"])
-                    m = clean_num(cargo_data.get("metal"))
-                    c = clean_num(cargo_data.get("crystal"))
-                    d = clean_num(cargo_data.get("deuterium") or cargo_data.get("deut"))
-                    if m or c or d:
-                        return m, c, d
-                except Exception:
-                    pass
-
-            # 3. Formato clásico (data-raw-loot/resources)
-            blob = raw.get("loot") or raw.get("resources")
-            if not blob:
-                return (0, 0, 0)
-            try:
-                d = json.loads(blob)
-            except Exception:
-                return (0, 0, 0)
-            g = lambda *ks: next(
-                (clean_num(str(d[k])) for k in ks if k in d), 0)
-            return (g("metal", "901"), g("crystal", "902"),
-                    g("deuterium", "deut", "903"))
-
-        def num_from_text(text, labels):
-            """Respaldo: extrae la cifra de una etiqueta. Prioriza 'etiqueta: número' y solo
-            si no aparece usa 'número etiqueta' (número justo antes), para no robar la cifra
-            del recurso anterior (p.ej. en 'Metal: 1.000 Cristal: 500' el cristal son 500)."""
-            num = r'(\d[\d.,]*)'
-            for lab in labels:   # 1) etiqueta seguida del número (orden real de OGame)
-                m = re.search(r'(?:%s)\s*:?\s*%s' % (lab, num), text, re.IGNORECASE)
-                if m:
-                    return clean_num(m.group(1))
-            for lab in labels:   # 2) número inmediatamente antes de la etiqueta
-                m = re.search(r'%s\s*(?:de\s+)?(?:%s)' % (num, lab), text, re.IGNORECASE)
-                if m:
-                    return clean_num(m.group(1))
-            return 0
-
-        for tab_id, key in tabs.items():
-            msgs = self.client.read_message_reports(tab_id)
-            for m in msgs:
-                msg_id = f"{tab_id}-{m['id']}"
-                entry = record_msg(tab_id, m)  # registrar el texto aunque ya esté contabilizado
-                if msg_id in parsed_set:
-                    continue
-
-                text = m.get("text", "") or ""
-                raw = m.get("raw", {}) or {}
-                dark_matter = 0
-
-                text_lower = text.lower()
-                # Filtrar mensajes de combate para registrar solo ataques exitosos propios
-                if key == "total_farming":
-                    is_win = ("has ganado" in text_lower or "you won" in text_lower or "gewonnen" in text_lower)
-                    is_loss_to_attacker = ("el atacante ha ganado" in text_lower or "the attacker has won" in text_lower or "der angreifer hat gewonnen" in text_lower)
-                    if not is_win or is_loss_to_attacker:
-                        entry["summary"] = "Combate no ganado u hostil (no contabilizado)"
-                        parsed_set.add(msg_id)
-                        stats["parsed_messages"].append(msg_id)
-                        changed = True
-                        continue
-
-                # Filtrar mensajes del tab "Otros" para procesar solo informes de reciclaje reales
-                elif key == "total_recycling":
-                    is_rec = ("reciclador" in text_lower or "recycler" in text_lower or
-                              "escombros" in text_lower or "debris" in text_lower or
-                              "recolecci" in text_lower or "trümmerfeld" in text_lower)
-                    if not is_rec:
-                        entry["summary"] = "No es informe de reciclaje (no contabilizado)"
-                        parsed_set.add(msg_id)
-                        stats["parsed_messages"].append(msg_id)
-                        changed = True
-                        continue
-
-                # 1) Datos estructurados data-raw-* (fiables, sin depender del idioma)
-                metal = num_from_raw(raw, "metal")
-                crystal = num_from_raw(raw, "crystal")
-                deut = num_from_raw(raw, "deuterium", "deut")
-                if not (metal or crystal or deut):
-                    metal, crystal, deut = loot_from_raw(raw)
-
-                # 2) Respaldo: parsear el texto del informe
-                if not (metal or crystal or deut):
-                    metal = num_from_text(text, ["metal"])
-                    crystal = num_from_text(text, ["cristal", "crystal"])
-                    deut = num_from_text(text, ["deuterio", "deuterium"])
-
-                if not (metal or crystal or deut) and key != "total_expeditions":
-                    self.log.debug("Mensaje %s sin recursos extraídos. raw=%s txt=%.120s",
-                                   msg_id, raw, text.replace("\n", " "))
-
-                found_ships = {}
-                if key == "total_expeditions":
-                    dark_matter = (num_from_raw(raw, "darkmatter", "dark_matter")
-                                   or num_from_text(text, ["materia oscura", "dark matter"]))
-
-                    found_ships = parse_found_ships(text)
-                    ships_found = stats["total_expeditions"].setdefault("ships_found", {})
-                    for sk, qty in found_ships.items():
-                        ships_found[sk] = ships_found.get(sk, 0) + qty
-
-                entry["summary"] = fmt_extracted(metal, crystal, deut, dark_matter, found_ships)
-
-                stats[key]["metal"] = stats[key].get("metal", 0) + metal
-                stats[key]["crystal"] = stats[key].get("crystal", 0) + crystal
-                stats[key]["deut"] = stats[key].get("deut", 0) + deut
-                if key == "total_expeditions":
-                    stats[key]["dark_matter"] = stats[key].get("dark_matter", 0) + dark_matter
-
-                parsed_set.add(msg_id)
-                stats["parsed_messages"].append(msg_id)
-                changed = True
-
-        # Avisos de "te han espiado" (tab 20). Su dedup/notificación vive en un libro mayor
-        # CSV persistente (spy_notifications.csv), no en parsed_messages, para garantizar UNA
-        # notificación por mensaje nuevo y reintentar si Telegram falla. Ver _process_spy_messages.
-        if getattr(self.cfg, "enable_spy_watch", True) and getattr(self.cfg, "spy_watch_messages", True):
-            self._process_spy_messages(record_msg)
-
-        if changed:
-            try:
-                with open(stats_file, "w", encoding="utf-8") as f:
-                    json.dump(stats, f, indent=2)
-                self.log.info("Estadísticas imperiales actualizadas en ogbot_stats.json.")
-            except Exception as e:
-                self.log.debug("No se pudo escribir ogbot_stats.json: %s", e)
-
-        if log_changed[0]:
-            try:
-                del msg_log[:-300]  # acotar el fichero a los 300 mensajes más recientes
-                with open(msg_log_file, "w", encoding="utf-8") as f:
-                    json.dump({"messages": msg_log}, f, ensure_ascii=False, indent=2)
-            except Exception as e:
-                self.log.debug("No se pudo escribir messages_read.json: %s", e)
-
-    def _own_location_summary(self, coords_str: str) -> str:
-        """Recursos + flota (planeta y, si tiene, luna) de un planeta PROPIO, para enriquecer
-        el aviso de espionaje con lo que hay en riesgo. Lee last_planets (datos del ciclo).
-        Devuelve '' si no se encuentra la ubicación."""
-        planet = None
-        for p in (getattr(self, "last_planets", None) or []):
-            c = getattr(p, "coords", None)
-            if c and f"{c.galaxy}:{c.system}:{c.position}" == coords_str:
-                planet = p
-                break
-        if planet is None:
-            return ""
-        f = lambda n: f"{int(n):,}".replace(",", ".")
-        ship_es = {k: v[0] for k, v in EXPEDITION_SHIP_NAMES}
-        def fleet_line(loc):
-            ships = getattr(loc, "ships", {}) or {}
-            items = [f"{ship_es.get(k, k)}: {f(q)}" for k, q in ships.items() if q]
-            return ", ".join(items) if items else "sin flota"
-        lines = []
-        r = getattr(planet, "resources", None)
-        if r is not None:
-            lines.append(f"• <b>Recursos:</b> M {f(r.metal)} · C {f(r.crystal)} · D {f(r.deut)}")
-        lines.append(f"• <b>Flota (planeta):</b> {fleet_line(planet)}")
-        moon = getattr(planet, "moon", None)
-        if moon is not None and (getattr(moon, "ships", {}) or {}):
-            lines.append(f"• <b>Flota (luna):</b> {fleet_line(moon)}")
-        return "\n".join(lines)
-
-    SPY_LEDGER_FILE = "spy_notifications.csv"
-
-    def _process_spy_messages(self, record_msg):
-        """Garantiza UNA notificación de Telegram por cada aviso de "te han espiado" (tab 20).
-
-        Usa spy_notifications.csv como libro mayor persistente y fuente de verdad:
-            msg_id, from, to, detected_at, notified, notified_at
-        - notified="1" -> ya avisado, no se repite.
-        - notified="0" -> detectado pero NO avisado (Telegram falló o no estaba configurado);
-          se reintenta el envío en cada ciclo hasta que llega.
-        El CSV persiste entre reinicios, así que un sondeo recibido con el bot caído se avisa
-        al volver. Solo la PRIMERA vez (sin CSV) se siembra el backlog como ya notificado para
-        no soltar un alud de avisos viejos.
-        """
-        import csv
-        import os
-        import re
-
-        ledger_file = self.SPY_LEDGER_FILE
-        fields = ["msg_id", "from", "to", "detected_at", "notified", "notified_at"]
-        ledger: Dict[str, dict] = {}
-        ledger_existed = os.path.exists(ledger_file)
-        if ledger_existed:
-            try:
-                with open(ledger_file, "r", encoding="utf-8", newline="") as f:
-                    for row in csv.DictReader(f):
-                        ledger[row["msg_id"]] = row
-            except Exception as e:
-                self.log.debug("No se pudo leer %s: %s", ledger_file, e)
-
-        tg_ok = bool(getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""))
-        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
-        changed = False
-
-        try:
-            msgs = self.client.read_message_reports(20)
-        except Exception as e:
-            self.log.debug("Error leyendo avisos de espionaje (tab 20): %s", e)
+        today = time.strftime("%Y-%m-%d")
+        if today == self._last_history_date:
             return
-
-        # Coords propias (planeta + luna comparten g:s:p) para distinguir "me han espiado"
-        # de mis propios informes. El OGame nuevo no usa frase: el aviso es una fila compacta
-        # (hace cuánto / nombre del espía / - / - / [tus coords]). La señal fiable e
-        # independiente del idioma es que las coords del mensaje son de un planeta MÍO.
-        own_coords = set()
-        for p in (getattr(self, "last_planets", None) or []):
+        m = c = d = 0
+        for p in self.last_planets:
+            for loc in [p] + ([p.moon] if getattr(p, "moon", None) else []):
+                r = getattr(loc, "resources", None)
+                if r is not None:
+                    m += int(r.metal); c += int(r.crystal); d += int(r.deut)
+        stats = {}
+        if os.path.exists("ogbot_stats.json"):
             try:
-                c = p.coords
-                own_coords.add(f"{c.galaxy}:{c.system}:{c.position}")
+                with open("ogbot_stats.json", "r", encoding="utf-8") as f:
+                    stats = json.load(f)
             except Exception:
-                pass
-        # Respaldo robusto: el caché persistente de planetas (siempre disponible, sin depender
-        # de que el ciclo ya haya leído ubicaciones cuando corre esta función).
-        try:
-            import json
-            with open("planets_cache.json", "r", encoding="utf-8") as f:
-                for p in json.load(f):
-                    if p.get("coords"):
-                        own_coords.add(p["coords"])
-                    moon = p.get("moon") or {}
-                    if moon.get("coords"):
-                        own_coords.add(moon["coords"])
-        except Exception:
-            pass
-
-        for m in msgs:
-            msg_id = f"20-{m['id']}"
-            entry = record_msg(20, m)  # registrar el texto siempre (para el visor de la GUI)
-            text = m.get("text", "") or ""
-            tl = text.lower()
-            coords = re.findall(r'\d+:\d+:\d+', text)
-            spied = next((c for c in coords if c in own_coords), None)
-            # Respaldo: algunos idiomas/servidores aún usan la frase larga.
-            phrase = ("se ha detectado una flota" in tl or "cerca de tu planeta" in tl
-                      or "near your planet" in tl)
-            if not spied and not phrase:
-                entry["summary"] = "Otro mensaje (sin aviso de espionaje)"
-                continue
-
-            # Parseo barato (sin abrir): planeta espiado. El origen, el % de contraespionaje y
-            # el nombre REAL del espía solo aparecen al ABRIR el mensaje (la fila compacta trae
-            # NUESTRO propio nombre, no el del espía), así que se rellenan más abajo y solo para
-            # los avisos nuevos (coste mínimo).
-            mine = spied or (coords[-1] if coords else "?")
-            origin = next((c for c in coords if c != mine), "?")
-            ce = re.search(r'contra-?espionaje[^\d]*(\d+)\s*%', tl)
-            ce_txt = f"{ce.group(1)}%" if ce else "?"
-            who = f"[{origin}]" if origin != "?" else "?"
-
-            row = ledger.get(msg_id)
-            if row and row.get("notified") == "1":
-                entry["summary"] = f"🔍 Te han espiado en [{mine}] (ya notificado)"
-                continue
-
-            # Primer arranque (sin libro mayor): sembrar el backlog como ya notificado para no
-            # soltar un alud de avisos viejos. A partir de ahí, todo mensaje nuevo se avisa.
-            if row is None and not ledger_existed:
-                ledger[msg_id] = {"msg_id": msg_id, "from": who, "to": mine,
-                                  "detected_at": now_str, "notified": "1", "notified_at": now_str}
-                entry["summary"] = f"🔍 Te han espiado en [{mine}] (backlog inicial, sin avisar)"
-                changed = True
-                continue
-
-            # Mensaje nuevo, o detectado antes pero pendiente de aviso (reintento).
-            if row is None:
-                row = {"msg_id": msg_id, "from": who, "to": mine,
-                       "detected_at": now_str, "notified": "0", "notified_at": ""}
-                ledger[msg_id] = row
-                changed = True
-                self.log.info("Vigilancia de espionaje (mensaje nuevo): %s en [%s]", msg_id, mine)
-
-            if not tg_ok:
-                entry["summary"] = f"🔍 Te han espiado en [{mine}] (Telegram no configurado, pendiente)"
-                continue
-
-            # Abrir el mensaje (solo avisos nuevos, justo antes de notificar). La fila compacta
-            # NO trae: coords de origen, % de contraespionaje, el nombre REAL del espía (va entre
-            # paréntesis tras las coords de origen; el de la fila es NUESTRO propio nombre) ni si
-            # nos espiaron la LUNA o el PLANETA.
-            spy_name = ""
-            mine_is_moon = None
-            try:
-                full = self.client.read_message_full(m["id"])
-            except Exception:
-                full = ""
-            if full:
-                if origin == "?":
-                    o = next((c for c in re.findall(r'\d+:\d+:\d+', full)
-                              if c not in own_coords), None)
-                    if o:
-                        origin = o
-                if ce_txt == "?":
-                    fce = re.search(r'contra-?espionaje[^\d]*(\d+)\s*%', full.lower())
-                    if fce:
-                        ce_txt = f"{fce.group(1)}%"
-                sm = re.search(r'\(([^)]{2,40})\)', full)   # nombre del espía, entre paréntesis
-                if sm:
-                    spy_name = sm.group(1).strip()
-                # ¿Mi LUNA o mi PLANETA? Lo que precede a mis coords en "cerca de tu planeta".
-                bm = re.search(r'(?:cerca de tu planeta|near your planet)\s+(.*?)\[' +
-                               re.escape(mine), full, re.I)
-                if bm:
-                    mine_is_moon = bool(re.search(r'luna|moon', bm.group(1), re.I))
-
-            who = spy_name or (f"[{origin}]" if origin != "?" else "desconocido")
-            mi_loc = "luna" if mine_is_moon else ("planeta" if mine_is_moon is False else "ubicación")
-            parts = [f"• <b>Tu {mi_loc}:</b> [{mine}]"]
-            if origin != "?":
-                parts.append(f"• <b>Origen:</b> [{origin}]")
-            if spy_name:
-                parts.append(f"• <b>Espía:</b> {spy_name}")
-            parts.append(f"• <b>Prob. contraespionaje:</b> {ce_txt}")
-            loc_summary = self._own_location_summary(mine)
-            if loc_summary:
-                parts.append(loc_summary)
-            alert = (
-                "🔍 <b>¡Te han espiado en OGame!</b>\n\n" + "\n".join(parts) +
-                "\n\n<i>Un sondeo suele preceder a un ataque. Revisa o saca la flota.</i>"
-            )
-            ok = utils.send_telegram_message(self.cfg.telegram_token, self.cfg.telegram_chat_id,
-                                             alert, logger=self.log, block=True)
-            if ok:
-                row["notified"] = "1"
-                row["notified_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                row["from"] = spy_name or (origin if origin != "?" else "?")
-                entry["summary"] = f"🔍 Te han espiado en [{mine}] (espía {who}, avisado)"
-                self.log.info("Aviso de espionaje notificado por Telegram: %s en [%s] (origen %s)", msg_id, mine, who)
-            else:
-                entry["summary"] = f"🔍 Te han espiado en [{mine}] (fallo de Telegram, se reintentará)"
-                self.log.warning("Fallo al notificar espionaje %s; se reintentará el próximo ciclo.", msg_id)
-            changed = True
-
-        if changed:
-            # ponytail: reescribe el CSV entero; trivial para la decena de avisos de espionaje,
-            # pasar a append solo si algún día crece de verdad.
-            try:
-                with open(ledger_file, "w", encoding="utf-8", newline="") as f:
-                    w = csv.DictWriter(f, fieldnames=fields)
-                    w.writeheader()
-                    for r in ledger.values():
-                        w.writerow(r)
-            except Exception as e:
-                self.log.debug("No se pudo escribir %s: %s", ledger_file, e)
+                stats = {}
+        farm = stats.get("total_farming") or {}
+        expe = stats.get("total_expeditions") or {}
+        hostiles = (stats.get("session_actions") or {}).get("hostile_attacks") or {}
+        entry = {
+            "ts": int(time.time()),
+            "date": today,
+            "metal": m, "crystal": c, "deut": d,
+            "farm_metal": int(farm.get("metal", 0) or 0),
+            "farm_crystal": int(farm.get("crystal", 0) or 0),
+            "farm_deut": int(farm.get("deut", 0) or 0),
+            "expe_metal": int(expe.get("metal", 0) or 0),
+            "expe_crystal": int(expe.get("crystal", 0) or 0),
+            "expe_deut": int(expe.get("deut", 0) or 0),
+            "expe_dark_matter": int(expe.get("dark_matter", 0) or 0),
+            "hostile_attacks": sum(len(v or []) for v in hostiles.values()),
+        }
+        with open("stats_history.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self._last_history_date = today
+        self._save_state()
 
     def _calculate_panic_build(self, planet: Planet) -> Dict[str, int]:
         """
@@ -3683,12 +3501,14 @@ def parse_time_to_seconds(time_str: str) -> Optional[int]:
         h, m, s = map(int, m_hms.groups())
         return h * 3600 + m * 60 + s
     
-    # Formato Xh Ym Zs / Ym Zs / Zs / etc.
-    parts = re.findall(r'(\d+)\s*([hms])', time_str)
+    # Formato Xd Yh Zm Ws / Xh Ym Zs / Ym Zs / Zs / etc.
+    parts = re.findall(r'(\d+)\s*([dhms])', time_str)
     if parts:
         total_seconds = 0
         for val, unit in parts:
-            if unit == 'h':
+            if unit == 'd':
+                total_seconds += int(val) * 86400
+            elif unit == 'h':
                 total_seconds += int(val) * 3600
             elif unit == 'm':
                 total_seconds += int(val) * 60

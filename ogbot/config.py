@@ -175,6 +175,18 @@ class Config:
     fleetsave_carry_resources: bool = True   # llevarse los recursos del planeta en el fleetsave
     fleetsave_recall_halfway: bool = False   # retornar despliegues a mitad del descanso
     fleetsave_prefer_moon: bool = True       # preferir destino LUNA (no escaneable por phalanx)
+    fleetsave_warn_phalanx: bool = True      # avisar por Telegram si el fleetsave queda expuesto a phalanx
+    # Slots de flota reservados para emergencias (evasión/fleetsave). El farmeo,
+    # las expediciones y la alimentación nunca consumen estos slots.
+    keep_free_fleet_slots: int = 1
+    # Comandos por Telegram (/status, /fleetsave, /recall, /pausa...). Solo atiende
+    # al chat_id configurado en telegram_chat_id.
+    enable_telegram_commands: bool = True
+    # Canario de selectores: al arrancar verifica los selectores clave del DOM y
+    # avisa por Telegram si GameForge cambió la interfaz.
+    enable_selector_canary: bool = True
+    # Perfil de riesgo aplicado desde la GUI (informativo): paranoid/normal/aggressive
+    risk_profile: str = "normal"
     # Barrido nocturno: cada N horas durante el descanso, vacía (fleetsave) los planetas
     # activados para recoger la flota fabricada de noche. Activable por planeta.
     enable_night_sweep: bool = False

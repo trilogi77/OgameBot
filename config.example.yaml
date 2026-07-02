@@ -145,6 +145,11 @@ spy_watch_cooldown_mins: 30        # no re-avisar del mismo origen dentro de est
 spy_watch_messages: true           # avisar también vía mensajes de contraespionaje en la bandeja
 fleetsave_mission: deploy
 fleetsave_prefer_moon: true    # preferir destino luna en el fleetsave (no escaneable por phalanx)
+fleetsave_warn_phalanx: true   # avisar por Telegram si el fleetsave queda expuesto a phalanx
+keep_free_fleet_slots: 1       # slots reservados para emergencias (evasión/fleetsave)
+enable_telegram_commands: true # /status /fleetsave /recall /pausa por Telegram (solo tu chat_id)
+enable_selector_canary: true   # al arrancar, verifica selectores clave del DOM y avisa si cambió la interfaz
+risk_profile: normal           # perfil aplicado desde la GUI: paranoid/normal/aggressive (informativo)
 # Barrido nocturno: cada N horas durante el descanso, despierta y vacía (fleetsave)
 # los planetas activados, para recoger la flota fabricada de noche. Actívalo por
 # planeta en la pestaña "Por Planeta" (así no haces actividad en todos).

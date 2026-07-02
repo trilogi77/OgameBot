@@ -299,6 +299,8 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.get_flights(account)
         elif path == "/api/stats":
             self.get_stats(account)
+        elif path == "/api/history":
+            self.get_history(account)
         elif path == "/api/messages":
             self._send_json_file(account, "messages_read.json", {"messages": []})
         elif path == "/api/expedition":
@@ -330,6 +332,8 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.stop_bot(account)
         elif path == "/api/locator":
             self.run_locator(account)
+        elif path == "/api/simulate":
+            self.run_simulation(account)
         elif path == "/api/telegram/test":
             self.test_telegram(account)
         elif path == "/api/resync":
@@ -591,6 +595,89 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
             "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}}
         })
+
+    def get_history(self, account):
+        """Histórico diario (stats_history.jsonl): últimas 180 líneas, tolerante a corruptas."""
+        if not account:
+            return self.send_json(200, {"history": []})
+        p = acc_path(account, "stats_history.jsonl")
+        entries = []
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()[-180:]
+            except Exception as e:
+                return self.send_json(500, {"error": str(e)})
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(entry, dict):
+                    entries.append(entry)
+        self.send_json(200, {"history": entries})
+
+    def run_simulation(self, account):
+        """Simulador de combate '¿Ataco?': Monte Carlo sobre ogbot.combat."""
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b"{}")
+        except Exception:
+            body = {}
+        try:
+            from ogbot.combat import Tech, monte_carlo, simulate
+        except Exception as e:
+            return self.send_json(500, {"error": f"No se pudo importar el simulador: {e}"})
+
+        def clean_fleet(d):
+            out = {}
+            for k, v in (d or {}).items():
+                try:
+                    n = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if n > 0:
+                    out[str(k)] = n
+            return out
+
+        def to_tech(d):
+            d = d if isinstance(d, dict) else {}
+            def lvl(key):
+                try:
+                    return max(0, int(d.get(key, 0)))
+                except (TypeError, ValueError):
+                    return 0
+            return Tech(weapons=lvl("weapons"), shielding=lvl("shielding"), armor=lvl("armor"))
+
+        attacker = clean_fleet(body.get("attacker"))
+        if not attacker:
+            return self.send_json(400, {"error": "La flota atacante está vacía"})
+        attacker_tech = to_tech(body.get("attacker_tech"))
+        defender_fleet = clean_fleet(body.get("defender_fleet"))
+        defender_defense = clean_fleet(body.get("defender_defense"))
+        defender_tech = to_tech(body.get("defender_tech"))
+        try:
+            runs = max(1, min(200, int(body.get("runs", 30))))
+        except (TypeError, ValueError):
+            runs = 30
+        try:
+            result = monte_carlo(attacker, attacker_tech, defender_fleet,
+                                 defender_defense, defender_tech, runs=runs)
+            # monte_carlo no devuelve escombros: se promedian con simulaciones extra
+            debris_runs = min(runs, 10)
+            debris = {}
+            for _ in range(debris_runs):
+                r = simulate(attacker, attacker_tech, defender_fleet,
+                             defender_defense, defender_tech)
+                for k, v in r.debris.items():
+                    debris[k] = debris.get(k, 0.0) + v
+            result["avg_debris"] = {k: round(v / debris_runs) for k, v in debris.items()}
+            result["verdict"] = "attack" if result.get("win_rate", 0) >= 0.95 else "risky"
+            self.send_json(200, result)
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
 
     def get_expedition_status(self, account):
         self._send_json_file(account, "expedition_status.json", {})

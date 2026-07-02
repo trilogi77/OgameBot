@@ -1803,3 +1803,153 @@ body {
 }
 
 
+
+/* ==========================================================================
+   Histórico (gráficas), Simulador ¿Ataco? y Perfiles de riesgo
+   ========================================================================== */
+.chart-card {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.chart-card h4 {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.chart-canvas {
+    width: 100%;
+    max-width: 100%;
+    display: block;
+}
+
+.chart-legend {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+/* Simulador ¿Ataco? */
+.sim-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+.sim-group {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 16px;
+}
+
+.sim-group h4 {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.sim-inputs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 12px;
+}
+
+.sim-field label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 3px;
+}
+
+.sim-field input {
+    width: 100%;
+    padding: 6px 8px;
+    font-size: 13px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    color: var(--text-primary);
+}
+
+.sim-verdict {
+    font-family: "Outfit", sans-serif;
+    font-size: 26px;
+    font-weight: 800;
+    text-align: center;
+    padding: 16px;
+    border-radius: 12px;
+    letter-spacing: 1px;
+}
+
+.sim-verdict.attack {
+    color: var(--accent-success);
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid var(--accent-success);
+}
+
+.sim-verdict.risky {
+    color: var(--accent-danger);
+    background: rgba(244, 63, 94, 0.12);
+    border: 1px solid var(--accent-danger);
+}
+
+/* Perfiles de riesgo (Globales) */
+.risk-profile-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.risk-profile-badge {
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    border: 1px solid var(--accent-secondary);
+    color: var(--accent-secondary);
+    background: rgba(0, 210, 255, 0.08);
+}
+
+.risk-profile-badge.paranoid {
+    border-color: var(--accent-success);
+    color: var(--accent-success);
+    background: rgba(16, 185, 129, 0.08);
+}
+
+.risk-profile-badge.aggressive {
+    border-color: var(--accent-danger);
+    color: var(--accent-danger);
+    background: rgba(244, 63, 94, 0.08);
+}
+
+@media (max-width: 900px) {
+    .sim-grid { grid-template-columns: 1fr; }
+    .sim-inputs { grid-template-columns: 1fr; }
+}

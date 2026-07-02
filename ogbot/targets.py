@@ -53,7 +53,9 @@ def evaluate(report: EspionageReport, origin: Coords, fleet: Dict[str, int],
 
     # combustible ida + vuelta
     fuel = 2 * gd.fuel_cost(fleet, dist, 1.0, cfg.fleet_speed)
-    slowest = min((gd.SHIPS[n].speed for n in fleet if fleet[n] > 0), default=1)
+    # Filtrar naves desconocidas (KeyError) y velocidad 0 (solar_satellite -> división por cero)
+    slowest = min((gd.SHIPS[n].speed for n in fleet
+                   if fleet[n] > 0 and n in gd.SHIPS and gd.SHIPS[n].speed > 0), default=1)
     ftime = gd.flight_time(dist, slowest, 1.0, cfg.fleet_speed)
 
     needs_clearing = not report.is_undefended

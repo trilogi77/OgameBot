@@ -3,6 +3,7 @@
 // ==========================================================================
 
 let globalConfig = {};
+let configSnapshot = null;     // copia profunda de la config tal y como llegó del servidor (para guardar solo diffs)
 let planetsCache = [];
 let fleetInMotionCache = {};   // naves en vuelo (flotas en movimiento)
 let localPlanetsConfig = {};
@@ -10,6 +11,17 @@ let researchPriorityList = [];
 let configLoaded = false;
 let currentAccount = localStorage.getItem("ogbot_account") || "";
 let accountsCache = [];
+
+// Parseo numérico seguro: campo vacío/no numérico => default (nunca 0 por accidente)
+function parseI(val, def = null) {
+    const parsed = parseInt(val);
+    return isNaN(parsed) ? def : parsed;
+}
+
+function parseF(val, def = null) {
+    const parsed = parseFloat(val);
+    return isNaN(parsed) ? def : parsed;
+}
 
 // Añade ?account=<actual> a las rutas de API (multicuenta)
 function api(path) {
@@ -82,6 +94,7 @@ function switchAccount(id) {
     currentAccount = id;
     localStorage.setItem("ogbot_account", id);
     configLoaded = false;
+    configSnapshot = null;
     messagesCache = [];
     lastMessagesSig = "";
     flightsCache = [];
@@ -100,6 +113,7 @@ function switchAccount(id) {
     checkBotStatus();
     loadExpeditionStatus();
     loadBuildStatus();
+    loadHistory();
 }
 
 function createAccount() {
@@ -373,6 +387,7 @@ function loadConfig() {
                 return;
             }
             globalConfig = data;
+            configSnapshot = JSON.parse(JSON.stringify(data));
             localPlanetsConfig = data.planets_config || {};
             mapConfigToUI(data);
             if (!configLoaded) {
@@ -396,6 +411,15 @@ function mapConfigToUI(cfg) {
         setVal("active_hours_start", cfg.active_hours[0]);
         setVal("active_hours_end", cfg.active_hours[1]);
     }
+
+    // Perfil de riesgo y ritmo/límites
+    updateRiskProfileBadge(cfg.risk_profile || "normal");
+    setVal("cycle_interval_min_s", cfg.cycle_interval_min_s !== undefined ? cfg.cycle_interval_min_s : 600);
+    setVal("cycle_interval_max_s", cfg.cycle_interval_max_s !== undefined ? cfg.cycle_interval_max_s : 1500);
+    setVal("min_action_delay_s", cfg.min_action_delay_s !== undefined ? cfg.min_action_delay_s : 3);
+    setVal("max_action_delay_s", cfg.max_action_delay_s !== undefined ? cfg.max_action_delay_s : 11);
+    setVal("max_actions_per_hour", cfg.max_actions_per_hour !== undefined ? cfg.max_actions_per_hour : 40);
+    setVal("farming_attack_cooldown_hours", cfg.farming_attack_cooldown_hours !== undefined ? cfg.farming_attack_cooldown_hours : 2);
 
     setCheck("dry_run", cfg.dry_run);
     setCheck("headless", cfg.headless);
@@ -498,6 +522,12 @@ function mapConfigToUI(cfg) {
 }
 
 function saveChanges() {
+    // Sin config cargada no se guarda nada: se machacaría el YAML con valores por defecto
+    if (!configLoaded || !configSnapshot) {
+        showToast("La configuración aún no se ha cargado. Espera un momento y vuelve a intentarlo.", "danger");
+        return;
+    }
+
     // Guardar objetivos de defensa actuales del planeta seleccionado en memoria
     const selectedPlanetCoords = document.getElementById("defense_planet_select").value;
     if (selectedPlanetCoords) {
@@ -513,7 +543,7 @@ function saveChanges() {
     // Actualizar globalConfig desde la UI
     globalConfig.universe = getVal("universe");
     globalConfig.country = getVal("country");
-    globalConfig.universe_speed = parseFloat(getVal("universe_speed")) || 1;
+    globalConfig.universe_speed = parseF(getVal("universe_speed"), 1);
     globalConfig.server_url = getVal("server_url");
     globalConfig.username = getVal("username");
     globalConfig.password = getVal("password");
@@ -528,10 +558,16 @@ function saveChanges() {
     globalConfig.headless = getCheck("headless");
     globalConfig.monitor_only = getCheck("monitor_only");
     globalConfig.enable_attack_escape = getCheck("enable_attack_escape");
-    globalConfig.attack_check_interval_min_s = (parseInt(getVal("attack_check_min_mins")) || 5) * 60;
-    globalConfig.attack_check_interval_max_s = (parseInt(getVal("attack_check_max_mins")) || 13) * 60;
+    globalConfig.attack_check_interval_min_s = parseI(getVal("attack_check_min_mins"), 5) * 60;
+    globalConfig.attack_check_interval_max_s = parseI(getVal("attack_check_max_mins"), 13) * 60;
+    globalConfig.cycle_interval_min_s = parseF(getVal("cycle_interval_min_s"), 600);
+    globalConfig.cycle_interval_max_s = parseF(getVal("cycle_interval_max_s"), 1500);
+    globalConfig.min_action_delay_s = parseF(getVal("min_action_delay_s"), 3);
+    globalConfig.max_action_delay_s = parseF(getVal("max_action_delay_s"), 11);
+    globalConfig.max_actions_per_hour = parseI(getVal("max_actions_per_hour"), 40);
+    globalConfig.farming_attack_cooldown_hours = parseF(getVal("farming_attack_cooldown_hours"), 2);
     globalConfig.enable_spy_watch = getCheck("enable_spy_watch");
-    globalConfig.spy_watch_cooldown_mins = parseInt(getVal("spy_watch_cooldown_mins")) || 30;
+    globalConfig.spy_watch_cooldown_mins = parseI(getVal("spy_watch_cooldown_mins"), 30);
     globalConfig.spy_watch_messages = getCheck("spy_watch_messages");
     globalConfig.enable_fleetsave = getCheck("enable_fleetsave");
     globalConfig.fleetsave_mission = getVal("fleetsave_mission");
@@ -539,76 +575,80 @@ function saveChanges() {
     globalConfig.fleetsave_recall_halfway = getCheck("fleetsave_recall_halfway");
     globalConfig.fleetsave_prefer_moon = getCheck("fleetsave_prefer_moon");
     globalConfig.enable_night_sweep = getCheck("enable_night_sweep");
-    let _nsi = parseFloat(getVal("night_sweep_interval_hours"));
-    globalConfig.night_sweep_interval_hours = (isNaN(_nsi) || _nsi <= 0) ? 2.0 : _nsi;
+    const _nsi = parseF(getVal("night_sweep_interval_hours"), 2.0);
+    globalConfig.night_sweep_interval_hours = _nsi <= 0 ? 2.0 : _nsi;
     globalConfig.telegram_token = getVal("telegram_token");
     globalConfig.telegram_chat_id = getVal("telegram_chat_id");
 
     globalConfig.enable_economy = getCheck("enable_economy");
-    globalConfig.economy_run_interval_mins = parseInt(getVal("economy_run_interval_mins")) || 0;
+    globalConfig.economy_run_interval_mins = parseI(getVal("economy_run_interval_mins"), 0);
     globalConfig.enable_research = getCheck("enable_research");
     globalConfig.enable_facilities = getCheck("enable_facilities");
     globalConfig.enable_farming = getCheck("enable_farming");
-    globalConfig.farming_run_interval_mins = parseInt(getVal("farming_run_interval_mins")) || 0;
+    globalConfig.farming_run_interval_mins = parseI(getVal("farming_run_interval_mins"), 0);
     globalConfig.enable_fleet_building = getCheck("enable_fleet_building");
     globalConfig.enable_expeditions = getCheck("enable_expeditions");
-    globalConfig.expeditions_run_interval_mins = parseInt(getVal("expeditions_run_interval_mins")) || 0;
+    globalConfig.expeditions_run_interval_mins = parseI(getVal("expeditions_run_interval_mins"), 0);
     globalConfig.expedition_auto_ships = getCheck("expedition_auto_ships");
     globalConfig.expedition_smart_schedule = getCheck("expedition_smart_schedule");
     globalConfig.expedition_rotate_systems = getCheck("expedition_rotate_systems");
     globalConfig.expedition_use_pathfinder = getCheck("expedition_use_pathfinder");
     globalConfig.expedition_send_probe = getCheck("expedition_send_probe");
-    globalConfig.expedition_probe_count = parseInt(getVal("expedition_probe_count")) || 1;
+    globalConfig.expedition_probe_count = parseI(getVal("expedition_probe_count"), 1);
     globalConfig.expedition_discoverer_class = getCheck("expedition_discoverer_class");
-    globalConfig.expedition_destroyer_count = parseInt(getVal("expedition_destroyer_count")) || 0;
+    globalConfig.expedition_destroyer_count = parseI(getVal("expedition_destroyer_count"), 0);
     globalConfig.expedition_cargo_ship = getVal("expedition_cargo_ship") || "large_cargo";
-    globalConfig.expedition_hyperspace_level = parseInt(getVal("expedition_hyperspace_level")) || 0;
-    globalConfig.expedition_top1_points = parseInt(getVal("expedition_top1_points")) || 0;
-    globalConfig.expedition_find_safety = parseFloat(getVal("expedition_find_safety")) || 1.0;
-    globalConfig.expedition_min_cargo = parseInt(getVal("expedition_min_cargo")) || 1;
-    globalConfig.expedition_max_cargo = parseInt(getVal("expedition_max_cargo")) || 0;
-    let _expHold = parseFloat(getVal("expedition_hold_hours"));
-    globalConfig.expedition_hold_hours = isNaN(_expHold) ? 1.0 : _expHold;
-    let _expRange = parseInt(getVal("expedition_system_range"));
-    globalConfig.expedition_system_range = isNaN(_expRange) ? 15 : _expRange;
-    globalConfig.expedition_position = parseInt(getVal("expedition_position")) || 16;
+    globalConfig.expedition_hyperspace_level = parseI(getVal("expedition_hyperspace_level"), 0);
+    globalConfig.expedition_top1_points = parseI(getVal("expedition_top1_points"), 0);
+    globalConfig.expedition_find_safety = parseF(getVal("expedition_find_safety"), 1.0);
+    globalConfig.expedition_min_cargo = parseI(getVal("expedition_min_cargo"), 1);
+    globalConfig.expedition_max_cargo = parseI(getVal("expedition_max_cargo"), 0);
+    globalConfig.expedition_hold_hours = parseF(getVal("expedition_hold_hours"), 1.0);
+    globalConfig.expedition_system_range = parseI(getVal("expedition_system_range"), 15);
+    globalConfig.expedition_position = parseI(getVal("expedition_position"), 16);
     globalConfig.enable_recycling = getCheck("enable_recycling");
-    globalConfig.recycling_run_interval_mins = parseInt(getVal("recycling_run_interval_mins")) || 0;
+    globalConfig.recycling_run_interval_mins = parseI(getVal("recycling_run_interval_mins"), 0);
     globalConfig.enable_defense = getCheck("enable_defense");
     globalConfig.enable_lifeforms = getCheck("enable_lifeforms");
     globalConfig.enable_colonization = getCheck("enable_colonization");
     globalConfig.only_inactive_targets = getCheck("only_inactive_targets");
-    globalConfig.max_attack_targets_per_cycle = parseInt(getVal("max_attack_targets_per_cycle")) || 8;
-    globalConfig.min_loot_value = parseInt(getVal("min_loot_value")) || 50000;
+    globalConfig.max_attack_targets_per_cycle = parseI(getVal("max_attack_targets_per_cycle"), 8);
+    globalConfig.min_loot_value = parseI(getVal("min_loot_value"), 50000);
     globalConfig.farm_with_probes = getCheck("farm_with_probes");
-    globalConfig.espionage_probe_cargo = parseInt(getVal("espionage_probe_cargo")) || 0;
+    globalConfig.espionage_probe_cargo = parseI(getVal("espionage_probe_cargo"), 0);
 
     // Guardar objetivos de flota
     globalConfig.fleet_targets = {
-        large_cargo: parseInt(getVal("target_large_cargo")) || 0,
-        small_cargo: parseInt(getVal("target_small_cargo")) || 0,
-        recycler: parseInt(getVal("target_recycler")) || 0,
-        espionage_probe: parseInt(getVal("target_espionage_probe")) || 0,
-        light_fighter: parseInt(getVal("target_light_fighter")) || 0,
-        cruiser: parseInt(getVal("target_cruiser")) || 0,
-        battleship: parseInt(getVal("target_battleship")) || 0
+        large_cargo: parseI(getVal("target_large_cargo"), 0),
+        small_cargo: parseI(getVal("target_small_cargo"), 0),
+        recycler: parseI(getVal("target_recycler"), 0),
+        espionage_probe: parseI(getVal("target_espionage_probe"), 0),
+        light_fighter: parseI(getVal("target_light_fighter"), 0),
+        cruiser: parseI(getVal("target_cruiser"), 0),
+        battleship: parseI(getVal("target_battleship"), 0)
     };
 
     // Guardar plantilla de flota de ataque (farmeo)
     globalConfig.attacker_fleet_template = {
-        small_cargo: parseInt(getVal("temp_small_cargo")) || 0,
-        large_cargo: parseInt(getVal("temp_large_cargo")) || 0,
-        light_fighter: parseInt(getVal("temp_light_fighter")) || 0,
-        cruiser: parseInt(getVal("temp_cruiser")) || 0
+        small_cargo: parseI(getVal("temp_small_cargo"), 0),
+        large_cargo: parseI(getVal("temp_large_cargo"), 0),
+        light_fighter: parseI(getVal("temp_light_fighter"), 0),
+        cruiser: parseI(getVal("temp_cruiser"), 0)
     };
 
-    // Guardar límites de investigación
-    globalConfig.research_caps = {
-        energy_tech: parseInt(getVal("cap_energy_tech")) || 0,
-        laser_tech: parseInt(getVal("cap_laser_tech")) || 0,
-        ion_tech: parseInt(getVal("cap_ion_tech")) || 0,
-        hyperspace_tech: parseInt(getVal("cap_hyperspace_tech")) || 0
-    };
+    // Guardar límites de investigación: solo las claves con valor. Un campo vacío
+    // NO es 0 ("nunca investigar"); si todos están vacíos no se toca research_caps.
+    const researchCaps = {};
+    [["energy_tech", "cap_energy_tech"],
+     ["laser_tech", "cap_laser_tech"],
+     ["ion_tech", "cap_ion_tech"],
+     ["hyperspace_tech", "cap_hyperspace_tech"]].forEach(([key, inputId]) => {
+        const cap = parseI(getVal(inputId), null);
+        if (cap !== null) researchCaps[key] = cap;
+    });
+    if (Object.keys(researchCaps).length > 0) {
+        globalConfig.research_caps = researchCaps;
+    }
 
     // Guardar flota de expedición (dinámico)
     const expShips = {};
@@ -616,7 +656,7 @@ function saveChanges() {
     rows.forEach(row => {
         const shipType = row.dataset.shipType;
         const qtyInput = row.querySelector(".exp-ship-qty");
-        const qty = parseInt(qtyInput.value) || 0;
+        const qty = parseI(qtyInput.value, 0);
         if (qty > 0) {
             expShips[shipType] = qty;
         }
@@ -624,19 +664,14 @@ function saveChanges() {
     globalConfig.expedition_ships = expShips;
 
     // Guardar objetivos de minas
-    globalConfig.target_metal_mine = parseInt(getVal("target_metal_mine")) || 99;
-    globalConfig.target_crystal_mine = parseInt(getVal("target_crystal_mine")) || 99;
-    globalConfig.target_deut_synth = parseInt(getVal("target_deut_synth")) || 99;
-    globalConfig.target_mine_ratio_payback_hours = parseInt(getVal("target_mine_ratio_payback_hours")) || 30;
+    globalConfig.target_metal_mine = parseI(getVal("target_metal_mine"), 99);
+    globalConfig.target_crystal_mine = parseI(getVal("target_crystal_mine"), 99);
+    globalConfig.target_deut_synth = parseI(getVal("target_deut_synth"), 99);
+    globalConfig.target_mine_ratio_payback_hours = parseI(getVal("target_mine_ratio_payback_hours"), 30);
 
     // Guardar objetivos de defensas
-    const parseI = (val, def) => {
-        const parsed = parseInt(val);
-        return isNaN(parsed) ? def : parsed;
-    };
-
     globalConfig.defense_batch_size = parseI(getVal("defense_batch_size"), 25);
-    globalConfig.recycling_min_debris = parseInt(getVal("recycling_min_debris")) || 8000;
+    globalConfig.recycling_min_debris = parseI(getVal("recycling_min_debris"), 8000);
 
     // Guardar prioridades de investigación
     globalConfig.research_priority = researchPriorityList;
@@ -683,15 +718,28 @@ function saveChanges() {
 
     globalConfig.planets_config = localPlanetsConfig;
 
-    // Guardar
+    // Guardado por diff: POSTear solo las claves que cambiaron respecto al snapshot
+    // (el backend hace merge clave a clave, así que lo no enviado se conserva).
+    const changed = {};
+    Object.keys(globalConfig).forEach(key => {
+        if (JSON.stringify(globalConfig[key]) !== JSON.stringify(configSnapshot[key])) {
+            changed[key] = globalConfig[key];
+        }
+    });
+    if (Object.keys(changed).length === 0) {
+        showToast("No hay cambios que guardar", "success");
+        return;
+    }
+
     fetch(api("/api/config"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(globalConfig)
+        body: JSON.stringify(changed)
     })
     .then(res => res.json())
     .then(data => {
         if (data.status === "success") {
+            configSnapshot = JSON.parse(JSON.stringify(globalConfig));
             showToast("Configuración guardada correctamente", "success");
         } else {
             showToast("Error al guardar: " + data.error, "danger");
@@ -1172,10 +1220,11 @@ function getCheck(id) {
     return el ? el.checked : false;
 }
 
+let toastTimer = null;
 function showToast(message, type) {
     saveStatus.innerText = message;
     saveStatus.className = "save-status show";
-    
+
     if (type === "success") {
         saveStatus.style.color = "var(--accent-success)";
     } else if (type === "danger") {
@@ -1183,8 +1232,10 @@ function showToast(message, type) {
     } else {
         saveStatus.style.color = "var(--accent-secondary)";
     }
-    
-    setTimeout(() => {
+
+    // Cancelar el timer del toast anterior: que un éxito previo no tape un error nuevo
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
         saveStatus.classList.remove("show");
     }, 4000);
 }
@@ -1804,7 +1855,7 @@ function renderExpeditionShips(cfg) {
 
     const expShips = cfg.expedition_ships || {};
     Object.keys(expShips).forEach(shipKey => {
-        const qty = parseInt(expShips[shipKey]) || 0;
+        const qty = parseI(expShips[shipKey], 0);
         if (qty > 0) {
             addExpeditionShipRow(shipKey, qty);
         }
@@ -2031,7 +2082,7 @@ function saveCurrentDefenseTargetsInMemory(coords) {
         const input = row.querySelector(".def-target-input");
         
         if (chk && chk.checked) {
-            const targetQty = parseInt(input.value) || 0;
+            const targetQty = parseI(input.value, 0);
             if (targetQty > 0) {
                 defenseTargets[key] = targetQty;
             }
@@ -2171,7 +2222,7 @@ function saveCurrentFacilitiesTargetsInMemory(coords) {
         const input = row.querySelector(".fac-target-input");
         
         if (chk && chk.checked) {
-            const targetQty = parseInt(input.value) || 0;
+            const targetQty = parseI(input.value, 0);
             if (targetQty > 0) {
                 localPlanetsConfig[coords][configField] = targetQty;
             } else {
@@ -2834,3 +2885,336 @@ function updateLiveTab() {
 
 
 
+
+// --------------------------------------------------------------------------
+// Histórico diario (gráficas en canvas, sin dependencias)
+// --------------------------------------------------------------------------
+let historyCache = [];
+
+function cssColor(varName, fallback) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+    return v || fallback;
+}
+
+function formatShortNumber(num) {
+    const abs = Math.abs(num);
+    if (abs >= 1e9) return (num / 1e9).toFixed(1) + "G";
+    if (abs >= 1e6) return (num / 1e6).toFixed(1) + "M";
+    if (abs >= 1e3) return (num / 1e3).toFixed(1) + "k";
+    return Math.round(num).toString();
+}
+
+// series: [{name, color, values: [num|null]}], labels: eje X (fechas)
+function drawLineChart(canvas, series, labels) {
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    const padL = 58, padR = 14, padT = 12, padB = 26;
+    const plotW = W - padL - padR, plotH = H - padT - padB;
+
+    // Escala automática
+    let minV = Infinity, maxV = -Infinity;
+    series.forEach(s => s.values.forEach(v => {
+        if (typeof v === "number" && !isNaN(v)) {
+            if (v < minV) minV = v;
+            if (v > maxV) maxV = v;
+        }
+    }));
+    if (minV === Infinity) { minV = 0; maxV = 1; }
+    if (minV > 0) minV = 0;                      // anclar a 0 para no exagerar variaciones
+    if (maxV === minV) maxV = minV + 1;
+
+    const n = labels.length;
+    const x = i => padL + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+    const y = v => padT + plotH - ((v - minV) / (maxV - minV)) * plotH;
+
+    // Rejilla horizontal + etiquetas del eje Y
+    ctx.font = "10px Inter, sans-serif";
+    ctx.fillStyle = cssColor("--text-secondary", "#9ca3af");
+    const ticks = 4;
+    for (let t = 0; t <= ticks; t++) {
+        const v = minV + (maxV - minV) * t / ticks;
+        const yy = y(v);
+        ctx.strokeStyle = "rgba(255,255,255,0.08)";
+        ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke();
+        ctx.textAlign = "right"; ctx.textBaseline = "middle";
+        ctx.fillText(formatShortNumber(v), padL - 6, yy);
+    }
+    // Ejes
+    ctx.strokeStyle = "rgba(255,255,255,0.25)";
+    ctx.beginPath();
+    ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH);
+    ctx.stroke();
+
+    // Etiquetas del eje X (primera, media, última si hay muchas)
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    const xIdx = n > 6 ? [0, Math.floor((n - 1) / 2), n - 1] : labels.map((_, i) => i);
+    xIdx.forEach(i => ctx.fillText(labels[i] || "", x(i), H - padB + 6));
+
+    // Líneas de datos
+    series.forEach(s => {
+        ctx.strokeStyle = s.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        let started = false;
+        s.values.forEach((v, i) => {
+            if (typeof v !== "number" || isNaN(v)) return;
+            if (!started) { ctx.moveTo(x(i), y(v)); started = true; }
+            else ctx.lineTo(x(i), y(v));
+        });
+        ctx.stroke();
+    });
+}
+
+function renderChartLegend(elId, series) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    el.innerHTML = series.map(s =>
+        `<span class="legend-item"><span class="legend-dot" style="background:${s.color}"></span>${s.name}</span>`
+    ).join("");
+}
+
+function loadHistory() {
+    fetch(api("/api/history"))
+        .then(r => r.json())
+        .then(data => {
+            historyCache = data.history || [];
+            renderHistoryCharts();
+        })
+        .catch(() => {});
+}
+
+// Nombres legibles para los acumulados conocidos del histórico
+const HISTORY_KEY_NAMES = {
+    "farming_metal": "Botín metal", "farming_crystal": "Botín cristal", "farming_deut": "Botín deuterio",
+    "expeditions_metal": "Exped. metal", "expeditions_crystal": "Exped. cristal", "expeditions_deut": "Exped. deuterio",
+    "recycling_metal": "Reciclaje metal", "recycling_crystal": "Reciclaje cristal", "recycling_deut": "Reciclaje deuterio",
+    "attacks": "Ataques", "expeditions": "Expediciones", "loot": "Botín", "finds": "Hallazgos",
+    "dark_matter": "Materia oscura"
+};
+
+function renderHistoryCharts() {
+    const empty = document.getElementById("history_empty");
+    const wrap = document.getElementById("history_charts");
+    if (!empty || !wrap) return;
+    if (!historyCache.length) {
+        empty.style.display = "block";
+        wrap.style.display = "none";
+        return;
+    }
+    empty.style.display = "none";
+    wrap.style.display = "block";
+
+    const labels = historyCache.map(e => e.date || "");
+
+    // (a) recursos totales por día
+    const resSeries = [
+        { name: "Metal", color: "#8ab4f8", values: historyCache.map(e => typeof e.metal === "number" ? e.metal : null) },
+        { name: "Cristal", color: cssColor("--accent-secondary", "#00d2ff"), values: historyCache.map(e => typeof e.crystal === "number" ? e.crystal : null) },
+        { name: "Deuterio", color: cssColor("--accent-success", "#10b981"), values: historyCache.map(e => typeof e.deut === "number" ? e.deut : null) }
+    ];
+    drawLineChart(document.getElementById("chart_resources"), resSeries, labels);
+    renderChartLegend("legend_resources", resSeries);
+
+    // (b) acumulados de sesión: cualquier otra clave numérica presente en el histórico
+    const skip = new Set(["ts", "date", "metal", "crystal", "deut"]);
+    const extraKeys = [];
+    historyCache.forEach(e => Object.keys(e).forEach(k => {
+        if (!skip.has(k) && typeof e[k] === "number" && !extraKeys.includes(k)) extraKeys.push(k);
+    }));
+    const sessionCard = document.getElementById("history_session_card");
+    const selected = extraKeys.slice(0, 6);
+    if (!selected.length) {
+        if (sessionCard) sessionCard.style.display = "none";
+        return;
+    }
+    if (sessionCard) sessionCard.style.display = "";
+    const palette = [
+        cssColor("--accent-secondary", "#00d2ff"),
+        cssColor("--accent-primary", "#8a2be2"),
+        cssColor("--accent-success", "#10b981"),
+        "#f59e0b",
+        cssColor("--accent-danger", "#f43f5e"),
+        "#8ab4f8"
+    ];
+    const sesSeries = selected.map((k, i) => ({
+        name: HISTORY_KEY_NAMES[k] || k.replace(/_/g, " "),
+        color: palette[i % palette.length],
+        values: historyCache.map(e => typeof e[k] === "number" ? e[k] : null)
+    }));
+    drawLineChart(document.getElementById("chart_session"), sesSeries, labels);
+    renderChartLegend("legend_session", sesSeries);
+}
+
+// --------------------------------------------------------------------------
+// Simulador "¿Ataco?"
+// --------------------------------------------------------------------------
+const SIM_ATTACK_SHIPS = ["small_cargo", "large_cargo", "light_fighter", "cruiser",
+                          "battleship", "battlecruiser", "bomber", "destroyer"];
+const SIM_DEFENSES = ["rocket_launcher", "light_laser", "heavy_laser", "gauss_cannon",
+                      "ion_cannon", "plasma_turret", "small_shield_dome", "large_shield_dome"];
+const SIM_TECHS = [["weapons", "Armas"], ["shielding", "Escudos"], ["armor", "Blindaje"]];
+
+function simNumInput(id, label) {
+    return `<div class="sim-field">
+        <label for="${id}">${label}</label>
+        <input type="number" id="${id}" min="0" step="1" placeholder="0">
+    </div>`;
+}
+
+function initSimulator() {
+    const atkShips = document.getElementById("sim_attacker_ships");
+    const atkTech = document.getElementById("sim_attacker_tech");
+    const defShips = document.getElementById("sim_defender_ships");
+    const defDef = document.getElementById("sim_defender_defense");
+    const defTech = document.getElementById("sim_defender_tech");
+    if (!atkShips) return;   // pestaña no presente
+    atkShips.innerHTML = SIM_ATTACK_SHIPS.map(s => simNumInput("sim_atk_" + s, SHIP_TRANSLATIONS[s] || s)).join("");
+    defShips.innerHTML = SIM_ATTACK_SHIPS.map(s => simNumInput("sim_deffleet_" + s, SHIP_TRANSLATIONS[s] || s)).join("");
+    defDef.innerHTML = SIM_DEFENSES.map(d => simNumInput("sim_defdef_" + d, DEFENSE_TRANSLATIONS[d] || d)).join("");
+    atkTech.innerHTML = SIM_TECHS.map(([k, name]) => simNumInput("sim_atktech_" + k, name)).join("");
+    defTech.innerHTML = SIM_TECHS.map(([k, name]) => simNumInput("sim_deftech_" + k, name)).join("");
+    const btn = document.getElementById("btnRunSimulation");
+    if (btn) btn.addEventListener("click", runSimulation);
+}
+
+function collectSimFleet(prefix, keys) {
+    const out = {};
+    keys.forEach(k => {
+        const n = parseI(getVal(prefix + k), 0);
+        if (n > 0) out[k] = n;
+    });
+    return out;
+}
+
+function collectSimTech(prefix) {
+    const out = {};
+    SIM_TECHS.forEach(([k]) => { out[k] = parseI(getVal(prefix + k), 0); });
+    return out;
+}
+
+function runSimulation() {
+    const statusEl = document.getElementById("sim_status");
+    const resultsEl = document.getElementById("sim_results");
+    const attacker = collectSimFleet("sim_atk_", SIM_ATTACK_SHIPS);
+    if (!Object.keys(attacker).length) {
+        showToast("Indica al menos una nave en tu flota de ataque", "danger");
+        return;
+    }
+    const body = {
+        attacker: attacker,
+        attacker_tech: collectSimTech("sim_atktech_"),
+        defender_fleet: collectSimFleet("sim_deffleet_", SIM_ATTACK_SHIPS),
+        defender_defense: collectSimFleet("sim_defdef_", SIM_DEFENSES),
+        defender_tech: collectSimTech("sim_deftech_"),
+        runs: 30
+    };
+    if (statusEl) statusEl.textContent = "Simulando 30 combates…";
+    const btn = document.getElementById("btnRunSimulation");
+    if (btn) btn.disabled = true;
+    fetch(api("/api/simulate"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                if (statusEl) statusEl.textContent = "Error: " + data.error;
+                showToast("Simulador: " + data.error, "danger");
+                return;
+            }
+            if (statusEl) statusEl.textContent = "";
+            if (resultsEl) resultsEl.style.display = "block";
+            const winPct = Math.round((data.win_rate || 0) * 100);
+            setText("sim_win_rate", winPct + " %");
+            setText("sim_losses", formatNumber(Math.round(data.avg_attacker_loss_value || 0)));
+            const debris = data.avg_debris || {};
+            setText("sim_debris_metal", formatNumber(Math.round(debris.metal || 0)));
+            setText("sim_debris_crystal", formatNumber(Math.round(debris.crystal || 0)));
+            const verdictEl = document.getElementById("sim_verdict");
+            if (verdictEl) {
+                if (data.verdict === "attack") {
+                    verdictEl.className = "sim-verdict attack";
+                    verdictEl.textContent = "✅ ATACA";
+                } else {
+                    verdictEl.className = "sim-verdict risky";
+                    verdictEl.textContent = "⛔ NO RENTABLE / ARRIESGADO";
+                }
+            }
+        })
+        .catch(err => {
+            if (statusEl) statusEl.textContent = "Error de conexión: " + err;
+            showToast("Error al simular: " + err, "danger");
+        })
+        .finally(() => { if (btn) btn.disabled = false; });
+}
+
+// --------------------------------------------------------------------------
+// Perfiles de riesgo (solo rellenan el formulario; el usuario debe Guardar)
+// --------------------------------------------------------------------------
+const RISK_PROFILES = {
+    paranoid: {
+        label: "Paranoico",
+        attack_check_min_mins: 8, attack_check_max_mins: 15,
+        cycle_interval_min_s: 1200, cycle_interval_max_s: 2400,
+        max_actions_per_hour: 20, max_attack_targets_per_cycle: 3,
+        min_action_delay_s: 5, max_action_delay_s: 15,
+        farming_attack_cooldown_hours: 6
+    },
+    normal: {
+        label: "Normal",
+        attack_check_min_mins: 5, attack_check_max_mins: 13,
+        cycle_interval_min_s: 600, cycle_interval_max_s: 1500,
+        max_actions_per_hour: 40, max_attack_targets_per_cycle: 8,
+        min_action_delay_s: 3, max_action_delay_s: 11,
+        farming_attack_cooldown_hours: 2
+    },
+    aggressive: {
+        label: "Agresivo",
+        attack_check_min_mins: 3, attack_check_max_mins: 7,
+        cycle_interval_min_s: 420, cycle_interval_max_s: 900,
+        max_actions_per_hour: 60, max_attack_targets_per_cycle: 12,
+        min_action_delay_s: 2, max_action_delay_s: 6,
+        farming_attack_cooldown_hours: 1
+    }
+};
+
+function updateRiskProfileBadge(profile) {
+    const badge = document.getElementById("riskProfileBadge");
+    if (!badge) return;
+    const p = RISK_PROFILES[profile];
+    badge.textContent = p ? p.label : profile;
+    badge.className = "risk-profile-badge " + (RISK_PROFILES[profile] ? profile : "normal");
+}
+
+function applyRiskProfile(profile) {
+    const p = RISK_PROFILES[profile];
+    if (!p) return;
+    ["attack_check_min_mins", "attack_check_max_mins", "cycle_interval_min_s", "cycle_interval_max_s",
+     "max_actions_per_hour", "max_attack_targets_per_cycle", "min_action_delay_s", "max_action_delay_s",
+     "farming_attack_cooldown_hours"].forEach(id => setVal(id, p[id]));
+    globalConfig.risk_profile = profile;
+    updateRiskProfileBadge(profile);
+    showToast("Perfil '" + p.label + "' aplicado al formulario. Pulsa Guardar Cambios para confirmarlo.", "warning");
+}
+
+function initRiskProfiles() {
+    const bindings = [["btnRiskParanoid", "paranoid"], ["btnRiskNormal", "normal"], ["btnRiskAggressive", "aggressive"]];
+    bindings.forEach(([id, profile]) => {
+        const btn = document.getElementById(id);
+        if (btn) btn.addEventListener("click", () => applyRiskProfile(profile));
+    });
+}
+
+// Inicialización de las nuevas pestañas y perfiles
+window.addEventListener("DOMContentLoaded", () => {
+    initSimulator();
+    initRiskProfiles();
+    loadHistory();
+    setInterval(loadHistory, 60000);
+    // Redibujar las gráficas al entrar en la pestaña (por si cambian los datos)
+    const histBtn = document.querySelector('.tab-btn[data-tab="tab-history"]');
+    if (histBtn) histBtn.addEventListener("click", () => renderHistoryCharts());
+});

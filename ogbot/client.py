@@ -4,6 +4,7 @@ client.py — Única capa que toca el juego en vivo (Playwright).
 from __future__ import annotations
 import os
 import time
+from pathlib import Path
 from typing import Dict, List, Optional
 from .config import Config
 from .models import Planet, Coords, Resources, EspionageReport
@@ -140,471 +141,20 @@ MISSION_CODES: Dict[str, int] = {
 # Tipo de destino: nombre → código
 TYPE_CODES: Dict[str, int] = {"planet": 1, "debris": 2, "moon": 3}
 
-# JS que lee {tech_id_str: level/cantidad} de cualquier página de componente.
-# Defensas usan .amount en vez de .level; probamos ambos.
-_JS_READ_TECH = """() => {
-    const r = {};
-    document.querySelectorAll('li[data-technology]').forEach(li => {
-        const tech = li.getAttribute('data-technology');
-        const el = li.querySelector('.level[data-value], .amount[data-value]');
-        if (el) r[tech] = parseInt(el.getAttribute('data-value') || '0');
-    });
-    return r;
-}"""
+# ---------------------------------------------------------------------------
+# Los bloques JS grandes viven en ogbot/js/<nombre>.js (uno por page.evaluate);
+# se cargan del disco una sola vez por proceso y se cachean.
+_JS_DIR = Path(__file__).parent / "js"
+_JS_CACHE: Dict[str, str] = {}
 
-# True si hay algo en la cola de construcción de suministros/instalaciones.
-# NOTA: data-status="on" significa "disponible para construir", NO "construyendo".
-# Indicadores reales de cola activa: timer en #build_list o elemento countdown.
-_JS_BUILD_QUEUE_ACTIVE = """() => {
-    // Items con timer en la lista de cola de construcción
-    if (document.querySelector('#build_list .timer, #build_list .build_list_timer, #build_list [data-remaining]')) return true;
-    // Countdown de construcción activo
-    if (document.querySelector('.build-it_countdown, .ctn .cnt span')) return true;
-    // Lista de cola no vacía (nodos li/item directos)
-    const bl = document.querySelector('#build_list');
-    if (bl && bl.querySelectorAll(':scope > li, :scope > .item').length > 0) return true;
-    return false;
-}"""
 
-# True si la cola está activa según la página de overview.
-_JS_BUILD_QUEUE_OVERVIEW = """() => {
-    // td.idle = nada construyendo; su ausencia dentro de .construction.active = cola ocupada
-    const idle = document.querySelector('.construction td.idle');
-    if (idle !== null) return false;
-    return !!document.querySelector('.construction.active');
-}"""
-
-_JS_BUILD_QUEUE = """() => {
-    const queue = [];
-    document.querySelectorAll('#build_list li[data-technology], .construction [data-technology]').forEach(el => {
-        const tid = el.getAttribute('data-technology');
-        if (tid) {
-            queue.push(parseInt(tid));
-        }
-    });
-    return queue;
-}"""
-
-_JS_BUILD_QUEUE_REMAINING = """() => {
-    const el = document.querySelector('#build_list [data-remaining], .construction [data-remaining], [data-remaining]');
-    if (el) {
-        const val = parseInt(el.getAttribute('data-remaining') || '0');
-        if (val > 0) return val;
-    }
-    const timer = document.querySelector('#build_list .timer, #build_list .build_list_timer, .construction .timer, .countdown');
-    if (timer) {
-        const txt = timer.textContent.trim();
-        const parts = txt.split(':');
-        if (parts.length === 3) {
-            return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
-        }
-        if (parts.length === 2) {
-            return parseInt(parts[0]) * 60 + parseInt(parts[1]);
-        }
-        let secs = 0;
-        const hM = txt.match(/(\\d+)h/);
-        const mM = txt.match(/(\\d+)m/);
-        const sM = txt.match(/(\\d+)s/);
-        if (hM) secs += parseInt(hM[1]) * 3600;
-        if (mM) secs += parseInt(mM[1]) * 60;
-        if (sM) secs += parseInt(sM[1]);
-        if (secs > 0) return secs;
-    }
-    return 0;
-}"""
-
-# True si la cola de Formas de vida está ocupada.
-_JS_LF_QUEUE_ACTIVE = """() => {
-    return !!(document.querySelector('.lifeformItemWrapper .on') ||
-              document.querySelector('.lf-buildlist .item') ||
-              document.querySelector('#lf_build_list .item'));
-}"""
-
-# Lee movimientos de flota activos desde la página de movimientos.
-_JS_READ_MOVEMENTS = """() => {
-    const results = [];
-    const rows = document.querySelectorAll(
-        '.eventFleet, .fleetDetails, .fleet_row, tr.flightEventRow'
-    );
-    rows.forEach(row => {
-        try {
-            // Las filas .fleetDetails son el PANEL de detalle de la flota de arriba, NO una
-            // flota: emitirlas duplica cada movimiento (el usuario veía "2 despliegues"). Sus
-            // naves se rescatan más abajo desde la fila principal hermana.
-            if (row.classList && row.classList.contains('fleetDetails')) return;
-            const mv = {};
-
-            // 1. Mission
-            let missionVal = row.getAttribute('data-mission-type');
-            if (!missionVal) {
-                const mEl = row.querySelector('[data-mission], [data-mission-type], .missionIcon, .icon_movement');
-                if (mEl) {
-                    missionVal = mEl.getAttribute('data-mission') ||
-                                 mEl.getAttribute('data-mission-type') ||
-                                 (mEl.className.match(/mission(\\d+)/) || [])[1] || '';
-                }
-            }
-            mv.mission = missionVal || '';
-
-            // 2. Origin Coordinates
-            const origEl = row.querySelector(
-                '.originCoords a, .originCoords .coords, .coordsOrigin a, .coordsOrigin, ' +
-                '.originFleet a, [class*="origin"] a, [class*="orig"] a'
-            );
-            mv.origin = origEl ? origEl.textContent.replace(/[\\[\\]\\s]/g, '') : '';
-
-            // 3. Origin Type (Planet / Moon / Debris)
-            const origCell = row.querySelector(
-                '.originCoords, .coordsOrigin, .originFleet, [class*="origin"], [class*="orig"]'
-            );
-            let origType = 'planet';
-            if (origCell) {
-                const icon = origCell.querySelector('.planetIcon, [class*="Icon"], [class*="icon"], figure, img');
-                if (icon) {
-                    const cls = (icon.className || '').toLowerCase() + ' ' + 
-                                (icon.getAttribute('src') || '').toLowerCase() + ' ' +
-                                (icon.getAttribute('title') || '').toLowerCase() + ' ' +
-                                (icon.getAttribute('class') || '').toLowerCase();
-                    if (cls.includes('moon') || cls.includes('luna')) origType = 'moon';
-                    else if (cls.includes('tf') || cls.includes('debris') || cls.includes('escombros') || cls.includes('escombro')) origType = 'debris';
-                }
-            }
-            mv.origin_type = origType;
-
-            // 4. Destination Coordinates
-            const destEl = row.querySelector(
-                '.destinationCoords a, .destinationCoords .coords, .destCoords a, .destCoords .coords, ' +
-                '.coordsDest a, .coordsDest, .destFleet a, [class*="destination"] a, [class*="dest"] a'
-            );
-            mv.destination = destEl ? destEl.textContent.replace(/[\\[\\]\\s]/g, '') : '';
-
-            // 5. Destination Type (Planet / Moon / Debris)
-            const destCell = row.querySelector(
-                '.destinationCoords, .destCoords, .coordsDest, .destFleet, [class*="destination"], [class*="dest"]'
-            );
-            let destType = 'planet';
-            if (destCell) {
-                const icon = destCell.querySelector('.planetIcon, [class*="Icon"], [class*="icon"], figure, img');
-                if (icon) {
-                    const cls = (icon.className || '').toLowerCase() + ' ' + 
-                                (icon.getAttribute('src') || '').toLowerCase() + ' ' +
-                                (icon.getAttribute('title') || '').toLowerCase() + ' ' +
-                                (icon.getAttribute('class') || '').toLowerCase();
-                    if (cls.includes('moon') || cls.includes('luna')) destType = 'moon';
-                    else if (cls.includes('tf') || cls.includes('debris') || cls.includes('escombros') || cls.includes('escombro')) destType = 'debris';
-                }
-            }
-            mv.dest_type = destType;
-
-            // 6. Arrival text. IMPORTANTE: excluir el temporizador de 'reversal' (regreso): la
-            // fila trae a la vez el contador de LLEGADA y el de la vuelta si se recupera; coger
-            // el de reversal hacía que un despliegue saliera con una hora de llegada errónea.
-            const notReversal = el => !(el.closest && el.closest('[class*="reversal"]'));
-            let arrEl = null;
-            for (const el of row.querySelectorAll(
-                    '.arrivalTime .value, .timer .value, .timeTillArrival, .countDown, .timer, [class*="timer"], [class*="countdown"]')) {
-                if (notReversal(el)) { arrEl = el; break; }
-            }
-            mv.arrival_text = arrEl ? arrEl.textContent.trim() : '';
-
-            // 6b. Epoch ABSOLUTO de llegada si el DOM lo expone (unix, segundos): es más
-            // fiable que parsear el contador y evita confundir una hora absoluta H:MM:SS
-            // con una cuenta atrás. También aquí se excluye el reversal.
-            let absEp = parseInt(row.getAttribute('data-arrival-time') || '0') || 0;
-            if (!absEp) {
-                for (const ae of row.querySelectorAll('[data-arrival-time]')) {
-                    if (!notReversal(ae)) continue;
-                    absEp = parseInt(ae.getAttribute('data-arrival-time') || '0') || 0;
-                    if (absEp) break;
-                }
-            }
-            mv.arrival_epoch = absEp;
-
-            // 6c. Reversal: el ancla de regreso (a.recallFleet) lleva en title/data-tooltip-title
-            // la FECHA y HORA de vuelta si se recupera ahora, en hora del SERVIDOR de OGame
-            // (p.ej. "Retirar:| 28.06.2026<br>23:04:56"). La convertimos a epoch UTC usando el
-            // desfase horario del servidor, derivado de data-arrival-time (epoch UTC fiable) vs
-            // la hora local mostrada en la celda arrivalTime. Así NO depende de la zona horaria
-            // del contenedor (Docker suele ir en UTC y el servidor en CEST -> daba +2 h).
-            let revEp = 0, revTxt = '';
-            const recallA = row.querySelector('a.recallFleet, a[onclick*="sendRecall"], a.reversal');
-            if (recallA) revTxt = (recallA.getAttribute('data-tooltip-title')
-                                   || recallA.getAttribute('title') || '').trim();
-            if (revTxt && absEp) {
-                const dm = revTxt.match(/(\\d{1,2})[.\\-\\/](\\d{1,2})[.\\-\\/](\\d{2,4})\\D+(\\d{1,2}):(\\d{2}):(\\d{2})/);
-                const arrCell = row.querySelector('.arrivalTime');
-                const am = arrCell ? (arrCell.textContent || '').match(/(\\d{1,2}):(\\d{2}):(\\d{2})/) : null;
-                if (dm && am) {
-                    const arrSec = (+am[1]) * 3600 + (+am[2]) * 60 + (+am[3]);  // hora servidor de la llegada
-                    let off = arrSec - (absEp % 86400);                         // desfase servidor - UTC (s)
-                    off = ((off % 86400) + 86400) % 86400;
-                    if (off > 43200) off -= 86400;                              // normalizar a [-12h, +12h]
-                    let y = +dm[3]; if (y < 100) y += 2000;
-                    const utc = Date.UTC(y, (+dm[2]) - 1, +dm[1], +dm[4], +dm[5], +dm[6]) / 1000;
-                    revEp = Math.round(utc - off);
-                }
-            }
-            mv.reversal_epoch = revEp;
-            mv.reversal_text = revTxt;
-
-            // 7. Flags
-            const rf = row.getAttribute('data-return-flight');
-            mv.is_return = row.classList.contains('is_return') ||
-                           rf === 'true' || rf === '1' ||
-                           !!row.querySelector('.return_flight, .returnflight');
-
-            mv.is_hostile = row.classList.contains('hostile') ||
-                            !!row.querySelector('.hostile') ||
-                            (row.className && row.className.includes('hostile'));
-
-            // 8. Composición de naves (tabla de detalles en línea o tooltip)
-            mv.ships = {};
-            (function(){
-                let table = row.querySelector('.fleetinfos table, table.fleetinfo, .fleetinfo');
-                if (!table) {
-                    const tip = row.querySelector('[title*="fleetinfo"], [title*="<table"], .tooltip[title], .detailsFleet [title]');
-                    if (tip) {
-                        const html = tip.getAttribute('title') || '';
-                        if (html.indexOf('<') !== -1) {
-                            const tmp = document.createElement('div');
-                            tmp.innerHTML = html;
-                            table = tmp.querySelector('table');
-                        }
-                    }
-                }
-                if (!table) {
-                    // Desglose por nave en la fila de DETALLE hermana (.fleetDetails), ahora
-                    // que esa fila ya no se emite como flota aparte.
-                    const sib = row.nextElementSibling;
-                    if (sib && sib.classList && sib.classList.contains('fleetDetails')) {
-                        table = sib.querySelector('.fleetinfos table, table.fleetinfo, .fleetinfo, table');
-                    }
-                }
-                if (!table) return;
-                table.querySelectorAll('tr').forEach(tr => {
-                    const tds = tr.querySelectorAll('td');
-                    if (tds.length < 2) return;
-                    const a = tds[0].textContent.trim();
-                    const b = tds[1].textContent.trim();
-                    let name, valStr;
-                    if (/^[\\d.,\\s]+$/.test(a)) { valStr = a; name = b; }
-                    else { name = a; valStr = b; }
-                    name = name.replace(/:$/, '').trim();
-                    const val = parseInt(valStr.replace(/[^0-9]/g, '')) || 0;
-                    if (name && val > 0) mv.ships[name] = (mv.ships[name] || 0) + val;
-                });
-            })();
-
-            if (mv.origin || mv.destination) results.push(mv);
-        } catch(e) {}
-    });
-    return results;
-}"""
-
-# Diagnóstico para el regreso de flota: por cada fila de movimiento devuelve lo que ven los
-# selectores del matcher (origen/destino/misión/retorno) y las clases de los enlaces, para
-# poder ajustar los selectores del botón de regreso cuando no se encuentra.
-_JS_RECALL_DIAG = """() => {
-    const norm = s => String(s || '').replace(/[\\[\\]\\s]/g, '');
-    const rows = document.querySelectorAll('.eventFleet, .fleetDetails, .fleet_row, tr.flightEventRow');
-    const out = [];
-    rows.forEach(row => {
-        const oEl = row.querySelector('.originCoords a, .originCoords .coords, .coordsOrigin a, .coordsOrigin, .originFleet a, [class*="origin"] a, [class*="orig"] a');
-        const dEl = row.querySelector('.destinationCoords a, .destinationCoords .coords, .destCoords a, .destCoords .coords, .coordsDest a, .coordsDest, .destFleet a, [class*="destination"] a, [class*="dest"] a');
-        const recall = row.querySelector('a.recallFleet, a[class*="recall"], a[onclick*="sendRecall"], a.reversal, a.reversal_flight, a[class*="reversal"], a[href*="return="]');
-        // Contenedor de regreso (span/div) aunque el <a> interno tenga clase vacía: sin esto el
-        // diagnóstico no mostraba la estructura real (p.ej. <span class="reversal reversal_time">).
-        const revBox = row.querySelector('[class*="reversal"], .return_flight, .returnflight');
-        const revA = revBox ? revBox.querySelector('a') : null;
-        const anchors = [];
-        row.querySelectorAll('a').forEach(a => {
-            const c = a.className || '';
-            const oc = a.getAttribute('onclick') || '';
-            const hr = a.getAttribute('href') || '';
-            anchors.push((c || oc || hr).toString().slice(0, 60));
-        });
-        out.push({
-            o: oEl ? norm(oEl.textContent) : null,
-            d: dEl ? norm(dEl.textContent) : null,
-            m: row.getAttribute('data-mission-type') || '',
-            ret_cls: row.classList.contains('is_return'),
-            rrf: row.getAttribute('data-return-flight'),
-            ret_sel: !!row.querySelector('.return_flight, .returnflight'),
-            hasRecall: !!recall,
-            recallCls: recall ? (recall.className || recall.getAttribute('onclick') || recall.getAttribute('href') || '') : null,
-            revBox: revBox ? (revBox.tagName + '.' + (revBox.className || '').slice(0, 40)) : null,
-            revA: revA ? ((revA.className || '') + ' href=' + (revA.getAttribute('href') || '').slice(0, 70)) : null,
-            anchors: anchors.slice(0, 12),
-            rowcls: (row.className || '').slice(0, 80)
-        });
-    });
-    return out;
-}"""
-
-# Extrae todos los informes de espionaje de la página de mensajes.
-_JS_ALL_SPY_REPORTS = """() => {
-    const results = [];
-    document.querySelectorAll('.rawMessageData').forEach(el => {
-        try {
-            const coordsStr = el.getAttribute('data-raw-coordinates');
-            if (!coordsStr) return;
-            const parts = coordsStr.split(':');
-            if (parts.length < 3) return;
-            
-            const metal = parseInt(el.getAttribute('data-raw-metal') || '0');
-            const crystal = parseInt(el.getAttribute('data-raw-crystal') || '0');
-            const deut = parseInt(el.getAttribute('data-raw-deuterium') || '0');
-            
-            const rawFleetStr = el.getAttribute('data-raw-fleet') || '[]';
-            const rawDefStr = el.getAttribute('data-raw-defense') || '[]';
-            const rawStatusStr = el.getAttribute('data-raw-playerstatus') || '[]';
-            
-            if (isNaN(metal) && isNaN(crystal) && isNaN(deut) && rawFleetStr === '[]' && rawDefStr === '[]') {
-                return;
-            }
-            
-            const r = {
-                galaxy: parseInt(parts[0]),
-                system: parseInt(parts[1]),
-                position: parseInt(parts[2]),
-                resources: {
-                    metal: isNaN(metal) ? 0 : metal,
-                    crystal: isNaN(crystal) ? 0 : crystal,
-                    deut: isNaN(deut) ? 0 : deut
-                },
-                fleet: {},
-                defense: {},
-                player_name: el.getAttribute('data-raw-playername') || '',
-                is_inactive: rawStatusStr.includes('inactive')
-            };
-            
-            const SHIP_MAP = {
-                202:'small_cargo', 203:'large_cargo', 204:'light_fighter',
-                205:'heavy_fighter', 206:'cruiser', 207:'battleship',
-                208:'colony_ship', 209:'recycler', 210:'espionage_probe',
-                211:'bomber', 212:'solar_satellite', 213:'destroyer',
-                214:'deathstar', 215:'battlecruiser'
-            };
-            const DEF_MAP = {
-                401:'rocket_launcher', 402:'light_laser', 403:'heavy_laser',
-                404:'gauss_cannon', 405:'ion_cannon', 406:'plasma_turret',
-                407:'small_shield_dome', 408:'large_shield_dome'
-            };
-            
-            try {
-                const fleetObj = JSON.parse(rawFleetStr);
-                if (fleetObj && typeof fleetObj === 'object' && !Array.isArray(fleetObj)) {
-                    for (const [tidStr, count] of Object.entries(fleetObj)) {
-                        const tid = parseInt(tidStr);
-                        if (SHIP_MAP[tid]) {
-                            r.fleet[SHIP_MAP[tid]] = parseInt(count);
-                        }
-                    }
-                }
-            } catch(e) {}
-            
-            try {
-                const defObj = JSON.parse(rawDefStr);
-                if (defObj && typeof defObj === 'object' && !Array.isArray(defObj)) {
-                    for (const [tidStr, count] of Object.entries(defObj)) {
-                        const tid = parseInt(tidStr);
-                        if (DEF_MAP[tid]) {
-                            r.defense[DEF_MAP[tid]] = parseInt(count);
-                        }
-                    }
-                }
-            } catch(e) {}
-            
-            results.push(r);
-        } catch(e) {}
-    });
-    return results;
-}"""
-
-# Establece el slider o selector de velocidad de flota (compatible con OGame Redesign y React).
-_JS_SET_SPEED = """(val) => {
-    let stepNum = parseInt(val);
-    if (stepNum > 10 && stepNum <= 100) {
-        stepNum = stepNum / 10;
-    }
-    
-    // 1. Intentar por data-step en el contenedor .steps (específico para OGame Redesign)
-    if (stepNum >= 1 && stepNum <= 10) {
-        const stepEl = document.querySelector(`.steps .step[data-step="${stepNum}"], .steps [data-step="${stepNum}"], [data-step="${stepNum}"].step`);
-        if (stepEl) {
-            stepEl.click();
-            return 'clicked_data_step:' + stepNum;
-        }
-    }
-    
-    // 2. Buscar por texto dentro del contenedor .steps
-    const stepsContainer = document.querySelector('.steps');
-    if (stepsContainer && stepNum >= 1 && stepNum <= 10) {
-        const targetPct = String(stepNum * 10);
-        for (const el of stepsContainer.querySelectorAll('.step, div')) {
-            const txt = el.textContent.trim();
-            if (txt === targetPct || txt === targetPct + '%') {
-                el.click();
-                return 'clicked_steps_by_text:' + txt;
-            }
-        }
-    }
-
-    const pct = val * 10;
-    
-    // 3. Fallback de selectores tradicionales
-    const selectors = [
-        `ul.speed li.step${pct}`,
-        `ul.speed li[data-value="${pct}"]`,
-        `.speedLinks a.step${pct}`,
-        `.speedLinks .step${pct}`,
-        `#speedLinks a.step${pct}`,
-        `#speedLinks .step${pct}`,
-        `a[onclick*="selectSpeed(${pct})"]`,
-        `a[onclick*="selectSpeed(${val})"]`,
-        `#speedLinks a`,
-        `.speedLinks a`
-    ];
-    
-    for (const sel of selectors) {
-        const el = document.querySelector(sel);
-        if (el) {
-            el.click();
-            return 'clicked_selector:' + sel;
-        }
-    }
-    
-    // Buscar por texto en elementos de velocidad específicos (excluyendo .step genérico que choca con paginadores)
-    const elements = document.querySelectorAll('.speedLinks a, #speedLinks a, a.speedLink, .speed_percent, ul.speed li');
-    for (const el of elements) {
-        const txt = el.textContent.trim();
-        if (txt === pct + '%' || txt === String(pct)) {
-            el.click();
-            return 'clicked_by_text:' + txt;
-        }
-    }
-    
-    // Buscar por el atributo onclick
-    for (const el of document.querySelectorAll('a, span, div, li')) {
-        const oc = el.getAttribute('onclick');
-        if (oc && (oc.includes(`selectSpeed(${pct})`) || oc.includes(`selectSpeed(${val})`))) {
-            el.click();
-            return 'clicked_by_onclick';
-        }
-    }
-
-    // 4. Fallback: slider de rango estándar (input range)
-    const slider = document.querySelector('#speedPercent, input[name="speed"], input[type="range"]');
-    if (slider) {
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        setter.call(slider, String(val));
-        slider.dispatchEvent(new Event('input', {bubbles: true}));
-        slider.dispatchEvent(new Event('change', {bubbles: true}));
-        return 'slider_set';
-    }
-    
-    return false;
-}"""
+def _load_js(name: str) -> str:
+    """Devuelve el contenido de ogbot/js/<name>.js (cacheado)."""
+    js = _JS_CACHE.get(name)
+    if js is None:
+        js = (_JS_DIR / f"{name}.js").read_text(encoding="utf-8")
+        _JS_CACHE[name] = js
+    return js
 
 
 class GameClient:
@@ -617,6 +167,8 @@ class GameClient:
         self.page = None
         self.lobby_url = "https://lobby.ogame.gameforge.com/"
         self._planet_cache: List[Planet] = []
+        self._canary_done = False          # canario de selectores: una vez por proceso
+        self._last_captcha_alert = 0.0     # epoch de la última alerta de CAPTCHA por Telegram
 
     # ------------------------------------------------------------------
     def start(self):
@@ -892,13 +444,30 @@ class GameClient:
             "Verificación humana (CAPTCHA) %s. Abre el panel web -> pestaña "
             "'Bot en Directo' y resuélvela. Esperando hasta %.0f min...",
             where, timeout_s / 60.0)
+        # Alerta por Telegram con captura (máx. una cada 10 min para no inundar el chat).
         try:
-            from . import utils
-            if getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""):
-                utils.send_telegram_message(
-                    self.cfg.telegram_token, self.cfg.telegram_chat_id,
-                    "🤖 OGBot: verificación humana en el login. Resuélvela en el visor "
-                    "'Bot en Directo' del panel web.", logger=self.log)
+            if (getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", "")
+                    and time.time() - self._last_captcha_alert > 600):
+                self._last_captcha_alert = time.time()
+                caption = (f"Verificación humana requerida ({where}). Entra al visor "
+                           "del navegador en la GUI para resolverla.")
+                shot = ""
+                try:
+                    os.makedirs("errors", exist_ok=True)
+                    shot = f"errors/captcha_{int(time.time())}.png"
+                    self.page.screenshot(path=shot)
+                except Exception:
+                    shot = ""
+                sent = False
+                if shot:
+                    sent = bool(utils.send_telegram_photo(
+                        self.cfg.telegram_token, self.cfg.telegram_chat_id, shot,
+                        caption="🤖 OGBot: " + utils.tg_escape(caption),
+                        logger=self.log, block=True))
+                if not sent:
+                    utils.send_telegram_message(
+                        self.cfg.telegram_token, self.cfg.telegram_chat_id,
+                        "🤖 OGBot: " + utils.tg_escape(caption), logger=self.log)
         except Exception:
             pass
         start = time.time()
@@ -913,7 +482,52 @@ class GameClient:
         self.log.warning("Se agotó la espera de verificación humana (%s).", where)
         return False
 
+    def selector_canary(self) -> list[str]:
+        """Comprueba en la página de overview que los selectores base del bot siguen
+        existiendo. Devuelve la lista de selectores que fallan (vacía si todo OK)."""
+        self._goto("overview")
+        broken: list[str] = []
+        for sel in (
+            "#resources",
+            "#planetList .smallplanet",
+            "#eventboxContent, #eventListWrap, #eventContent",
+            "a[href*='component=fleetdispatch']",
+            ".OGameClock",
+        ):
+            try:
+                if self.page.locator(sel).count() == 0:
+                    broken.append(sel)
+            except Exception:
+                broken.append(sel)
+        return broken
+
+    def _run_selector_canary_once(self) -> None:
+        """Canario tras el primer login exitoso del proceso. Nunca rompe el login."""
+        if self._canary_done or not getattr(self.cfg, "enable_selector_canary", False):
+            return
+        self._canary_done = True  # una sola vez por proceso, aunque falle
+        try:
+            broken = self.selector_canary()
+            if not broken:
+                self.log.info("Canario de selectores: OK (todos presentes).")
+                return
+            msg = ("GameForge puede haber cambiado la interfaz; el bot puede fallar en: "
+                   + ", ".join(broken))
+            self.log.warning("Canario de selectores: %s", msg)
+            if getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""):
+                utils.send_telegram_message(
+                    self.cfg.telegram_token, self.cfg.telegram_chat_id,
+                    "⚠️ OGBot: " + utils.tg_escape(msg), logger=self.log)
+        except Exception as e:
+            self.log.debug("Canario de selectores falló (ignorado): %s", e)
+
     def login(self) -> bool:
+        ok = self._do_login()
+        if ok:
+            self._run_selector_canary_once()
+        return ok
+
+    def _do_login(self) -> bool:
         # Determinar URL de cuentas localizada según país
         country = (self.cfg.country or "en").lower()
         locales = {
@@ -1055,33 +669,33 @@ class GameClient:
 
     def _is_build_queue_active(self) -> bool:
         try:
-            return bool(self.page.evaluate(_JS_BUILD_QUEUE_ACTIVE))
+            return bool(self.page.evaluate(_load_js("build_queue_active")))
         except Exception:
             return False
 
     def _is_build_queue_active_from_overview(self) -> bool:
         """Comprueba la cola desde la página de overview (más fiable). Debe llamarse en overview."""
         try:
-            return bool(self.page.evaluate(_JS_BUILD_QUEUE_OVERVIEW))
+            return bool(self.page.evaluate(_load_js("build_queue_overview")))
         except Exception:
             return False
 
     def _get_build_queue_remaining_seconds(self) -> int:
         try:
-            return int(self.page.evaluate(_JS_BUILD_QUEUE_REMAINING) or 0)
+            return int(self.page.evaluate(_load_js("build_queue_remaining")) or 0)
         except Exception:
             return 0
 
     def _get_build_queue(self) -> List[str]:
         try:
-            tids = self.page.evaluate(_JS_BUILD_QUEUE) or []
+            tids = self.page.evaluate(_load_js("build_queue")) or []
             return [_ID_TO_NAME[str(tid)] for tid in tids if str(tid) in _ID_TO_NAME]
         except Exception:
             return []
 
     def _is_lf_queue_active(self) -> bool:
         try:
-            return bool(self.page.evaluate(_JS_LF_QUEUE_ACTIVE))
+            return bool(self.page.evaluate(_load_js("lf_queue_active")))
         except Exception:
             return False
 
@@ -1126,7 +740,7 @@ class GameClient:
             try:
                 txt = (self.page.locator(sel).first.get_attribute("data-raw")
                        or self.page.locator(sel).first.inner_text())
-                return float(str(txt).replace(".", "").replace(",", "").strip() or 0)
+                return utils.parse_localized_number(txt)
             except Exception:
                 return 0.0
         return Resources(num(SEL["resource_metal"]),
@@ -1221,7 +835,7 @@ class GameClient:
         self._goto(component, planet)
         self._wait_tech()
         try:
-            raw = self.page.evaluate(_JS_READ_TECH)  # {tech_id_str: level}
+            raw = self.page.evaluate(_load_js("read_tech"))  # {tech_id_str: level}
             return {_ID_TO_NAME[k]: v for k, v in raw.items() if k in _ID_TO_NAME}
         except Exception as e:
             self.log.warning("Error leyendo %s: %s", component, e)
@@ -1581,7 +1195,7 @@ class GameClient:
         ], timeout_ms=2000)
         time.sleep(1)
         try:
-            raw_list = self.page.evaluate(_JS_ALL_SPY_REPORTS) or []
+            raw_list = self.page.evaluate(_load_js("all_spy_reports")) or []
         except Exception as e:
             self.log.debug("Error leyendo informes espionaje: %s", e)
             return {}
@@ -1645,9 +1259,10 @@ class GameClient:
         while time.time() < deadline:
             time.sleep(10)
             mvs = self.read_movements()
+            # Igualdad exacta: 'in' casaba '1:2:3' con '11:2:34'
             in_flight = any(
                 m.get("mission") in ("6", "espionage", "Espionage") and
-                coord_str in m.get("destination", "")
+                coord_str == m.get("destination", "").strip()
                 for m in mvs
             )
             if not in_flight:
@@ -1688,7 +1303,7 @@ class GameClient:
                 pass
                 
         try:
-            res = self.page.evaluate(_JS_SET_SPEED, str(sp_val))
+            res = self.page.evaluate(_load_js("set_speed"), str(sp_val))
             if res:
                 self.log.debug("Velocidad %d%% establecida con JS: %s", sp_val * 10, res)
                 return True
@@ -1755,26 +1370,7 @@ class GameClient:
             else:
                 self.log.warning("send_fleet: no encontré botón de 'seleccionar todas', intentando por JS...")
                 try:
-                    js = """() => {
-                        let clicked = false;
-                        document.querySelectorAll('li[data-technology]').forEach(li => {
-                            const inp = li.querySelector('input');
-                            if (inp) {
-                                const maxVal = li.querySelector('.amount')?.textContent.trim().replace(/\./g, '');
-                                if (maxVal && parseInt(maxVal) > 0) {
-                                    const nativeSetter = Object.getOwnPropertyDescriptor(
-                                        window.HTMLInputElement.prototype, 'value'
-                                    ).set;
-                                    nativeSetter.call(inp, maxVal);
-                                    inp.dispatchEvent(new Event('input', {bubbles:true}));
-                                    inp.dispatchEvent(new Event('change', {bubbles:true}));
-                                    clicked = true;
-                                }
-                            }
-                        });
-                        return clicked;
-                    }"""
-                    any_selected = self.page.evaluate(js)
+                    any_selected = self.page.evaluate(_load_js("select_all_ships"))
                 except Exception as e:
                     self.log.warning("send_fleet: error al seleccionar todas las naves via JS: %s", e)
         else:
@@ -2146,10 +1742,14 @@ class GameClient:
                 pass
             return False
 
+        # Verificación POSITIVA: un envío correcto navega a component=movement.
         try:
-            self.page.wait_for_load_state("networkidle", timeout=6000)
+            self.page.wait_for_url("**component=movement**", timeout=8000)
+            self.log.info("Flota enviada (confirmado por navegación a movement): %s -> %s (%s)",
+                          origin, destination, mission)
+            return True
         except Exception:
-            time.sleep(2)
+            pass
 
         if self._is_error_page():
             self.log.warning("OGame reportó error enviando flota %s->%s.", origin, destination)
@@ -2165,8 +1765,16 @@ class GameClient:
                 const btn = document.querySelector('#sendFleet');
                 return !!(btn && btn.offsetParent !== null);
             }""")
-        except Exception:
-            still_on_dispatch = False
+        except Exception as e:
+            # Fail-closed: si no podemos verificar el estado, NO damos el envío por bueno.
+            self.log.warning("send_fleet: no pude verificar si la flota %s->%s salió (%s); "
+                             "la doy por NO enviada.", origin, destination, e)
+            try:
+                os.makedirs("errors", exist_ok=True)
+                self.page.screenshot(path=f"errors/fleet_verify_{int(time.time())}.png")
+            except Exception:
+                pass
+            return False
 
         if still_on_dispatch:
             err_txt = ""
@@ -2331,7 +1939,7 @@ class GameClient:
         except Exception:
             pass
         try:
-            data = self.page.evaluate(_JS_READ_MOVEMENTS) or []
+            data = self.page.evaluate(_load_js("read_movements")) or []
         except Exception as e:
             self.log.debug("Error leyendo movimientos: %s", e)
             return []
@@ -2479,52 +2087,7 @@ class GameClient:
                     except Exception:
                         pass
                     
-                    js = f"""() => {{
-                        const results = [];
-                        
-                        const getRawRes = (el, type) => {{
-                            let val = el.getAttribute('data-raw-' + type) || el.getAttribute('data-' + type);
-                            if (!val) {{
-                                const child = el.querySelector('[data-raw-' + type + '], [data-' + type + '], [class*="' + type + '"]');
-                                if (child) {{
-                                    val = child.getAttribute('data-raw-' + type) || child.getAttribute('data-' + type) || child.getAttribute('data-raw');
-                                    if (!val) val = child.textContent;
-                                }}
-                            }}
-                            if (!val) {{
-                                const regex = new RegExp('(?:' + (type === 'metal' ? 'metal' : 'cristal|crystal') + ')\\\\s*:?\\\\s*([\\\\d\\\\.\\\\s,]+k?M?)', 'i');
-                                const m = el.textContent.match(regex);
-                                if (m) val = m[1];
-                            }}
-                            if (!val) return 0;
-                            let s = String(val).trim().toLowerCase();
-                            let mult = 1;
-                            if (s.endsWith('k')) {{ mult = 1000; s = s.slice(0, -1); }}
-                            else if (s.endsWith('m')) {{ mult = 1000000; s = s.slice(0, -1); }}
-                            const num = parseInt(s.replace(/[^0-9]/g, '')) || 0;
-                            return num * mult;
-                        }};
-
-                        document.querySelectorAll(
-                            '#galaxytable tr.row, #galaxytable tr, .galaxyRow'
-                        ).forEach(row => {{
-                            const debrisEl = row.querySelector(
-                                '.debris, .expeditionDebris, [class*="debris"]'
-                            );
-                            if (!debrisEl) return;
-                            const posEl = row.querySelector('.cellPosition, td.position, td:first-child');
-                            const pos = posEl ? parseInt(posEl.textContent.trim()) : 0;
-                            if (!pos) return;
-                            
-                            const metal = getRawRes(debrisEl, 'metal');
-                            const crystal = getRawRes(debrisEl, 'crystal');
-                            
-                            if (metal + crystal > 0)
-                                results.push({{pos, metal, crystal}});
-                        }});
-                        return results;
-                    }}"""
-                    rows = self.page.evaluate(js) or []
+                    rows = self.page.evaluate(_load_js("galaxy_debris")) or []
                     for row in rows:
                         tot = row.get("metal", 0) + row.get("crystal", 0)
                         if tot >= min_debris:
@@ -2614,20 +2177,28 @@ class GameClient:
         try:
             self._goto("movement")
             time.sleep(2)
+            # Coords por celda e igualdad exacta: indexOf sobre el texto de la fila
+            # casaba '1:2:3' con '11:2:34'.
             return bool(self.page.evaluate(
                 """(args) => {
                     const origin = args[0], destination = args[1];
+                    const coord = el => el ? ((el.textContent.match(/\\d+:\\d+:\\d+/) || [''])[0]) : '';
                     const rows = document.querySelectorAll(
                         '.eventFleet, .fleetDetails, .fleet_row, tr.flightEventRow');
                     for (const row of rows) {
-                        const t = row.textContent || '';
-                        if (t.indexOf(origin) < 0 || t.indexOf(destination) < 0) continue;
+                        const oEl = row.querySelector(
+                            '.originCoords a, .originCoords .coords, .coordsOrigin a, .coordsOrigin, ' +
+                            '.originFleet a, [class*="origin"] a, [class*="orig"] a');
+                        const dEl = row.querySelector(
+                            '.destinationCoords a, .destinationCoords .coords, .destCoords a, .destCoords .coords, ' +
+                            '.coordsDest a, .coordsDest, .destFleet a, [class*="destination"] a, [class*="dest"] a');
+                        if (coord(oEl) !== origin || coord(dEl) !== destination) continue;
                         const rrf = row.getAttribute('data-return-flight');
                         if (row.classList.contains('is_return') || rrf === 'true' || rrf === '1')
                             return true;
                     }
                     return false;
-                }""", (origin, destination)))
+                }""", (origin.strip(), destination.strip())))
         except Exception as e:
             self.log.debug("verify_recalled error: %s", e)
             return False
@@ -2793,7 +2364,7 @@ class GameClient:
         # se encontraron filas de movimiento (selector de fila incorrecto en este servidor).
         try:
             import json as _json
-            diag = self.page.evaluate(_JS_RECALL_DIAG)
+            diag = self.page.evaluate(_load_js("recall_diag"))
             # Solo las filas relevantes (mismo origen o destino), ENTERAS y sin truncar, para
             # ver exactamente por qué no casa la fila buscada (misión / is_return / botón).
             rel = [r for r in diag if r.get("o") == origin or r.get("d") == destination]

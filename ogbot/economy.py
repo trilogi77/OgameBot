@@ -26,11 +26,17 @@ def _eq(res: gd.Cost, ratio) -> float:
     return res.total_value(ratio)
 
 
+def _deut_net_production(deut_lvl: int, planet: Planet, cfg: Config, plasma: int) -> float:
+    """Deuterio/h neto: producción del sintetizador menos el consumo del reactor de fusión."""
+    prod = gd.deut_production(deut_lvl, planet.max_temp, plasma, cfg.universe_speed)
+    return prod - gd.fusion_deut_consumption(planet.lvl("fusion_reactor"), cfg.universe_speed)
+
+
 def production_eq_per_hour(planet: Planet, cfg: Config, plasma: int) -> float:
     """Producción actual del planeta en metal-equivalente/hora."""
     m = gd.metal_production(planet.lvl("metal_mine"), plasma, cfg.universe_speed)
     c = gd.crystal_production(planet.lvl("crystal_mine"), plasma, cfg.universe_speed)
-    d = gd.deut_production(planet.lvl("deut_synth"), planet.max_temp, plasma, cfg.universe_speed)
+    d = _deut_net_production(planet.lvl("deut_synth"), planet, cfg, plasma)
     r = cfg.trade_ratio
     return m + c * (r[0] / r[1]) + d * (r[0] / r[2])
 
@@ -48,8 +54,8 @@ def _mine_payback(planet: Planet, mine: str, cfg: Config, plasma: int) -> Tuple[
         nxt = gd.crystal_production(lvl + 1, plasma, cfg.universe_speed)
         extra = (nxt - cur) * (r[0] / r[1])
     else:  # deut_synth
-        cur = gd.deut_production(lvl, planet.max_temp, plasma, cfg.universe_speed)
-        nxt = gd.deut_production(lvl + 1, planet.max_temp, plasma, cfg.universe_speed)
+        cur = _deut_net_production(lvl, planet, cfg, plasma)
+        nxt = _deut_net_production(lvl + 1, planet, cfg, plasma)
         extra = (nxt - cur) * (r[0] / r[2])
     if extra <= 0:
         return float("inf"), cost
@@ -123,7 +129,7 @@ def time_to_accumulate(cost: gd.Cost, planet: Planet, cfg: Config, plasma: int) 
 
     prod_m = max(0.1, gd.metal_production(planet.lvl("metal_mine"), plasma, cfg.universe_speed))
     prod_c = max(0.1, gd.crystal_production(planet.lvl("crystal_mine"), plasma, cfg.universe_speed))
-    prod_d = max(0.1, gd.deut_production(planet.lvl("deut_synth"), planet.max_temp, plasma, cfg.universe_speed))
+    prod_d = max(0.1, _deut_net_production(planet.lvl("deut_synth"), planet, cfg, plasma))
 
     t_m = needed_m / prod_m
     t_c = needed_c / prod_c

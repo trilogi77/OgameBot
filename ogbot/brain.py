@@ -1892,6 +1892,7 @@ class Brain(StatsMixin):
 
         # ── Fase 5: ejecutar ataques ──────────────────────────────────
         attacked = 0
+        pending_harvests: List[dict] = []  # recolecciones tras ataques con combate
         for attack in valid_attacks:
             if attacked >= limit:
                 break
@@ -1967,7 +1968,112 @@ class Brain(StatsMixin):
                 self.attack_history[coords_str] = time.time()
                 self._save_state()
 
+                # Reciclaje del combate: sonda suicida para crear el campo de
+                # escombros y poder despachar los recicladores calculados.
+                if getattr(self.cfg, "farm_recycle_debris", True) and target.needs_clearing:
+                    debris = dict(getattr(target, "expected_debris", None) or {})
+                    if sum(debris.values()) >= getattr(self.cfg, "recycling_min_debris", 8000):
+                        job = self._suicide_probe_for_debris(coords, debris, locations,
+                                                             attack_eta_s=ftime)
+                        if job:
+                            pending_harvests.append(job)
+
+        if pending_harvests:
+            self._harvest_after_attacks(pending_harvests, locations)
+
         self.log.info("Farmeo completado: %d ataques en este ciclo.", attacked)
+
+    def _suicide_probe_for_debris(self, coords: Coords, debris: dict, locations,
+                                  attack_eta_s: float) -> Optional[dict]:
+        """Lanza 1 sonda en misión de ATAQUE contra un objetivo defendido: la sonda
+        muere en el combate y crea el campo de escombros, lo que permite despachar
+        los recicladores sin esperar a que llegue la flota principal. Devuelve el
+        trabajo de recolección pendiente ({coords, debris, ready_at}) o None."""
+        if not any(p.ships.get("recycler", 0) >= 1 for p in locations):
+            self.log.info("Farmeo: sin recicladores en ninguna ubicación; omito la sonda suicida hacia %s.", coords)
+            return None
+        candidates = [p for p in locations if p.ships.get("espionage_probe", 0) >= 1]
+        if not candidates:
+            self.log.info("Farmeo: sin sondas disponibles para la sonda suicida hacia %s.", coords)
+            return None
+        probe_origin = min(candidates, key=lambda p: gd.distance(p.coords.tuple(), coords.tuple()))
+        if not self._has_free_slots_for_mission():
+            self.log.info("Farmeo: sin slots libres para la sonda suicida hacia %s.", coords)
+            return None
+        if not self._guard():
+            return None
+        ok = self.client.send_fleet(probe_origin.coords, coords,
+                                    {"espionage_probe": 1}, mission="attack")
+        if not ok:
+            self.log.warning("Farmeo: fallo al enviar la sonda suicida hacia %s.", coords)
+            return None
+        self._deduct_ships(probe_origin, {"espionage_probe": 1})
+        self.active_slots += 1
+
+        now = time.time()
+        probe_speed = max(1, gd.effective_speed("espionage_probe", self.research_levels))
+        probe_eta = now + gd.flight_time(gd.distance(probe_origin.coords.tuple(), coords.tuple()),
+                                         probe_speed, 1.0, self.cfg.fleet_speed)
+        # Los recicladores no deben llegar ANTES que la flota principal: solo
+        # recogerían los restos de la sonda. Se retrasa el despacho para que su
+        # llegada quede después del combate principal (con 60s de margen).
+        rec_candidates = [p for p in locations if p.ships.get("recycler", 0) >= 1]
+        rec_origin = min(rec_candidates, key=lambda p: gd.distance(p.coords.tuple(), coords.tuple()))
+        rec_ftime = gd.flight_time(gd.distance(rec_origin.coords.tuple(), coords.tuple()),
+                                   gd.SHIPS["recycler"].speed, 1.0, self.cfg.fleet_speed)
+        ready_at = max(probe_eta + 15, now + attack_eta_s + 60 - rec_ftime)
+        self.log.info("Farmeo: sonda suicida %s -> %s para crear el campo de escombros (recicladores en ~%.1f min).",
+                      probe_origin.coords, coords, max(0.0, ready_at - now) / 60)
+        self.record_session_action("espionage", f"{coords}", "Sonda suicida enviada (crear escombros)",
+                                   str(probe_origin.coords))
+        return {"coords": coords, "debris": debris, "ready_at": ready_at}
+
+    def _harvest_after_attacks(self, jobs: List[dict], locations):
+        """Espera a que la sonda suicida haya creado el campo de escombros y envía
+        los recicladores dimensionados con los escombros simulados del combate."""
+        jobs.sort(key=lambda j: j["ready_at"])
+        for job in jobs:
+            coords = job["coords"]
+            wait = job["ready_at"] - time.time()
+            # ponytail: espera bloqueante con tope de 10 min; si el despacho óptimo
+            # queda más lejos, lo recogerá la ronda de reciclaje normal.
+            if wait > 600:
+                self.log.info("Farmeo: recolección en %s requeriría esperar %.1f min; la recogerá la ronda de reciclaje.",
+                              coords, wait / 60)
+                continue
+            if wait > 0:
+                self.log.info("Farmeo: esperando %.0f s al campo de escombros de %s...", wait, coords)
+                time.sleep(wait)
+            dest_key = f"{coords.galaxy}:{coords.system}:{coords.position}"
+            if self.inflight_dests.get(dest_key, set()) & {"8", "harvest", "recycle"}:
+                self.log.info("Farmeo: ya hay una recolección en vuelo hacia %s.", coords)
+                continue
+            candidates = [p for p in locations if p.ships.get("recycler", 0) >= 1]
+            if not candidates:
+                self.log.info("Farmeo: sin recicladores disponibles para los escombros de %s.", coords)
+                break
+            origin = min(candidates, key=lambda p: gd.distance(p.coords.tuple(), coords.tuple()))
+            n = min(fleet_mod.recycler_count(job["debris"]), origin.ships.get("recycler", 0))
+            if n <= 0:
+                continue
+            if not self._has_free_slots_for_mission():
+                self.log.info("Farmeo: sin slots libres para los recicladores hacia %s.", coords)
+                break
+            if not self._guard():
+                break
+            plan = fleet_mod.harvest_plan(origin.coords, coords, job["debris"])
+            plan["ships"] = {"recycler": n}
+            ok = self.client.send_fleet(plan["origin"], plan["destination"],
+                                        plan["ships"], mission="harvest")
+            if ok:
+                self._deduct_ships(origin, plan["ships"])
+                self.inflight_dests.setdefault(dest_key, set()).add("harvest")
+                self.active_slots += 1
+                self.log.info("Farmeo: %d reciclador(es) %s -> escombros de %s (esperado: %s).",
+                              n, origin.coords, coords,
+                              {k: int(v) for k, v in job["debris"].items()})
+                self.record_session_action("espionage", f"{coords}",
+                                           f"Recicladores enviados ({n})", str(origin.coords))
 
     def _recycle(self, locations):
         locations_with_recyclers = [p for p in locations

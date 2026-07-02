@@ -192,6 +192,7 @@ def monte_carlo(attacker_fleet, attacker_tech, defender_fleet, defender_defense,
     """Promedia varias simulaciones para estimar probabilidad de victoria."""
     wins = 0
     losses_value = 0.0
+    debris_acc: Dict[str, float] = {}
     for _ in range(runs):
         r = simulate(attacker_fleet, attacker_tech, defender_fleet,
                      defender_defense, defender_tech, **kw)
@@ -201,8 +202,11 @@ def monte_carlo(attacker_fleet, attacker_tech, defender_fleet, defender_defense,
             u = SHIPS.get(name)
             if u:
                 losses_value += (u.cost.metal + u.cost.crystal + u.cost.deut) * n
+        for k, v in r.debris.items():
+            debris_acc[k] = debris_acc.get(k, 0.0) + v
     return {"win_rate": wins / runs,
-            "avg_attacker_loss_value": losses_value / runs}
+            "avg_attacker_loss_value": losses_value / runs,
+            "avg_debris": {k: v / runs for k, v in debris_acc.items()}}
 
 
 if __name__ == "__main__":
@@ -211,9 +215,10 @@ if __name__ == "__main__":
     # (a) superioridad clara: 200 cazas ligeros vs 20 lanzamisiles
     mc = monte_carlo({"light_fighter": 200}, t, {}, {"rocket_launcher": 20}, t, runs=30)
     assert mc["win_rate"] > 0.9, f"(a) win_rate={mc['win_rate']}"
-    # (b) flotas idénticas: sin sesgo pro-atacante
+    # (b) flotas idénticas: sin sesgo pro-atacante; con bajas debe haber escombros
     mc = monte_carlo({"light_fighter": 100}, t, {"light_fighter": 100}, {}, t, runs=50)
     assert mc["win_rate"] < 0.9, f"(b) win_rate={mc['win_rate']}"
+    assert mc["avg_debris"].get("metal", 0) > 0, f"(b) avg_debris={mc['avg_debris']}"
     # (c) rendimiento con defensa masiva
     start = time.time()
     monte_carlo({"cruiser": 1000}, t, {}, {"rocket_launcher": 3000}, t, runs=20)

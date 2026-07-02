@@ -76,6 +76,11 @@ max_target_distance_systems: 200
 attacker_fleet_template:
   small_cargo: 10
   light_fighter: 0
+# Reciclar los escombros de los ataques con combate: los escombros simulados cuentan
+# como beneficio en el score, y tras enviar la flota se lanza 1 sonda suicida (muere
+# contra la defensa y crea el campo de escombros) para poder despachar los
+# recicladores calculados cuanto antes.
+farm_recycle_debris: true
 
 # Multiplicadores de flota (escalados por el nivel de mina de metal del bot en el modo ofensivo)
 fleet_multipliers:

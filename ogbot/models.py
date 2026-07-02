@@ -112,6 +112,7 @@ class Target:
     flight_time: float = 0.0
     score: float = 0.0          # beneficio neto ponderado
     needs_clearing: bool = False  # tiene defensa/flota que destruir primero
+    expected_debris: Dict[str, float] = field(default_factory=dict)  # escombros esperados del combate (simulados)
 
     def __str__(self) -> str:
         return (f"{self.coords} {self.player_name} "

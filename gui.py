@@ -38,7 +38,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ACCOUNTS_DIR = os.path.join(BASE_DIR, "accounts")
 BASE_CDP_PORT = 9222
 
-PORT = 5000
+PORT = int(os.environ.get("PORT", 5000))
 bot_processes = {}  # account_id -> Popen
 
 # --- Visor en vivo (de la cuenta seleccionada) ---

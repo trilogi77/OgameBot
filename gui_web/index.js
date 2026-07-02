@@ -514,6 +514,7 @@ function mapConfigToUI(cfg) {
     setVal("max_attack_targets_per_cycle", cfg.max_attack_targets_per_cycle !== undefined ? cfg.max_attack_targets_per_cycle : 8);
     setVal("min_loot_value", cfg.min_loot_value !== undefined ? cfg.min_loot_value : 50000);
     setCheck("farm_with_probes", cfg.farm_with_probes);
+    setCheck("farm_recycle_debris", cfg.farm_recycle_debris !== undefined ? cfg.farm_recycle_debris : true);
     setVal("espionage_probe_cargo", cfg.espionage_probe_cargo !== undefined ? cfg.espionage_probe_cargo : 0);
 
     // Objetivos de flota
@@ -654,6 +655,7 @@ function collectUIIntoConfig() {
     globalConfig.max_attack_targets_per_cycle = parseI(getVal("max_attack_targets_per_cycle"), 8);
     globalConfig.min_loot_value = parseI(getVal("min_loot_value"), 50000);
     globalConfig.farm_with_probes = getCheck("farm_with_probes");
+    globalConfig.farm_recycle_debris = getCheck("farm_recycle_debris");
     globalConfig.espionage_probe_cargo = parseI(getVal("espionage_probe_cargo"), 0);
 
     // Guardar objetivos de flota

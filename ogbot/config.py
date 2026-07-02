@@ -96,6 +96,11 @@ class Config:
     # atacar inactivos con sondas (raid con sondas) en lugar de cargueros.
     farm_with_probes: bool = False
     espionage_probe_cargo: int = 0   # bodega real por sonda en este servidor (0 = usar gamedata)
+    # Reciclar los escombros de los ataques con combate: los escombros simulados cuentan
+    # como beneficio, y tras enviar la flota se lanza 1 sonda suicida (muere contra la
+    # defensa y crea el campo de escombros) para poder despachar los recicladores
+    # calculados sin esperar a que llegue la flota principal.
+    farm_recycle_debris: bool = True
     attacker_fleet_template: dict = field(default_factory=lambda: {
         "small_cargo": 0, "large_cargo": 0, "light_fighter": 0, "cruiser": 0,
     })

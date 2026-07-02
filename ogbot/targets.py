@@ -60,6 +60,9 @@ def evaluate(report: EspionageReport, origin: Coords, fleet: Dict[str, int],
 
     needs_clearing = not report.is_undefended
     loss_value = 0.0
+    debris_value = 0.0
+    expected_debris: Dict[str, float] = {}
+    r = cfg.trade_ratio
     if needs_clearing:
         def_tech = combat.Tech(
             weapons=report.research.get("weapons_tech", 0),
@@ -74,11 +77,17 @@ def evaluate(report: EspionageReport, origin: Coords, fleet: Dict[str, int],
             reason = f"Combate arriesgado (victoria {mc['win_rate']*100:.1f}%)"
             return (None, reason) if return_reason else None
         loss_value = mc["avg_attacker_loss_value"]
+        # Los escombros del combate cuentan como beneficio solo si el bot los va
+        # a reciclar (sonda suicida + recicladores tras el ataque).
+        if getattr(cfg, "farm_recycle_debris", True):
+            expected_debris = mc.get("avg_debris") or {}
+            debris_value = Resources(expected_debris.get("metal", 0.0),
+                                     expected_debris.get("crystal", 0.0),
+                                     expected_debris.get("deut", 0.0)).value(r)
 
-    r = cfg.trade_ratio
     loot_val = loot.value(r)
     fuel_val = fuel * (r[0] / r[2])
-    score = loot_val - fuel_val - loss_value
+    score = loot_val - fuel_val - loss_value + debris_value
 
     if loot_val < cfg.min_loot_value:
         reason = f"Botín insuficiente ({loot_val:.0f} < mín {cfg.min_loot_value:.0f})"

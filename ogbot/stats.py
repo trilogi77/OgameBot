@@ -27,6 +27,7 @@ class StatsMixin:
             "total_farming": {"metal": 0, "crystal": 0, "deut": 0},
             "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
             "total_expeditions": {"metal": 0, "crystal": 0, "deut": 0, "dark_matter": 0, "ships_found": {}},
+            "expe_outcomes": {"resources": 0, "ships": 0, "items": 0, "dark_matter": 0, "nothing": 0},
             "parsed_messages": [],
             "session_actions": {
                 "buildings": {},
@@ -142,6 +143,27 @@ class StatsMixin:
             utils.atomic_write_json(stats_file, stats)
         except Exception as e:
             self.log.debug("No se pudo escribir ogbot_stats.json en record_session_action: %s", e)
+
+    def update_player_score(self, points, rank, name=""):
+        """Guarda el ranking del jugador (contrato C5) en ogbot_stats.json."""
+        import json
+        import os
+        stats_file = "ogbot_stats.json"
+        stats = {}
+        if os.path.exists(stats_file):
+            try:
+                with open(stats_file, "r", encoding="utf-8") as f:
+                    stats = json.load(f)
+            except Exception:
+                stats = {}
+        stats["player_points"] = int(points or 0)
+        stats["player_rank"] = int(rank or 0)
+        if name:
+            stats["player_name"] = name
+        try:
+            utils.atomic_write_json(stats_file, stats)
+        except Exception as e:
+            self.log.debug("No se pudo escribir el ranking en ogbot_stats.json: %s", e)
 
     def update_imperial_stats(self):
         """Lee los mensajes recientes de combates, expediciones y reciclaje para compilar estadísticas."""
@@ -357,6 +379,23 @@ class StatsMixin:
                     ships_found = stats["total_expeditions"].setdefault("ships_found", {})
                     for sk, qty in found_ships.items():
                         ships_found[sk] = ships_found.get(sk, 0) + qty
+
+                    # Desglose de resultados (C8): clasificar el mensaje por lo extraído y,
+                    # para objetos, por palabras clave del cliente español/inglés
+                    # ("objeto", "artefacto", "inventario", "item").
+                    outcomes = stats.setdefault("expe_outcomes", {
+                        "resources": 0, "ships": 0, "items": 0, "dark_matter": 0, "nothing": 0})
+                    if dark_matter:
+                        outcome = "dark_matter"
+                    elif found_ships:
+                        outcome = "ships"
+                    elif metal or crystal or deut:
+                        outcome = "resources"
+                    elif any(w in text_lower for w in ("objeto", "artefacto", "inventario", "item")):
+                        outcome = "items"
+                    else:
+                        outcome = "nothing"
+                    outcomes[outcome] = outcomes.get(outcome, 0) + 1
 
                 entry["summary"] = fmt_extracted(metal, crystal, deut, dark_matter, found_ships)
 

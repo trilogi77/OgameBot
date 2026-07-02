@@ -150,6 +150,8 @@ keep_free_fleet_slots: 1       # slots reservados para emergencias (evasión/fle
 enable_telegram_commands: true # /status /fleetsave /recall /pausa por Telegram (solo tu chat_id)
 enable_selector_canary: true   # al arrancar, verifica selectores clave del DOM y avisa si cambió la interfaz
 risk_profile: normal           # perfil aplicado desde la GUI: paranoid/normal/aggressive (informativo)
+cycle_order: [economy, recycling, expeditions, farming, feed]  # orden de las rondas del ciclo (drag&drop en la GUI)
+fleetsave_only_if_hostile: false  # fleetsave nocturno solo si hubo actividad hostil reciente (12 h)
 # Barrido nocturno: cada N horas durante el descanso, despierta y vacía (fleetsave)
 # los planetas activados, para recoger la flota fabricada de noche. Actívalo por
 # planeta en la pestaña "Por Planeta" (así no haces actividad en todos).

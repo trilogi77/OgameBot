@@ -129,6 +129,14 @@ class UniverseAPI:
             best = max(best, s.get("score", 0))
         return best
 
+    def player_score(self, player_id) -> Optional[dict]:
+        """Puntos totales y rank del jugador (highscore category=1 type=0, C5).
+        Devuelve {"points": int, "rank": int} o None si no está o falla la API."""
+        entry = self.highscore(category=1, type_=0).get(str(player_id))
+        if not entry:
+            return None
+        return {"points": int(entry["score"]), "rank": int(entry["rank"])}
+
     def player_detail(self, player_id: str) -> dict:
         root = self._get(f"playerData.xml?id={player_id}")
         if root is None:

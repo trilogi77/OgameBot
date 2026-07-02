@@ -187,6 +187,11 @@ class Config:
     enable_selector_canary: bool = True
     # Perfil de riesgo aplicado desde la GUI (informativo): paranoid/normal/aggressive
     risk_profile: str = "normal"
+    # Orden en que cycle() ejecuta las rondas (reordenable desde la GUI por drag&drop)
+    cycle_order: List[str] = field(default_factory=lambda: [
+        "economy", "recycling", "expeditions", "farming", "feed"])
+    # Fleetsave nocturno solo si hubo actividad hostil (ataque o sondeo) reciente
+    fleetsave_only_if_hostile: bool = False
     # Barrido nocturno: cada N horas durante el descanso, vacía (fleetsave) los planetas
     # activados para recoger la flota fabricada de noche. Activable por planeta.
     enable_night_sweep: bool = False

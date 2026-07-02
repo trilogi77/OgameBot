@@ -436,6 +436,11 @@ class Brain(StatsMixin):
         self._phalanx_warned = set()      # avisos de phalanx: uno por origen y noche
         self._last_history_date = ""      # última fecha volcada a stats_history.jsonl
         self._next_cycle_eta = 0.0        # hora aprox. del próximo ciclo (para /status)
+        self.last_hostile_epoch = 0.0     # última actividad hostil vista (ataque/sondeo); persistido
+        self._last_hourly = ""            # última hora (YYYY-MM-DD HH) volcada a stats_hourly.jsonl
+        self.started_at = time.time()     # arranque del proceso (para /api/botstatus); siempre nuevo
+        self.player_id = ""               # id/nombre del jugador (de los meta del juego, vía client)
+        self.player_name = ""
         self._load_state()
         # Memoria de estado (niveles de edificios/investigación/defensas)
         self.state_cache = {"research": {}, "planets": {}}
@@ -465,6 +470,11 @@ class Brain(StatsMixin):
                     self.paused_until = float(data.get("paused_until", 0.0) or 0.0)
                     self._tg_offset = int(data.get("tg_offset", 0) or 0)
                     self._last_history_date = data.get("last_history_date", "") or ""
+                    self.last_hostile_epoch = float(data.get("last_hostile_epoch", 0.0) or 0.0)
+                    self._last_hourly = data.get("last_hourly", "") or ""
+                    self.player_id = str(data.get("player_id", "") or "")
+                    self.player_name = str(data.get("player_name", "") or "")
+                    # started_at NO se carga: cada proceso nuevo escribe el suyo.
                     # Coords no es JSON-serializable: se guarda como dict plano y se reconstruye.
                     self.escaped_fleets = []
                     for e in data.get("escaped_fleets", []) or []:
@@ -497,6 +507,9 @@ class Brain(StatsMixin):
 
             def c2d(c):
                 return {"galaxy": c.galaxy, "system": c.system, "position": c.position, "type": c.type}
+            # id/nombre del jugador: si el client ya los leyó de los meta, quedan persistidos.
+            self.player_id = str(getattr(self.client, "player_id", "") or self.player_id or "")
+            self.player_name = str(getattr(self.client, "player_name", "") or self.player_name or "")
             utils.atomic_write_json(self.cfg.state_file, {
                 "attack_history": self.attack_history,
                 "telegram_notified_attacks": self.telegram_notified_attacks,
@@ -514,6 +527,11 @@ class Brain(StatsMixin):
                 "paused_until": self.paused_until,
                 "tg_offset": self._tg_offset,
                 "last_history_date": self._last_history_date,
+                "last_hostile_epoch": self.last_hostile_epoch,
+                "last_hourly": self._last_hourly,
+                "started_at": self.started_at,
+                "player_id": self.player_id,
+                "player_name": self.player_name,
                 "escaped_fleets": [{"origin": c2d(e["origin"]),
                                     "destination": c2d(e["destination"]),
                                     "escaped_at": e.get("escaped_at", 0.0),
@@ -623,6 +641,83 @@ class Brain(StatsMixin):
                 utils.atomic_write_json(src, failed + existing)
             except Exception as e:
                 self.log.debug("No se pudo re-encolar regresos fallidos: %s", e)
+
+    def _process_control_requests(self):
+        """Ejecuta los comandos remotos de la GUI (bot_control.json, contrato C1):
+        pause/resume/screenshot/restart_session/close_browser. Mismo patrón que
+        _process_recall_requests: reclama el fichero de forma atómica (rename), ejecuta
+        los comandos, y escribe el resultado en bot_control_result.json."""
+        import json
+        import os
+        src = "bot_control.json"
+        if not os.path.exists(src):
+            return
+        work = "bot_control.processing.json"
+        try:
+            os.replace(src, work)   # lo que escriba la GUI a partir de ahora va a un fichero nuevo
+        except Exception:
+            return
+        try:
+            with open(work, "r", encoding="utf-8") as f:
+                commands = (json.load(f) or {}).get("commands", []) or []
+        except Exception:
+            commands = []
+        try:
+            os.remove(work)
+        except Exception:
+            pass
+        # La GUI reescribe el fichero completo al encolar (read-modify-write): si lee
+        # justo antes de nuestro os.replace puede reintroducir comandos ya consumidos.
+        # Dedup por id de los últimos ejecutados para no repetirlos.
+        done = getattr(self, "_control_ids_done", None)
+        if done is None:
+            done = self._control_ids_done = []
+        commands = [c for c in commands if str((c or {}).get("id", "")) not in done]
+        for c in commands:
+            cmd = str((c or {}).get("cmd", "")).strip()
+            cid = str((c or {}).get("id", ""))
+            done.append(cid)
+            del done[:-50]
+            arg = (c or {}).get("arg")
+            ok, detail, file_out = True, "", None
+            self.log.info("Comando de la GUI: %s (id %s).", cmd, cid)
+            try:
+                if cmd == "pause":
+                    try:
+                        mins = max(1, int(arg))
+                    except (TypeError, ValueError):
+                        mins = 60
+                    self.paused_until = time.time() + mins * 60
+                    detail = f"pausado {mins} min (hasta {time.strftime('%H:%M', time.localtime(self.paused_until))})"
+                elif cmd == "resume":
+                    self.paused_until = 0.0
+                    detail = "reanudado"
+                elif cmd == "screenshot":
+                    os.makedirs("gui_captures", exist_ok=True)
+                    file_out = f"gui_captures/capture_{int(time.time())}.png"
+                    self.client.page.screenshot(path=file_out)
+                    detail = "captura guardada"
+                elif cmd == "restart_session":
+                    self.client.stop()
+                    self.client.start()
+                    ok = bool(self.client.login())
+                    detail = "sesión reiniciada" if ok else "login fallido tras reiniciar"
+                elif cmd == "close_browser":
+                    self.client.stop()
+                    self.paused_until = time.time() + 12 * 3600
+                    detail = "navegador cerrado; pausado 12h (se reanuda con resume)"
+                else:
+                    ok, detail = False, f"comando desconocido: {cmd}"
+            except Exception as e:
+                ok, detail, file_out = False, str(e), None
+                self.log.warning("Comando de la GUI %s falló: %s", cmd, e)
+            self._save_state()
+            try:
+                utils.atomic_write_json("bot_control_result.json", {
+                    "last": {"id": cid, "cmd": cmd, "ok": ok, "detail": detail,
+                             "ts": int(time.time()), "file": file_out}})
+            except Exception as e:
+                self.log.debug("No se pudo escribir bot_control_result.json: %s", e)
 
     def _apply_pending_gui_requests(self):
         """Aplica peticiones dejadas por la GUI como ficheros: corrección manual de
@@ -836,6 +931,9 @@ class Brain(StatsMixin):
     # ------------------------------------------------------------------ #
     def run_forever(self):
         self.log.info("=== OGBot iniciado (dry_run=%s) ===", self.cfg.dry_run)
+        # Arranque nuevo: persistir started_at ya (lo lee la GUI en /api/botstatus).
+        self.started_at = time.time()
+        self._save_state()
         self.client.start()
         if not self.client.login():
             self.log.error("Login fallido. Abortando.")
@@ -849,6 +947,13 @@ class Brain(StatsMixin):
                     self._process_recall_requests()
                 except Exception as e:
                     self.log.debug("Error procesando regresos de flota: %s", e)
+
+                # Comandos remotos de la GUI (pause/resume/screenshot/...); se atienden
+                # también estando pausado (el resume debe funcionar en pausa).
+                try:
+                    self._process_control_requests()
+                except Exception as e:
+                    self.log.debug("Error procesando comandos de la GUI: %s", e)
 
                 # Comprobación de ataque prioritaria e incondicional (antes de evaluar franja horaria)
                 if getattr(self.cfg, "enable_attack_escape", True):
@@ -923,6 +1028,12 @@ class Brain(StatsMixin):
                         except Exception as e:
                             self.log.debug("Error procesando regresos de flota (espera): %s", e)
 
+                        # Comandos remotos de la GUI (también con la pausa activa).
+                        try:
+                            self._process_control_requests()
+                        except Exception as e:
+                            self.log.debug("Error procesando comandos de la GUI (espera): %s", e)
+
                         # Comandos remotos de Telegram (/status, /fleetsave, /pausa...).
                         try:
                             self._poll_telegram_commands()
@@ -936,7 +1047,13 @@ class Brain(StatsMixin):
                     
                     # Realizar fleetsave una sola vez para cubrir todo el periodo de inactividad
                     self._fleetsave_all(offline_hours=hours_to_sleep)
-                    
+
+                    # Publicar la agenda al entrar en la noche (pausa nocturna, retornos...).
+                    try:
+                        self._publish_agenda()
+                    except Exception as e:
+                        self.log.debug("No se pudo publicar la agenda nocturna: %s", e)
+
                     # Si el retorno a mitad de la noche está habilitado
                     recall_halfway = getattr(self.cfg, "fleetsave_recall_halfway", False)
                     if recall_halfway and hours_to_sleep > 0.5:
@@ -977,6 +1094,11 @@ class Brain(StatsMixin):
                             self._process_recall_requests()
                         except Exception as e:
                             self.log.debug("Error procesando regresos de flota (noche): %s", e)
+                        # Comandos remotos de la GUI también durante el descanso.
+                        try:
+                            self._process_control_requests()
+                        except Exception as e:
+                            self.log.debug("Error procesando comandos de la GUI (noche): %s", e)
                         # Comandos remotos de Telegram también durante el descanso.
                         try:
                             self._poll_telegram_commands()
@@ -1336,57 +1458,73 @@ class Brain(StatsMixin):
             else:
                 self.log.info("Ronda de farmeo omitida (última ejecución hace %.1f min; intervalo configurado: %d min)", elapsed_farming / 60, farming_interval)
 
-        # 2. Reciclaje (timer independiente)
-        if run_recycling and self.cfg.enable_recycling:
-            if self._has_ships(all_locations, "recycler"):
-                self._recycle(all_locations)
-            else:
-                self.log.debug("Reciclaje omitido: sin recicladores.")
-            self.last_recycling_run_time = time.time()
-            self._save_state()
-
-        # 3. Expediciones (timer independiente)
-        if run_expeditions and self.cfg.enable_expeditions:
-            self._run_expeditions_round(planets, all_locations)
-            self.last_expeditions_run_time = time.time()
-            self._update_next_expedition_event()
-            self._save_state()
-
-        # 7-8. Farmeo (ataques a inactivos) + colonización + lunas (timer independiente)
-        if run_farming:
-            self.log.info("Iniciando ronda de farmeo (ataques a inactivos)...")
-            if self.cfg.enable_farming and self.api:
-                if self._has_ships(all_locations, "espionage_probe"):
-                    self._farm(all_locations)
+        # Rondas del ciclo en el orden configurable (cfg.cycle_order, contrato C4).
+        # La lógica interna y los timers de cada ronda no cambian; solo el orden.
+        def round_recycling():
+            if run_recycling and self.cfg.enable_recycling:
+                if self._has_ships(all_locations, "recycler"):
+                    self._recycle(all_locations)
                 else:
-                    self.log.info("Farmeo omitido: sin sondas de espionaje.")
+                    self.log.debug("Reciclaje omitido: sin recicladores.")
+                self.last_recycling_run_time = time.time()
+                self._save_state()
 
-            # 9. Colonización
-            if self.cfg.enable_colonization:
-                self._colonize(planets)
+        def round_expeditions():
+            if run_expeditions and self.cfg.enable_expeditions:
+                self._run_expeditions_round(planets, all_locations)
+                self.last_expeditions_run_time = time.time()
+                self._update_next_expedition_event()
+                self._save_state()
 
-            # 10. Lunas
-            if self.cfg.enable_moon_creation:
-                self._moonshot(planets)
+        def round_farming():
+            # Farmeo (ataques a inactivos) + colonización + lunas (timer independiente)
+            if run_farming:
+                self.log.info("Iniciando ronda de farmeo (ataques a inactivos)...")
+                if self.cfg.enable_farming and self.api:
+                    if self._has_ships(all_locations, "espionage_probe"):
+                        self._farm(all_locations)
+                    else:
+                        self.log.info("Farmeo omitido: sin sondas de espionaje.")
+                if self.cfg.enable_colonization:
+                    self._colonize(planets)
+                if self.cfg.enable_moon_creation:
+                    self._moonshot(planets)
+                self.last_farming_run_time = time.time()
+                self._save_state()
 
-            self.last_farming_run_time = time.time()
-            self._save_state()
+        def round_economy():
+            if run_economy:
+                self.log.info("Iniciando ronda de economía/construcción...")
+                # Economía / defensa / formas de vida / instalaciones por planeta
+                for p in planets:
+                    self._economy_step(p)
+                    self._defense_step(p)
+                    self._lifeforms_step(p)
+                    self._facilities_step(p)
+                self._research_step(planets)
+                self._fleet_step(planets)
+                self.last_economy_run_time = time.time()
+                self._save_state()
 
-        # Ejecutar ronda de Economía/Construcción si corresponde
-        if run_economy:
-            self.log.info("Iniciando ronda de economía/construcción...")
-            # 4-7. Economía / defensa / formas de vida / instalaciones por planeta (solo planetas principales)
-            for p in planets:
-                self._economy_step(p)
-                self._defense_step(p)
-                self._lifeforms_step(p)
-                self._facilities_step(p)
-            self._feed_step(planets, mvs)   # alimentar planetas-objetivo desde fuentes marcadas
-            self._research_step(planets)
-            self._fleet_step(planets)
+        def round_feed():
+            # Alimentación de planetas-objetivo; comparte el timer de la economía.
+            if run_economy:
+                self._feed_step(planets, mvs)
 
-            self.last_economy_run_time = time.time()
-            self._save_state()
+        rounds = {"economy": round_economy, "recycling": round_recycling,
+                  "expeditions": round_expeditions, "farming": round_farming,
+                  "feed": round_feed}
+        order = []
+        for k in (getattr(self.cfg, "cycle_order", None) or []):
+            if k in rounds and k not in order:
+                order.append(k)
+            elif k not in rounds:
+                self.log.debug("cycle_order: clave desconocida %r ignorada.", k)
+        for k in ("economy", "recycling", "expeditions", "farming", "feed"):
+            if k not in order:
+                order.append(k)
+        for k in order:
+            rounds[k]()
 
         # Mantener armado el despertar por vuelta de expedición aunque la ronda no se haya
         # ejecutado este ciclo (p.ej. bloqueada por su intervalo), para no perder reenvíos.
@@ -1404,6 +1542,18 @@ class Brain(StatsMixin):
             self._append_daily_history()
         except Exception as e:
             self.log.debug("No se pudo actualizar el histórico diario: %s", e)
+
+        # 13. Snapshot horario de recursos/acciones (una línea por hora, rolling 72h)
+        try:
+            self._write_hourly_snapshot()
+        except Exception as e:
+            self.log.debug("No se pudo escribir stats_hourly.jsonl: %s", e)
+
+        # 14. Agenda de tareas para la GUI
+        try:
+            self._publish_agenda()
+        except Exception as e:
+            self.log.debug("No se pudo publicar task_agenda.json: %s", e)
 
     # ------------------------------------------------------------------ #
     def _economy_step(self, planet):
@@ -2665,6 +2815,11 @@ class Brain(StatsMixin):
     def _fleetsave_all(self, offline_hours: float):
         if not self.cfg.enable_fleetsave:
             return
+        # ponytail: ventana fija 12h.
+        if getattr(self.cfg, "fleetsave_only_if_hostile", False) and \
+                (time.time() - self.last_hostile_epoch) > 12 * 3600:
+            self.log.info("Sin actividad hostil reciente, fleetsave omitido.")
+            return
         planets = self.client.read_planets()
         # Leer lunas para tener sus datos también
         for p in planets:
@@ -3004,10 +3159,11 @@ class Brain(StatsMixin):
         """Avisa por Telegram de espionaje hostil entrante (misión 6) a coords propias.
         Un sondeo suele preceder a un ataque. Cooldown por origen para no spamear con
         las sondas de rutina de los vecinos."""
-        if not getattr(self.cfg, "enable_spy_watch", True):
-            return
-        if not (getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", "")):
-            return
+        # La marca de hostilidad (C7) se actualiza SIEMPRE que hay sondeo entrante;
+        # el aviso por Telegram solo si la vigilancia está activa y el bot configurado.
+        notify = bool(getattr(self.cfg, "enable_spy_watch", True)
+                      and getattr(self.cfg, "telegram_token", "")
+                      and getattr(self.cfg, "telegram_chat_id", ""))
         now = time.time()
         cooldown = max(0, int(getattr(self.cfg, "spy_watch_cooldown_mins", 30))) * 60
         for mv in mvs:
@@ -3015,6 +3171,9 @@ class Brain(StatsMixin):
                 continue
             dest = mv.get("destination", "")
             if dest not in our_by_coords:
+                continue
+            self.last_hostile_epoch = now   # sondeo entrante = actividad hostil (C7)
+            if not notify:
                 continue
             origin = mv.get("origin", "Desconocido")
             key = f"{origin}->{dest}"
@@ -3174,6 +3333,11 @@ class Brain(StatsMixin):
                         logger=self.log
                     )
                     
+        # Movimiento hostil visto: registrar la marca de actividad hostil (C7, fleetsave
+        # condicionado). Se persiste con el _save_state del final de esta función.
+        if under_attack:
+            self.last_hostile_epoch = time.time()
+
         # 1b. Vigilancia de espionaje entrante (misión 6): solo avisa, no evade.
         self._watch_incoming_spy(mvs, our_by_coords)
 
@@ -3352,10 +3516,177 @@ class Brain(StatsMixin):
             "expe_dark_matter": int(expe.get("dark_matter", 0) or 0),
             "hostile_attacks": sum(len(v or []) for v in hostiles.values()),
         }
+        # Ranking del jugador (C5): puntos y posición vía la API del universo, 1 vez al día.
+        pid = str(getattr(self.client, "player_id", "") or self.player_id or "")
+        if pid and self.api:
+            try:
+                if hasattr(self.api, "player_score"):
+                    score = self.api.player_score(pid) or {}
+                else:
+                    # Respaldo si player_score aún no existe: highscore total (cat 1, type 0).
+                    s = self.api.highscore(category=1, type_=0).get(pid) or {}
+                    score = {"points": s.get("score", 0), "rank": s.get("rank", 0)}
+                points = int(score.get("points", 0) or 0)
+                rank = int(score.get("rank", 0) or 0)
+                if points or rank:
+                    entry["points"] = points
+                    entry["rank"] = rank
+                    self.update_player_score(points, rank, self.player_name)
+            except Exception as e:
+                self.log.debug("No se pudo leer el ranking del jugador %s: %s", pid, e)
         with open("stats_history.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
         self._last_history_date = today
         self._save_state()
+
+    def _write_hourly_snapshot(self):
+        """Snapshot horario (contrato C2): 1 línea JSON compacta por hora en
+        stats_hourly.jsonl, rolling 72h (se reescribe entero podando lo viejo, con
+        tmp+os.replace porque atomic_write_json no sirve para jsonl multilinea).
+        actions = entradas de session_actions (ogbot_stats.json) con timestamp en la
+        última hora; sus entradas llevan timestamp '%Y-%m-%d %H:%M:%S'."""
+        import json
+        import os
+        hour = time.strftime("%Y-%m-%d %H")
+        if hour == self._last_hourly:
+            return
+        now = int(time.time())
+        m = c = d = 0
+        for p in self.last_planets:
+            for loc in [p] + ([p.moon] if getattr(p, "moon", None) else []):
+                r = getattr(loc, "resources", None)
+                if r is not None:
+                    m += int(r.metal); c += int(r.crystal); d += int(r.deut)
+        actions = 0
+        try:
+            with open("ogbot_stats.json", "r", encoding="utf-8") as f:
+                sa = json.load(f).get("session_actions") or {}
+            for group in sa.values():
+                entries = group if isinstance(group, list) else \
+                    [e for v in (group or {}).values() for e in (v or [])]
+                for e in entries:
+                    try:
+                        ts = time.mktime(time.strptime(e.get("timestamp", ""), "%Y-%m-%d %H:%M:%S"))
+                        if now - ts <= 3600:
+                            actions += 1
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        rows = []
+        path = "stats_hourly.jsonl"
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for ln in f:
+                    try:
+                        e = json.loads(ln)
+                        if now - int(e.get("ts", 0)) <= 72 * 3600:
+                            rows.append(e)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        rows.append({"ts": now, "metal": m, "crystal": c, "deut": d, "actions": actions})
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            for e in rows:
+                f.write(json.dumps(e, ensure_ascii=False, separators=(",", ":")) + "\n")
+        os.replace(tmp, path)
+        self._last_hourly = hour
+        self._save_state()
+
+    def _publish_agenda(self):
+        """Publica task_agenda.json (contrato C3): próximas rondas de módulos,
+        construcciones/investigación en curso, retornos de vuelos propios, fleetsave
+        nocturno y pausa nocturna. Tolerante: cualquier dato ausente se omite."""
+        import json
+        now = time.time()
+        tasks = []
+
+        def add(when, kind, title, detail="", status="programado", loc=None):
+            try:
+                tasks.append({"when": int(when), "kind": kind, "title": title,
+                              "detail": detail, "status": status, "loc": loc})
+            except Exception:
+                pass
+
+        # 1) Próxima ronda de cada módulo habilitado (intervalo efectivo; 0 = cada ciclo).
+        next_cycle = self._next_cycle_eta if self._next_cycle_eta > now else now
+        modules = [
+            ("economia", "Ronda de economía", getattr(self.cfg, "enable_economy", True),
+             self.last_economy_run_time, getattr(self.cfg, "economy_run_interval_mins", 0)),
+            ("reciclaje", "Ronda de reciclaje", getattr(self.cfg, "enable_recycling", True),
+             self.last_recycling_run_time, getattr(self.cfg, "recycling_run_interval_mins", 0)),
+            ("expedicion", "Ronda de expediciones", getattr(self.cfg, "enable_expeditions", True),
+             self.last_expeditions_run_time, getattr(self.cfg, "expeditions_run_interval_mins", 0)),
+            ("farming", "Ronda de farmeo", getattr(self.cfg, "enable_farming", True),
+             self.last_farming_run_time, getattr(self.cfg, "farming_run_interval_mins", 0)),
+        ]
+        for kind, title, enabled, last_run, interval in modules:
+            if not enabled:
+                continue
+            try:
+                due = float(last_run or 0.0) + max(0, int(interval or 0)) * 60
+            except (TypeError, ValueError):
+                continue
+            add(max(due, next_cycle), kind, title,
+                f"intervalo {int(interval)} min" if interval else "cada ciclo",
+                "pendiente" if due <= now else "programado")
+
+        # 2) Construcciones/investigación en curso (de la caché de estado).
+        for key, entry in (self.state_cache.get("planets") or {}).items():
+            finish = (entry or {}).get("build_finish_epoch", 0.0) or 0.0
+            if finish > now:
+                loc = ":".join(key.split(":")[:3])
+                q = entry.get("build_queue") or []
+                add(finish, "construir", f"Construcción en {loc}",
+                    str(q[0]) if q else "", "en_curso", loc)
+        r = self.state_cache.get("research") or {}
+        if (r.get("finish_epoch") or 0.0) > now:
+            add(r["finish_epoch"], "investigacion", "Investigación en curso",
+                str(r.get("tech", "") or ""), "en_curso")
+
+        # 3) Retornos de vuelos propios (fleet_flights.json del ciclo).
+        kind_by_mission = {"15": "expedicion", "1": "farming", "2": "farming",
+                           "8": "reciclaje", "6": "espionaje", "3": "transporte",
+                           "4": "fleetsave"}
+        try:
+            with open("fleet_flights.json", "r", encoding="utf-8") as f:
+                flights = json.load(f).get("flights", []) or []
+        except Exception:
+            flights = []
+        for fl in flights:
+            try:
+                back = int(fl.get("return_arrival_epoch") or 0) or int(fl.get("arrival_epoch") or 0)
+            except (TypeError, ValueError):
+                continue
+            if back <= now:
+                continue
+            add(back, kind_by_mission.get(str(fl.get("mission_code", "")), "transporte"),
+                f"Retorno de {fl.get('mission', 'vuelo')}",
+                f"{fl.get('origin', '?')} -> {fl.get('destination', '?')}",
+                "en_curso", fl.get("origin") or None)
+
+        # 4) Fleetsave nocturno estimado y pausa nocturna (según active_hours).
+        try:
+            if utils.within_active_hours(self.cfg.active_hours):
+                rest_s = utils.seconds_until_inactive(self.cfg.active_hours)
+                if 0 < rest_s < 86400:
+                    if getattr(self.cfg, "enable_fleetsave", True):
+                        add(now + rest_s, "fleetsave", "Fleetsave nocturno",
+                            "al inicio del descanso", "programado")
+                    add(now + rest_s, "sistema", "Pausa nocturna",
+                        "fin de la franja activa", "programado")
+            else:
+                wake_h = utils.hours_until_active(self.cfg.active_hours)
+                add(now + wake_h * 3600, "sistema", "Pausa nocturna",
+                    "descansando hasta la franja activa", "en_curso")
+        except Exception:
+            pass
+
+        tasks.sort(key=lambda t: t["when"])
+        utils.atomic_write_json("task_agenda.json",
+                                {"generated_at": int(now), "tasks": tasks})
 
     def _calculate_panic_build(self, planet: Planet) -> Dict[str, int]:
         """

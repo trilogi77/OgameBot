@@ -12,6 +12,17 @@ let configLoaded = false;
 let currentAccount = localStorage.getItem("ogbot_account") || "";
 let accountsCache = [];
 
+// Estado nuevo (ORION·OPS): dashboard, agenda, control remoto, registro
+let uiBaseline = null;         // copia de la config tal y como quedó la UI tras cargar (para el badge de cambios)
+let agendaCache = { tasks: [] };
+let hourlyCache = [];          // stats_hourly.jsonl (C2)
+let statsCache = {};           // último /api/stats (puntos, ranking, expe_outcomes)
+let botStatusCache = null;     // último /api/botstatus (C6)
+let expeStatusCache = {};      // último /api/expedition (para slots del KPI de flotas)
+let buildStatusCache = {};     // último /api/buildstatus (línea de cola por tarjeta)
+let parsedLogsCache = [];      // logs parseados (hora/nivel/módulo) para filtros y CSV
+let dashRange = "7d";          // rango activo de la gráfica de evolución (24h|7d|30d)
+
 // Parseo numérico seguro: campo vacío/no numérico => default (nunca 0 por accidente)
 function parseI(val, def = null) {
     const parsed = parseInt(val);
@@ -49,6 +60,12 @@ function loadAccounts() {
 }
 
 function renderAccountSelect() {
+    const meta = document.getElementById("sb_accounts_meta");
+    if (meta) {
+        const running = accountsCache.filter(a => a.running).length;
+        meta.textContent = accountsCache.length
+            ? `${running}/${accountsCache.length} en marcha` : "sin cuentas";
+    }
     const sel = document.getElementById("accountSelect");
     if (!sel) return;
     sel.innerHTML = "";
@@ -95,6 +112,7 @@ function switchAccount(id) {
     localStorage.setItem("ogbot_account", id);
     configLoaded = false;
     configSnapshot = null;
+    uiBaseline = null;
     messagesCache = [];
     lastMessagesSig = "";
     flightsCache = [];
@@ -102,6 +120,17 @@ function switchAccount(id) {
     queueDrafts = {};
     queueLocations = [];
     lastQueueLocSig = "";
+    // Estado nuevo (dashboard/agenda/control remoto/registro)
+    agendaCache = { tasks: [] };
+    hourlyCache = [];
+    statsCache = {};
+    botStatusCache = null;
+    expeStatusCache = {};
+    buildStatusCache = {};
+    historyCache = [];
+    lastLogsLength = 0;
+    rawLogsCache = [];
+    parsedLogsCache = [];
     renderAccountSelect();
     renderAccountsTab();
     loadConfig();
@@ -114,6 +143,9 @@ function switchAccount(id) {
     loadExpeditionStatus();
     loadBuildStatus();
     loadHistory();
+    loadAgenda();
+    loadHourly();
+    loadBotStatus();
 }
 
 function createAccount() {
@@ -394,6 +426,10 @@ function loadConfig() {
                 configLoaded = true;
                 forceRerenderPlanets();
             }
+            // Línea base de la UI para el contador de "cambios sin guardar"
+            collectUIIntoConfig();
+            uiBaseline = JSON.parse(JSON.stringify(globalConfig));
+            updateDirtyBadge();
         })
         .catch(err => showToast("Error de conexión: " + err, "danger"));
 }
@@ -431,6 +467,7 @@ function mapConfigToUI(cfg) {
     setVal("spy_watch_cooldown_mins", cfg.spy_watch_cooldown_mins !== undefined ? cfg.spy_watch_cooldown_mins : 30);
     setCheck("spy_watch_messages", cfg.spy_watch_messages !== false);
     setCheck("enable_fleetsave", cfg.enable_fleetsave);
+    setCheck("fleetsave_only_if_hostile", !!cfg.fleetsave_only_if_hostile);
     setVal("fleetsave_mission", cfg.fleetsave_mission || "deploy");
     setCheck("fleetsave_carry_resources", cfg.fleetsave_carry_resources !== false);
     setCheck("fleetsave_recall_halfway", !!cfg.fleetsave_recall_halfway);
@@ -519,14 +556,16 @@ function mapConfigToUI(cfg) {
     // Lista de prioridades de investigación
     researchPriorityList = cfg.research_priority || [];
     renderResearchPriorityList();
+
+    // Orden del ciclo (C4) + módulos del dashboard
+    applyCycleOrderToChips(cfg.cycle_order);
+    renderDashModules();
 }
 
-function saveChanges() {
-    // Sin config cargada no se guarda nada: se machacaría el YAML con valores por defecto
-    if (!configLoaded || !configSnapshot) {
-        showToast("La configuración aún no se ha cargado. Espera un momento y vuelve a intentarlo.", "danger");
-        return;
-    }
+// Vuelca TODO el formulario en globalConfig / localPlanetsConfig. Extraído de saveChanges
+// (mismo código) para reutilizarlo en el contador de "cambios sin guardar". Sin red.
+function collectUIIntoConfig() {
+    if (!configLoaded || !configSnapshot) return;
 
     // Guardar objetivos de defensa actuales del planeta seleccionado en memoria
     const selectedPlanetCoords = document.getElementById("defense_planet_select").value;
@@ -718,6 +757,27 @@ function saveChanges() {
 
     globalConfig.planets_config = localPlanetsConfig;
 
+    // Claves nuevas (C4/C7): solo se escriben si ya existían en el snapshot o si el
+    // usuario las activó/cambió, para no generar diffs fantasma con configs antiguas.
+    const fsHostile = getCheck("fleetsave_only_if_hostile");
+    if (configSnapshot.fleetsave_only_if_hostile !== undefined || fsHostile) {
+        globalConfig.fleetsave_only_if_hostile = fsHostile;
+    }
+    const cycleOrder = currentCycleOrder();
+    if (cycleOrder.length === DEFAULT_CYCLE_ORDER.length &&
+        (configSnapshot.cycle_order !== undefined || cycleOrder.join() !== DEFAULT_CYCLE_ORDER.join())) {
+        globalConfig.cycle_order = cycleOrder;
+    }
+}
+
+function saveChanges() {
+    // Sin config cargada no se guarda nada: se machacaría el YAML con valores por defecto
+    if (!configLoaded || !configSnapshot) {
+        showToast("La configuración aún no se ha cargado. Espera un momento y vuelve a intentarlo.", "danger");
+        return;
+    }
+    collectUIIntoConfig();
+
     // Guardado por diff: POSTear solo las claves que cambiaron respecto al snapshot
     // (el backend hace merge clave a clave, así que lo no enviado se conserva).
     const changed = {};
@@ -740,6 +800,9 @@ function saveChanges() {
     .then(data => {
         if (data.status === "success") {
             configSnapshot = JSON.parse(JSON.stringify(globalConfig));
+            uiBaseline = JSON.parse(JSON.stringify(globalConfig));
+            updateDirtyBadge();
+            renderDashModules();
             showToast("Configuración guardada correctamente", "success");
         } else {
             showToast("Error al guardar: " + data.error, "danger");
@@ -764,6 +827,9 @@ function loadPlanets() {
                 populateFacilitiesPlanetSelect();
                 populateLevelFix();
                 populateBuildQueue();
+                renderEmpireProduction();
+                updatePlanetsSummary();
+                updateDashKPIs();
             } else {
                 planetsListContainer.innerHTML = `
                     <div class="text-center text-muted" style="padding: 40px 0;">
@@ -1066,17 +1132,44 @@ function renderPlanetsList() {
         const hasMoon = !!(p.has_moon || (p.moon && p.moon.coords));
 
         const card = document.createElement("div");
-        card.className = "planet-card";
+        card.className = "planet-card collapsed";   // config por tarjeta plegada por defecto
         card.dataset.coords = coords;
-        
+
+        // Chip de niveles M·C·D·E desde los edificios registrados
+        const b = p.buildings || {};
+        const levelsChip = `M${b.metal_mine || 0}·C${b.crystal_mine || 0}·D${b.deut_synth || 0}·E${b.solar_plant || 0}`;
+        // Recursos por planeta: /api/planets no los trae hoy; si algún día llegan
+        // (p.resources), barra relativa al máximo entre planetas (sin "/ max").
+        let resHTML = "";
+        const res = p.resources;
+        if (res && typeof res.metal === "number") {
+            const maxRes = Math.max(1, ...planetsCache.map(q => {
+                const r = q.resources || {};
+                return Math.max(r.metal || 0, r.crystal || 0, r.deut || 0);
+            }));
+            const bar = (val, cls) => `
+                <div class="planet-res-row mono sm" style="display:flex;align-items:center;gap:8px;">
+                    <span class="dim" style="width:14px;">${cls[0].toUpperCase()}</span>
+                    <div class="meter" style="flex:1;"><div class="meter-fill cyan" style="width:${Math.round((val || 0) / maxRes * 100)}%"></div></div>
+                    <span style="min-width:64px;text-align:right;">${formatNumber(val || 0)}</span>
+                </div>`;
+            resHTML = `<div class="planet-res">${bar(res.metal, "metal")}${bar(res.crystal, "cristal")}${bar(res.deut, "deuterio")}</div>`;
+        }
+
         card.innerHTML = `
             <div class="planet-card-header">
                 <div class="planet-name-wrapper">
                     <span class="planet-icon">🪐</span>
                     <span class="planet-title">${p.name}</span>
                     <span class="planet-coords-tag">[${coords}]</span>
+                    ${hasMoon ? '<span class="planet-icon" title="Tiene luna">🌙</span>' : ""}
                 </div>
+                <div class="topbar-spacer"></div>
+                <span class="mono dim sm" title="Niveles: mina metal · mina cristal · sint. deuterio · planta solar">${levelsChip}</span>
+                <button type="button" class="btn btn-secondary btn-sm planet-expand" title="Configurar módulos de este planeta">⚙</button>
             </div>
+            ${resHTML}
+            <div class="planet-queue-line mono dim sm" data-coords="${coords}">⏳ —</div>
             <div class="planet-card-body">
                 <label class="planet-toggle">
                     <input type="checkbox" class="planet-economy" ${isEconomy ? "checked" : ""}>
@@ -1112,9 +1205,19 @@ function renderPlanetsList() {
                 </label>
             </div>
         `;
-        
+
+        const expander = card.querySelector(".planet-expand");
+        if (expander) expander.addEventListener("click", () => card.classList.toggle("collapsed"));
         planetsListContainer.appendChild(card);
     });
+    updatePlanetQueueLines();
+    // Las tarjetas se regeneran con los valores derivados de la config: rebasar la línea
+    // base de planets_config para que el propio render no cuente como cambio sin guardar.
+    if (uiBaseline) {
+        collectUIIntoConfig();
+        uiBaseline.planets_config = JSON.parse(JSON.stringify(globalConfig.planets_config || {}));
+        updateDirtyBadge();
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -1126,7 +1229,11 @@ function checkBotStatus() {
         .then(data => {
             if (data.running) {
                 statusDot.className = "status-dot active";
-                statusText.innerText = "En ejecución";
+                // Si el bot está en pausa remota (C1/C6), la píldora lo refleja
+                const paused = botStatusCache && (botStatusCache.paused_until || 0) * 1000 > Date.now();
+                statusText.innerText = paused
+                    ? "EN PAUSA hasta " + new Date(botStatusCache.paused_until * 1000).toLocaleTimeString().slice(0, 5)
+                    : "EN MARCHA";
                 btnStart.disabled = true;
                 btnStop.disabled = false;
             } else {
@@ -1167,34 +1274,136 @@ function loadLogs() {
         });
 }
 
+// Etiqueta de módulo por palabras clave (heurística; "otros" si no casa)
+const LOG_MODULES = ["farmeo", "expediciones", "reciclaje", "fleetsave", "ataques",
+    "construcción", "investigación", "telegram", "sesión", "otros"];
+
+function detectLogModule(line) {
+    const l = line.toLowerCase();
+    if (l.includes("expedic")) return "expediciones";
+    if (l.includes("recicl") || l.includes("escombro")) return "reciclaje";
+    if (l.includes("fleetsave") || l.includes("salvar la flota") || l.includes("evasión")) return "fleetsave";
+    if (l.includes("farm") || l.includes("granja") || l.includes("saqueo") || l.includes("inactivo")) return "farmeo";
+    if (l.includes("ataque") || l.includes("hostil") || l.includes("espion") || l.includes("sonde")) return "ataques";
+    if (l.includes("investig")) return "investigación";
+    if (l.includes("construc") || l.includes("edificio") || l.includes("mina") || l.includes("instalaci")) return "construcción";
+    if (l.includes("telegram")) return "telegram";
+    if (l.includes("sesión") || l.includes("sesion") || l.includes("login") || l.includes("navegador") || l.includes("ciclo")) return "sesión";
+    return "otros";
+}
+
+function parseLogLine(line) {
+    let level = "info";
+    if (line.includes("ERROR") || line.includes("Exception") || line.includes("fallido")) level = "error";
+    else if (line.includes("WARNING") || line.includes("omitido")) level = "warn";
+    else if (/✅|correctamente|enviad[ao]|completad|guardad|éxito/i.test(line)) level = "ok";
+    const time = (line.match(/\b(\d{2}:\d{2}:\d{2})\b/) || [])[1] || "";
+    return { time, level, module: detectLogModule(line), text: line.trim() };
+}
+
+// Filtros activos del registro
+let logLevelFilter = "all";
+
+function logMatchesFilters(entry) {
+    if (logLevelFilter !== "all" && entry.level !== logLevelFilter) return false;
+    const modSel = document.getElementById("logModuleFilter");
+    if (modSel && modSel.value && entry.module !== modSel.value) return false;
+    const q = (document.getElementById("logSearch") || {}).value || "";
+    if (q && !entry.text.toLowerCase().includes(q.toLowerCase())) return false;
+    return true;
+}
+
 function renderLogs(lines) {
+    parsedLogsCache = lines.map(parseLogLine);
+    applyLogFilters();
+    renderLiveFeed();
+}
+
+function applyLogFilters() {
     terminalConsole.innerHTML = "";
-    
-    lines.forEach(line => {
+    let shown = 0;
+
+    parsedLogsCache.forEach(entry => {
+        if (!logMatchesFilters(entry)) return;
+        shown++;
+        const line = entry.text;
         const div = document.createElement("div");
         div.className = "log-line";
-        
-        // Formateo y Colores
-        if (line.includes("ERROR") || line.includes("Exception") || line.includes("fallido")) {
+
+        // Formateo y Colores (mismas reglas de siempre)
+        if (entry.level === "error") {
             div.classList.add("log-error");
-        } else if (line.includes("WARNING") || line.includes("omitido")) {
+        } else if (entry.level === "warn") {
             div.classList.add("log-warn");
         } else if (line.includes("[DRY-RUN]")) {
             div.classList.add("log-dryrun");
-        } else if (line.includes("[ACCION]") || line.includes("Ataque desde") || line.includes("Fleetsave")) {
+        } else if (line.includes("[ACCION]") || line.includes("Ataque desde") || line.includes("Fleetsave") || entry.level === "ok") {
             div.classList.add("log-action");
         } else if (line.includes("INFO") || line.includes("--- Nuevo ciclo ---")) {
             div.classList.add("log-info");
         }
-        
-        div.textContent = line.trim();
+
+        div.textContent = line;
         terminalConsole.appendChild(div);
     });
+
+    const stats = document.getElementById("logStats");
+    if (stats) stats.textContent = `${shown}/${parsedLogsCache.length} líneas`;
 
     // Auto-scroll
     if (autoScrollCheck.checked) {
         terminalConsole.scrollTop = terminalConsole.scrollHeight;
     }
+}
+
+// Feed "Acciones en vivo" (Bot en directo): últimas ~15 líneas del log
+function renderLiveFeed() {
+    const feed = document.getElementById("liveActionsFeed");
+    if (!feed) return;
+    const entries = parsedLogsCache.slice(-15);
+    if (!entries.length) {
+        feed.innerHTML = '<div class="text-muted empty-note">Sin acciones registradas todavía.</div>';
+        return;
+    }
+    feed.innerHTML = "";
+    entries.forEach(e => {
+        const row = document.createElement("div");
+        row.className = "feed-row";
+        const t = document.createElement("span");
+        t.className = "feed-time";
+        t.textContent = e.time || "--:--:--";
+        const k = document.createElement("span");
+        k.className = "feed-kind" + (e.level === "ok" ? " ok" : (e.level === "warn" || e.level === "error") ? " wait" : "");
+        k.textContent = e.level === "ok" ? "OK" : e.level.toUpperCase().slice(0, 4);
+        const x = document.createElement("span");
+        x.className = "feed-text";
+        // Quitar prefijos de fecha/nivel para dejar solo el mensaje
+        x.textContent = e.text.replace(/^[\d\-:,\s]*\[?(INFO|WARNING|ERROR|DEBUG)\]?\s*/i, "").slice(0, 160);
+        row.appendChild(t); row.appendChild(k); row.appendChild(x);
+        feed.appendChild(row);
+    });
+    feed.scrollTop = feed.scrollHeight;
+    const meta = document.getElementById("liveActionsMeta");
+    if (meta) meta.textContent = "actualizado " + new Date().toLocaleTimeString();
+}
+
+// Exportación CSV del registro (client-side, respeta los filtros activos)
+function exportLogCSV() {
+    const rows = [["hora", "nivel", "modulo", "mensaje"]];
+    parsedLogsCache.forEach(e => {
+        if (logMatchesFilters(e)) rows.push([e.time, e.level, e.module, e.text]);
+    });
+    if (rows.length === 1) { showToast("No hay líneas que exportar", "warning"); return; }
+    const csv = "﻿" + rows.map(r =>
+        r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(",")
+    ).join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `ogbot_log_${currentAccount || "cuenta"}_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 
 // --------------------------------------------------------------------------
@@ -1303,6 +1512,7 @@ function loadStats() {
     fetch(api("/api/stats"))
         .then(res => res.json())
         .then(data => {
+            statsCache = data || {};
             const farm = data.total_farming || { metal: 0, crystal: 0, deut: 0 };
             const rec = data.total_recycling || { metal: 0, crystal: 0, deut: 0 };
             const exp = data.total_expeditions || { metal: 0, crystal: 0, deut: 0, dark_matter: 0, ships_found: {} };
@@ -1335,6 +1545,10 @@ function loadStats() {
 
             // Renderizar acciones de sesión
             renderSessionActions(data.session_actions || null);
+
+            // Dashboard: desglose de expediciones (C8) y KPIs
+            renderExpOutcomes();
+            updateDashKPIs();
         })
         .catch(err => console.error("Error al cargar estadísticas:", err));
 }
@@ -1897,6 +2111,8 @@ function loadBuildStatus() {
 }
 
 function renderBuildStatus(data) {
+    buildStatusCache = data || {};
+    updatePlanetQueueLines();
     const el = document.getElementById("buildStatusPanel");
     if (!el) return;
     if (!data || !data.updated_at) {
@@ -1918,6 +2134,7 @@ function renderBuildStatus(data) {
 }
 
 function renderExpeditionStatus(data) {
+    expeStatusCache = data || {};
     const live = document.getElementById("expLiveStatus");
     const preview = document.getElementById("expAutoPreview");
     if (!data || !data.updated_at) {
@@ -2998,7 +3215,20 @@ function renderHistoryCharts() {
     const empty = document.getElementById("history_empty");
     const wrap = document.getElementById("history_charts");
     if (!empty || !wrap) return;
-    if (!historyCache.length) {
+
+    // Fuente según el rango del dashboard: 24H = stats_hourly (C2); 7D/30D = histórico diario
+    let entries, labels;
+    if (dashRange === "24h") {
+        entries = hourlyCache.slice(-24);
+        labels = entries.map(e => {
+            const d = new Date((e.ts || 0) * 1000);
+            return String(d.getHours()).padStart(2, "0") + "h";
+        });
+    } else {
+        entries = dashRange === "30d" ? historyCache.slice(-30) : historyCache.slice(-7);
+        labels = entries.map(e => e.date || "");
+    }
+    if (!entries.length) {
         empty.style.display = "block";
         wrap.style.display = "none";
         return;
@@ -3006,13 +3236,11 @@ function renderHistoryCharts() {
     empty.style.display = "none";
     wrap.style.display = "block";
 
-    const labels = historyCache.map(e => e.date || "");
-
-    // (a) recursos totales por día
+    // (a) recursos totales (M/C/D) del rango elegido
     const resSeries = [
-        { name: "Metal", color: "#8ab4f8", values: historyCache.map(e => typeof e.metal === "number" ? e.metal : null) },
-        { name: "Cristal", color: cssColor("--accent-secondary", "#00d2ff"), values: historyCache.map(e => typeof e.crystal === "number" ? e.crystal : null) },
-        { name: "Deuterio", color: cssColor("--accent-success", "#10b981"), values: historyCache.map(e => typeof e.deut === "number" ? e.deut : null) }
+        { name: "Metal", color: "#8ab4f8", values: entries.map(e => typeof e.metal === "number" ? e.metal : null) },
+        { name: "Cristal", color: cssColor("--accent-secondary", "#00d2ff"), values: entries.map(e => typeof e.crystal === "number" ? e.crystal : null) },
+        { name: "Deuterio", color: cssColor("--accent-success", "#10b981"), values: entries.map(e => typeof e.deut === "number" ? e.deut : null) }
     ];
     drawLineChart(document.getElementById("chart_resources"), resSeries, labels);
     renderChartLegend("legend_resources", resSeries);
@@ -3025,7 +3253,7 @@ function renderHistoryCharts() {
     }));
     const sessionCard = document.getElementById("history_session_card");
     const selected = extraKeys.slice(0, 6);
-    if (!selected.length) {
+    if (!selected.length || !historyCache.length) {
         if (sessionCard) sessionCard.style.display = "none";
         return;
     }
@@ -3043,7 +3271,8 @@ function renderHistoryCharts() {
         color: palette[i % palette.length],
         values: historyCache.map(e => typeof e[k] === "number" ? e[k] : null)
     }));
-    drawLineChart(document.getElementById("chart_session"), sesSeries, labels);
+    // El chart de acumulados siempre es diario (histórico), aunque el rango sea 24H
+    drawLineChart(document.getElementById("chart_session"), sesSeries, historyCache.map(e => e.date || ""));
     renderChartLegend("legend_session", sesSeries);
 }
 
@@ -3214,7 +3443,694 @@ window.addEventListener("DOMContentLoaded", () => {
     initRiskProfiles();
     loadHistory();
     setInterval(loadHistory, 60000);
-    // Redibujar las gráficas al entrar en la pestaña (por si cambian los datos)
-    const histBtn = document.querySelector('.tab-btn[data-tab="tab-history"]');
-    if (histBtn) histBtn.addEventListener("click", () => renderHistoryCharts());
+});
+
+// ==========================================================================
+// ORION·OPS — Dashboard, agenda (C3), orden del ciclo (C4), control remoto (C1),
+// estado del bot (C6), actividad horaria (C2) y filtros del registro
+// ==========================================================================
+
+function fmtHM(epoch) {
+    const d = new Date((epoch || 0) * 1000);
+    return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+
+function gotoTab(tabId) {
+    const btn = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
+    if (btn) btn.click();
+}
+
+// ------------------------------------------------------- estado del bot (C6)
+function formatUptime(startedAt) {
+    if (!startedAt) return "—";
+    let s = Math.max(0, Math.floor(Date.now() / 1000 - startedAt));
+    const d = Math.floor(s / 86400); s %= 86400;
+    return (d ? d + "d " : "") + Math.floor(s / 3600) + "h " + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + "m";
+}
+
+function loadBotStatus() {
+    fetch(api("/api/botstatus"))
+        .then(r => r.json())
+        .then(d => {
+            botStatusCache = d || {};
+            const paused = (d.paused_until || 0) * 1000 > Date.now();
+            const bp = document.getElementById("btnPauseBot");
+            const br = document.getElementById("btnResumeBot");
+            if (bp) bp.style.display = (d.running && !paused) ? "" : "none";
+            if (br) br.style.display = paused ? "" : "none";
+            const sb = document.getElementById("sb_state");
+            if (sb) {
+                sb.textContent = paused ? "PAUSADO" : (d.running ? "EN MARCHA" : "PARADO");
+                sb.style.color = paused ? "var(--warn)" : (d.running ? "" : "var(--danger)");
+            }
+            setText("sb_session_time", d.running ? formatUptime(d.started_at) : "—");
+            const player = document.getElementById("sb_player");
+            if (player) player.textContent = d.player_name ? "· " + d.player_name : "";
+        })
+        .catch(() => {});
+}
+
+// -------------------------------------------------- control remoto (C1)
+function postControl(cmd, arg) {
+    return fetch(api("/api/control"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cmd, arg: arg === undefined ? null : arg })
+    }).then(r => r.json());
+}
+
+function pollControlResult(id, cb, tries = 45) {
+    fetch(api("/api/controlresult"))
+        .then(r => r.json())
+        .then(d => {
+            const last = d && d.last;
+            if (last && String(last.id) === String(id)) return cb(last);
+            if (tries <= 0) return cb(null);
+            setTimeout(() => pollControlResult(id, cb, tries - 1), 2000);
+        })
+        .catch(() => {
+            if (tries <= 0) return cb(null);
+            setTimeout(() => pollControlResult(id, cb, tries - 1), 2000);
+        });
+}
+
+function manualStatus(msg, ok) {
+    const el = document.getElementById("manualCmdStatus");
+    if (!el) return;
+    el.textContent = msg || "";
+    el.style.color = ok === undefined ? "" : (ok ? "var(--ok)" : "var(--danger)");
+}
+
+function sendManualCommand(cmd, arg, pendingMsg) {
+    manualStatus(pendingMsg || `Enviando «${cmd}»…`);
+    postControl(cmd, arg)
+        .then(d => {
+            if (d.error) { manualStatus("Error: " + d.error, false); showToast(d.error, "danger"); return; }
+            showToast("Comando encolado: el bot lo ejecutará en su próximo despertar", "success");
+            pollControlResult(d.id, last => {
+                if (!last) { manualStatus("El bot aún no ha respondido (el comando sigue encolado).", false); return; }
+                manualStatus((last.ok ? "✅ " : "⚠ ") + (last.detail || cmd), !!last.ok);
+                if (cmd === "screenshot" && last.ok && last.file) {
+                    const url = api("/" + String(last.file).replace(/\\/g, "/").replace(/^\/+/, ""));
+                    const el = document.getElementById("manualCmdStatus");
+                    if (el) {
+                        const a = document.createElement("a");
+                        a.href = url; a.target = "_blank"; a.textContent = " abrir captura ↗";
+                        a.style.color = "var(--cyan)";
+                        el.appendChild(a);
+                    }
+                    window.open(url, "_blank");   // puede bloquearlo el navegador: queda el enlace
+                }
+                if (cmd === "pause" || cmd === "resume" || cmd === "close_browser") loadBotStatus();
+            });
+        })
+        .catch(e => manualStatus("Error de red: " + e, false));
+}
+
+function initManualControls() {
+    const bind = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener("click", fn); };
+    bind("btnTakeControl", () => {
+        gotoTab("tab-live");
+        const cont = document.getElementById("liveViewportContainer");
+        if (cont) cont.scrollIntoView({ behavior: "smooth", block: "center" });
+        refreshLiveScreenshot();
+        showToast("Control manual: interactúa con el visor (clics y teclas reales al navegador del bot).", "warning");
+    });
+    bind("btnCmdScreenshot", () => sendManualCommand("screenshot", null, "Solicitando captura PNG…"));
+    bind("btnCmdRestartSession", () => {
+        if (!confirm("¿Reiniciar la sesión del bot? (cierra y reabre el navegador y vuelve a hacer login)")) return;
+        sendManualCommand("restart_session", null, "Reiniciando sesión…");
+    });
+    bind("btnCmdCloseBrowser", () => {
+        if (!confirm("¿Cerrar el navegador del bot? Quedará en pausa (12 h) hasta que pulses REANUDAR.")) return;
+        sendManualCommand("close_browser", null, "Cerrando navegador…");
+    });
+    bind("btnPauseBot", () => sendManualCommand("pause", 60, "Pausando el bot (60 min)…"));
+    bind("btnResumeBot", () => sendManualCommand("resume", null, "Reanudando el bot…"));
+}
+
+// -------------------------------------------------------- agenda del bot (C3)
+const TASK_KINDS = ["farming", "espionaje", "expedicion", "construir", "investigacion",
+    "transporte", "fleetsave", "reciclaje", "economia", "sistema"];
+const TASK_STATUS_LABELS = { en_curso: "EN CURSO", pendiente: "PENDIENTE", programado: "PROGRAMADO" };
+
+function loadAgenda() {
+    fetch(api("/api/agenda"))
+        .then(r => r.json())
+        .then(d => {
+            agendaCache = (d && Array.isArray(d.tasks)) ? d : { tasks: [] };
+            renderAgenda();
+            renderDashModules();
+        })
+        .catch(() => {});
+}
+
+function renderAgenda() {
+    const list = document.getElementById("taskAgendaList");
+    if (!list) return;
+    const tasks = (agendaCache.tasks || []).slice().sort((a, b) => (a.when || 0) - (b.when || 0));
+    const summary = document.getElementById("taskAgendaSummary");
+    if (summary) {
+        summary.textContent = tasks.length
+            ? `${tasks.length} tareas · publicado ${agendaCache.generated_at ? fmtHM(agendaCache.generated_at) : "—"}`
+            : "";
+    }
+    if (!tasks.length) {
+        list.innerHTML = '<div class="text-muted empty-note">El bot aún no ha publicado su agenda (task_agenda.json). Inícialo para ver las próximas tareas.</div>';
+        return;
+    }
+    list.innerHTML = "";
+    tasks.forEach(t => {
+        const kind = TASK_KINDS.includes(t.kind) ? t.kind : "sistema";
+        const row = document.createElement("div");
+        row.className = "task-row";
+        const time = document.createElement("span");
+        time.className = "task-time";
+        time.textContent = t.when ? fmtHM(t.when) : "—";
+        const bar = document.createElement("span");
+        bar.className = "task-bar k-" + kind;
+        const kindEl = document.createElement("span");
+        kindEl.className = "task-kind k-" + kind;
+        kindEl.textContent = kind;
+        const main = document.createElement("div");
+        main.className = "task-main";
+        const title = document.createElement("div");
+        title.className = "task-title";
+        title.textContent = t.title || kind;
+        const detail = document.createElement("div");
+        detail.className = "task-detail";
+        detail.textContent = (t.detail || "") + (t.loc ? ` · [${t.loc}]` : "");
+        main.appendChild(title);
+        main.appendChild(detail);
+        const status = document.createElement("span");
+        status.className = "task-status" + (t.status === "en_curso" ? " en_curso" : "");
+        status.textContent = TASK_STATUS_LABELS[t.status] || (t.status || "—").toUpperCase();
+        row.appendChild(time); row.appendChild(bar); row.appendChild(kindEl);
+        row.appendChild(main); row.appendChild(status);
+        list.appendChild(row);
+    });
+}
+
+// -------------------------------------------------- orden del ciclo (C4)
+const DEFAULT_CYCLE_ORDER = ["economy", "recycling", "expeditions", "farming", "feed"];
+
+function currentCycleOrder() {
+    return Array.from(document.querySelectorAll("#cycleOrderList .cycle-chip"))
+        .map(li => li.dataset.cycle)
+        .filter(k => DEFAULT_CYCLE_ORDER.includes(k));
+}
+
+function applyCycleOrderToChips(order) {
+    const list = document.getElementById("cycleOrderList");
+    if (!list) return;
+    const seq = (Array.isArray(order) && order.length ? order : DEFAULT_CYCLE_ORDER)
+        .filter(k => DEFAULT_CYCLE_ORDER.includes(k));
+    DEFAULT_CYCLE_ORDER.forEach(k => { if (!seq.includes(k)) seq.push(k); });
+    seq.forEach(k => {
+        const li = list.querySelector(`.cycle-chip[data-cycle="${k}"]`);
+        if (li) list.appendChild(li);
+    });
+}
+
+let cycleDragEl = null;
+function initCycleOrder() {
+    const list = document.getElementById("cycleOrderList");
+    if (!list) return;
+    list.querySelectorAll(".cycle-chip").forEach(chip => {
+        chip.addEventListener("dragstart", e => {
+            cycleDragEl = chip;
+            chip.classList.add("dragging");
+            e.dataTransfer.effectAllowed = "move";
+            try { e.dataTransfer.setData("text/plain", chip.dataset.cycle); } catch (_) { /* IE */ }
+        });
+        chip.addEventListener("dragend", () => {
+            chip.classList.remove("dragging");
+            list.querySelectorAll(".cycle-chip").forEach(c => c.classList.remove("drag-over"));
+        });
+        chip.addEventListener("dragover", e => {
+            e.preventDefault();
+            if (chip !== cycleDragEl) chip.classList.add("drag-over");
+        });
+        chip.addEventListener("dragleave", () => chip.classList.remove("drag-over"));
+        chip.addEventListener("drop", e => {
+            e.preventDefault();
+            chip.classList.remove("drag-over");
+            if (!cycleDragEl || cycleDragEl === chip) return;
+            const chips = Array.from(list.children);
+            if (chips.indexOf(cycleDragEl) < chips.indexOf(chip)) chip.after(cycleDragEl);
+            else chip.before(cycleDragEl);
+            saveCycleOrder();
+        });
+    });
+}
+
+function saveCycleOrder() {
+    const order = currentCycleOrder();
+    if (order.length !== DEFAULT_CYCLE_ORDER.length) return;
+    const status = document.getElementById("cycleOrderStatus");
+    if (status) status.textContent = "guardando…";
+    fetch(api("/api/config"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cycle_order: order })
+    })
+        .then(r => r.json())
+        .then(d => {
+            if (d.status === "success") {
+                globalConfig.cycle_order = order.slice();
+                if (configSnapshot) configSnapshot.cycle_order = order.slice();
+                if (uiBaseline) uiBaseline.cycle_order = order.slice();
+                if (status) {
+                    status.textContent = "✔ guardado";
+                    setTimeout(() => { if (status.textContent === "✔ guardado") status.textContent = ""; }, 3000);
+                }
+                showToast("Orden del ciclo guardado", "success");
+            } else {
+                if (status) status.textContent = "error al guardar";
+                showToast("Error al guardar el orden: " + (d.error || "?"), "danger");
+            }
+        })
+        .catch(e => {
+            if (status) status.textContent = "error de red";
+            showToast("Error de red: " + e, "danger");
+        });
+}
+
+// ------------------------------------------- actividad por hora (C2) + KPIs
+function loadHourly() {
+    fetch(api("/api/hourly"))
+        .then(r => r.json())
+        .then(d => {
+            hourlyCache = (d && Array.isArray(d.hourly)) ? d.hourly : [];
+            drawActivityChart();
+            if (dashRange === "24h") renderHistoryCharts();
+            updateDashKPIs();
+        })
+        .catch(() => {});
+}
+
+function drawActivityChart() {
+    const canvas = document.getElementById("chart_activity");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    const entries = hourlyCache.slice(-24);
+    const caption = document.getElementById("chart_activity_caption");
+    if (!entries.length) {
+        if (caption) caption.textContent = "sin datos todavía";
+        return;
+    }
+    const padB = 16, padT = 6;
+    const maxV = Math.max(1, ...entries.map(e => e.actions || 0));
+    const maxIdx = entries.reduce((mi, e, i) => (e.actions || 0) > (entries[mi].actions || 0) ? i : mi, 0);
+    const n = entries.length;
+    const slot = W / n;
+    const barW = Math.max(3, slot * 0.62);
+    entries.forEach((e, i) => {
+        const v = e.actions || 0;
+        const h = Math.round((v / maxV) * (H - padT - padB));
+        ctx.fillStyle = i === maxIdx && v > 0 ? cssColor("--warn", "#ffb547") : "rgba(76,217,255,0.55)";
+        ctx.fillRect(i * slot + (slot - barW) / 2, H - padB - Math.max(h, 1), barW, Math.max(h, 1));
+    });
+    const hourOf = e => String(new Date((e.ts || 0) * 1000).getHours()).padStart(2, "0") + "h";
+    ctx.font = "9px 'IBM Plex Mono', monospace";
+    ctx.fillStyle = cssColor("--tx-3", "#5b6b8c");
+    ctx.textAlign = "left"; ctx.fillText(hourOf(entries[0]), 2, H - 4);
+    ctx.textAlign = "right"; ctx.fillText(hourOf(entries[n - 1]), W - 2, H - 4);
+    if (caption) caption.textContent = `máx ${entries[maxIdx].actions || 0} acciones a las ${hourOf(entries[maxIdx])} · últimas ${n} h`;
+}
+
+// ------------------------------------------------ módulos del bot (dashboard)
+const DASH_MODULES = [
+    ["enable_farming", "Farmeo de inactivos", "farming"],
+    ["enable_expeditions", "Expediciones", "expedicion"],
+    ["enable_economy", "Economía · construcción", "economia"],
+    ["enable_research", "Investigación", "investigacion"],
+    ["enable_defense", "Defensa", null],
+    ["enable_recycling", "Reciclaje", "reciclaje"],
+    ["enable_fleetsave", "Fleetsave", "fleetsave"],
+    ["enable_spy_watch", "Vigilancia de espionaje", "espionaje"]
+];
+
+function moduleNextDetail(kind) {
+    if (!kind) return "";
+    const now = Date.now() / 1000;
+    const t = (agendaCache.tasks || [])
+        .filter(x => x.kind === kind && (x.when || 0) >= now - 60)
+        .sort((a, b) => (a.when || 0) - (b.when || 0))[0];
+    if (!t) return "";
+    return t.status === "en_curso" ? "en curso · " + (t.title || "") : `próx. ${fmtHM(t.when)} · ${t.title || ""}`;
+}
+
+function renderDashModules() {
+    const c = document.getElementById("dashModulesList");
+    if (!c) return;
+    if (!configLoaded) {
+        c.innerHTML = '<div class="text-muted empty-note">Cargando módulos…</div>';
+        return;
+    }
+    c.innerHTML = "";
+    let active = 0;
+    DASH_MODULES.forEach(([key, title, kind]) => {
+        // enable_spy_watch es "activo por defecto" (mismo criterio que mapConfigToUI)
+        const on = key === "enable_spy_watch" ? globalConfig[key] !== false : !!globalConfig[key];
+        if (on) active++;
+        const row = document.createElement("div");
+        row.className = "dash-module-row" + (on ? "" : " off");
+        const main = document.createElement("div");
+        main.className = "dm-main";
+        const t = document.createElement("div");
+        t.className = "dm-title";
+        t.textContent = title;
+        const d = document.createElement("div");
+        d.className = "dm-detail";
+        d.textContent = on ? (moduleNextDetail(kind) || "activo") : "desactivado";
+        main.appendChild(t); main.appendChild(d);
+        const sw = document.createElement("label");
+        sw.className = "switch-container";
+        const chk = document.createElement("input");
+        chk.type = "checkbox";
+        chk.checked = on;
+        const slider = document.createElement("span");
+        slider.className = "slider";
+        sw.appendChild(chk); sw.appendChild(slider);
+        chk.addEventListener("change", () => saveModuleToggle(key, chk.checked, title));
+        row.appendChild(main); row.appendChild(sw);
+        c.appendChild(row);
+    });
+    const act = document.getElementById("dashModulesActive");
+    if (act) act.textContent = `${active}/${DASH_MODULES.length} activos`;
+}
+
+// POST /api/config SOLO con esa clave (el backend hace merge)
+function saveModuleToggle(key, value, title) {
+    fetch(api("/api/config"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [key]: value })
+    })
+        .then(r => r.json())
+        .then(d => {
+            if (d.status === "success") {
+                globalConfig[key] = value;
+                if (configSnapshot) configSnapshot[key] = value;
+                if (uiBaseline) uiBaseline[key] = value;
+                setCheck(key, value);   // sincroniza el checkbox de la pantalla Configuración
+                showToast(`${title}: ${value ? "activado" : "desactivado"}`, "success");
+            } else {
+                showToast("Error al guardar: " + (d.error || "?"), "danger");
+            }
+            renderDashModules();
+        })
+        .catch(e => { showToast("Error de red: " + e, "danger"); renderDashModules(); });
+}
+
+// ------------------------------------------- desglose de expediciones (C8)
+const EXP_OUTCOME_LABELS = {
+    resources: "Recursos", ships: "Naves", items: "Objetos",
+    dark_matter: "Materia oscura", nothing: "Nada"
+};
+
+function renderExpOutcomes() {
+    const barEl = document.getElementById("expOutcomeBar");
+    const legEl = document.getElementById("expOutcomeLegend");
+    const totEl = document.getElementById("expOutcomeTotal");
+    if (!barEl || !legEl || !totEl) return;
+    const eo = statsCache.expe_outcomes || {};
+    const keys = Object.keys(EXP_OUTCOME_LABELS);
+    const total = keys.reduce((s, k) => s + (eo[k] || 0), 0);
+    totEl.textContent = total ? `${formatNumber(total)} exped.` : "—";
+    if (!total) {
+        barEl.innerHTML = "";
+        legEl.innerHTML = '<div class="text-muted empty-note">Sin expediciones registradas.</div>';
+        return;
+    }
+    barEl.innerHTML = "";
+    legEl.innerHTML = "";
+    keys.forEach(k => {
+        const v = eo[k] || 0;
+        if (v > 0) {
+            const seg = document.createElement("div");
+            seg.className = "seg-" + k;
+            seg.style.width = (v / total * 100) + "%";
+            seg.title = `${EXP_OUTCOME_LABELS[k]}: ${v}`;
+            barEl.appendChild(seg);
+        }
+        const row = document.createElement("div");
+        const left = document.createElement("span");
+        const dot = document.createElement("span");
+        dot.className = "seg-" + k;
+        dot.style.cssText = "display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;";
+        left.appendChild(dot);
+        left.appendChild(document.createTextNode(EXP_OUTCOME_LABELS[k]));
+        const right = document.createElement("span");
+        right.textContent = `${v} · ${Math.round(v / total * 100)}%`;
+        row.appendChild(left); row.appendChild(right);
+        legEl.appendChild(row);
+    });
+}
+
+// --------------------------------------------------------- KPIs del dashboard
+function updateDashKPIs() {
+    // Recursos totales: suma de /api/planets si algún día trae recursos;
+    // hoy no los trae, así que se usa el último snapshot horario del imperio (C2).
+    let m = null, c = null, d = null;
+    if (planetsCache.some(p => p.resources && typeof p.resources.metal === "number")) {
+        m = c = d = 0;
+        planetsCache.forEach(p => {
+            const r = p.resources || {};
+            m += r.metal || 0; c += r.crystal || 0; d += r.deut || 0;
+        });
+    } else if (hourlyCache.length) {
+        const last = hourlyCache[hourlyCache.length - 1];
+        m = last.metal; c = last.crystal; d = last.deut;
+    }
+    setText("kpi_metal", typeof m === "number" ? formatNumber(m) : "—");
+    setText("kpi_crystal", typeof c === "number" ? formatNumber(c) : "—");
+    setText("kpi_deut", typeof d === "number" ? formatNumber(d) : "—");
+
+    // Puntos · ranking (C5) + variación semanal contra la línea de hace 7 días
+    const pts = statsCache.player_points || 0;
+    const rank = statsCache.player_rank || 0;
+    setText("kpi_points", pts ? formatNumber(pts) : "—");
+    let rankTxt = rank ? "#" + formatNumber(rank) : "—";
+    if (pts) {
+        const weekAgo = Date.now() / 1000 - 7 * 86400;
+        const ref = historyCache.filter(e => typeof e.points === "number" && (e.ts || 0) <= weekAgo).pop();
+        if (ref) {
+            const delta = pts - ref.points;
+            rankTxt += ` · ${delta >= 0 ? "+" : "−"}${formatShortNumber(Math.abs(delta))} pts/7d`;
+        }
+    }
+    setText("kpi_rank", rankTxt);
+
+    // Botín 24h: farmeo de sesión menos el corte del último punto diario del histórico;
+    // si no hay histórico (o la sesión se reinició), totales de la sesión.
+    const farm = statsCache.total_farming || {};
+    const lastHist = historyCache[historyCache.length - 1];
+    const per = ["metal", "crystal", "deut"].map(k => {
+        const total = farm[k] || 0;
+        const v = total - (lastHist ? (lastHist["farm_" + k] || 0) : 0);
+        return (lastHist && v >= 0) ? v : total;
+    });
+    setText("kpi_loot24", formatNumber(per[0] + per[1] + per[2]));
+    setText("kpi_loot24_detail", `M ${formatShortNumber(per[0])} · C ${formatShortNumber(per[1])} · D ${formatShortNumber(per[2])}`);
+
+    // Flotas en vuelo (propias); como total se usan los slots de expedición si el bot los publica
+    const own = flightsCache.filter(f => !f.is_hostile).length;
+    setText("kpi_fleet_flying", String(own));
+    const slots = expeStatusCache.total_expe_slots || 0;
+    const slotsEl = document.getElementById("kpi_fleet_slots");
+    if (slotsEl) slotsEl.textContent = slots ? `/${slots}` : "";
+    const bar = document.getElementById("kpi_fleet_bar");
+    if (bar) bar.style.width = Math.min(100, slots ? Math.round(own / slots * 100) : own * 10) + "%";
+}
+
+// ------------------------------------------------ banner de ataque (dashboard)
+function updateDashAlert() {
+    const banner = document.getElementById("dashAlertBanner");
+    if (!banner) return;
+    const nowServer = Date.now() / 1000 + flightsServerOffset;
+    const hostiles = flightsCache
+        .filter(f => f.is_hostile && (!f.arrival_epoch || f.arrival_epoch > nowServer))
+        .sort((a, b) => (a.arrival_epoch || Infinity) - (b.arrival_epoch || Infinity));
+    if (!hostiles.length) { banner.style.display = "none"; return; }
+    banner.style.display = "";
+    const f = hostiles[0];
+    const eta = f.arrival_epoch ? expFmtETA(f.arrival_epoch - nowServer) : "—";
+    setText("dashAlertText",
+        `ATAQUE ENTRANTE → [${f.destination || "?"}] · impacto en ${eta}` +
+        (hostiles.length > 1 ? ` (+${hostiles.length - 1} más)` : ""));
+}
+
+// ----------------------------------------------------- pantalla Planetas
+function updatePlanetsSummary() {
+    const el = document.getElementById("planetsSummary");
+    if (!el) return;
+    const moons = planetsCache.filter(p => p.has_moon || (p.moon && p.moon.coords)).length;
+    el.textContent = planetsCache.length ? `${planetsCache.length} planetas · ${moons} lunas` : "";
+}
+
+// Línea de cola por tarjeta desde /api/buildstatus
+function updatePlanetQueueLines() {
+    const lines = document.querySelectorAll(".planet-queue-line");
+    if (!lines.length) return;
+    const byCoords = {};
+    ((buildStatusCache && buildStatusCache.planets) || []).forEach(p => { byCoords[p.coords] = p; });
+    const now = Date.now() / 1000;
+    lines.forEach(el => {
+        const p = byCoords[el.dataset.coords];
+        if (!p || !p.finish_epoch || p.finish_epoch <= now) {
+            el.textContent = "⏳ cola libre";
+            return;
+        }
+        const q = (p.queue && p.queue.length) ? p.queue.join(", ") : "construcción";
+        el.textContent = `⏳ ${q} — ${expFmtETA(p.finish_epoch - now)}`;
+    });
+}
+
+// Producción/h del imperio ESTIMADA desde los niveles de minas registrados
+// (/api/planets no publica producción real) × velocidad del universo.
+function renderEmpireProduction() {
+    if (!document.getElementById("prod_metal_h") || !planetsCache.length) return;
+    const speed = parseF(globalConfig.universe_speed, 1) || 1;
+    let pm = 0, pc = 0, pd = 0, eProd = 0, eCons = 0;
+    planetsCache.forEach(p => {
+        const b = p.buildings || {};
+        const lm = b.metal_mine || 0, lc = b.crystal_mine || 0, ld = b.deut_synth || 0;
+        const ls = b.solar_plant || 0, lf = b.fusion_reactor || 0;
+        pm += (30 * lm * Math.pow(1.1, lm) + 30) * speed;
+        pc += (20 * lc * Math.pow(1.1, lc) + 15) * speed;
+        pd += 10 * ld * Math.pow(1.1, ld) * 1.36 * speed;
+        eProd += 20 * ls * Math.pow(1.1, ls) + 30 * lf * Math.pow(1.05, lf);
+        eCons += 10 * lm * Math.pow(1.1, lm) + 10 * lc * Math.pow(1.1, lc) + 20 * ld * Math.pow(1.1, ld);
+    });
+    setText("prod_metal_h", "≈" + formatShortNumber(pm));
+    setText("prod_crystal_h", "≈" + formatShortNumber(pc));
+    setText("prod_deut_h", "≈" + formatShortNumber(pd));
+    const bal = Math.round(eProd - eCons);
+    const bar = document.getElementById("prod_energy_bar");
+    if (bar) {
+        bar.style.width = ((eProd + eCons) > 0 ? Math.round(eProd / (eProd + eCons) * 100) : 0) + "%";
+        bar.className = "meter-fill " + (bal >= 0 ? "ok" : "warn");
+    }
+    const lbl = document.getElementById("prod_energy_label");
+    if (lbl) {
+        lbl.textContent = (bal >= 0 ? "+" : "") + formatShortNumber(bal);
+        lbl.style.color = bal >= 0 ? "" : "var(--warn)";
+    }
+}
+
+// ------------------------------------- contador de "cambios sin guardar"
+let dirtyTimer = null;
+
+function configDiffCount() {
+    if (!configLoaded || !configSnapshot) return 0;
+    collectUIIntoConfig();
+    const base = uiBaseline || configSnapshot;
+    let n = 0;
+    Object.keys(globalConfig).forEach(k => {
+        if (JSON.stringify(globalConfig[k]) !== JSON.stringify(base[k])) n++;
+    });
+    return n;
+}
+
+function updateDirtyBadge() {
+    const badge = document.getElementById("cfgDirtyBadge");
+    if (!badge) return;
+    const n = configDiffCount();
+    badge.style.display = n ? "" : "none";
+    badge.textContent = n === 1 ? "1 cambio sin guardar" : `${n} cambios sin guardar`;
+}
+
+function scheduleDirtyCheck() {
+    clearTimeout(dirtyTimer);
+    dirtyTimer = setTimeout(updateDirtyBadge, 500);
+}
+
+function initDirtyTracking() {
+    ["tab-config", "tab-planets"].forEach(id => {
+        const pane = document.getElementById(id);
+        if (!pane) return;
+        pane.addEventListener("input", scheduleDirtyCheck);
+        pane.addEventListener("change", scheduleDirtyCheck);
+    });
+    const restore = document.getElementById("btnRestoreCfg");
+    if (restore) restore.addEventListener("click", () => {
+        queueDrafts = {};
+        configLoaded = false;   // fuerza re-render de tarjetas con la config del servidor
+        loadConfig();
+        showToast("Configuración recargada desde el servidor (cambios descartados)", "success");
+    });
+}
+
+// --------------------------------------------------- filtros del registro
+function initLogFilters() {
+    const bar = document.getElementById("logFilterBar");
+    if (bar) {
+        bar.querySelectorAll(".log-filter").forEach(btn => {
+            btn.addEventListener("click", () => {
+                bar.querySelectorAll(".log-filter").forEach(b => b.classList.remove("active"));
+                btn.classList.add("active");
+                logLevelFilter = btn.dataset.level || "all";
+                applyLogFilters();
+            });
+        });
+    }
+    const modSel = document.getElementById("logModuleFilter");
+    if (modSel) {
+        LOG_MODULES.forEach(mod => {
+            const o = document.createElement("option");
+            o.value = mod;
+            o.textContent = "Módulo: " + mod;
+            modSel.appendChild(o);
+        });
+        modSel.addEventListener("change", applyLogFilters);
+    }
+    const search = document.getElementById("logSearch");
+    if (search) {
+        let searchTimer = null;
+        search.addEventListener("input", () => {
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(applyLogFilters, 250);
+        });
+    }
+    const exp = document.getElementById("btnExportLog");
+    if (exp) exp.addEventListener("click", exportLogCSV);
+}
+
+// ------------------------------------------------- cableado del dashboard
+function initDashboardExtras() {
+    document.querySelectorAll(".range-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+            document.querySelectorAll(".range-btn").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            dashRange = btn.dataset.range || "7d";
+            renderHistoryCharts();
+        });
+    });
+    document.querySelectorAll(".link-goto").forEach(btn => {
+        btn.addEventListener("click", () => gotoTab(btn.dataset.goto));
+    });
+    const alertLink = document.getElementById("dashAlertLink");
+    if (alertLink) alertLink.addEventListener("click", e => { e.preventDefault(); gotoTab("tab-flights"); });
+    const savePlanets = document.getElementById("btnSavePlanets");
+    if (savePlanets) savePlanets.addEventListener("click", () => btnSave.click());
+    // Redibujar las gráficas al entrar en el Dashboard (antes se hacía en tab-history)
+    const dashBtn = document.querySelector('.tab-btn[data-tab="tab-dashboard"]');
+    if (dashBtn) dashBtn.addEventListener("click", () => { renderHistoryCharts(); drawActivityChart(); });
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+    initDashboardExtras();
+    initManualControls();
+    initCycleOrder();
+    initLogFilters();
+    initDirtyTracking();
+    loadAgenda();
+    loadHourly();
+    loadBotStatus();
+    setInterval(loadBotStatus, 10000);   // poll del estado (C6)
+    setInterval(loadAgenda, 15000);      // agenda del bot (C3)
+    setInterval(loadHourly, 60000);      // actividad/recursos por hora (C2)
+    setInterval(updateDashAlert, 1000);  // cuenta atrás del banner de ataque
+    setInterval(updateDashKPIs, 5000);   // KPIs (vuelos aterrizando, etc.)
 });

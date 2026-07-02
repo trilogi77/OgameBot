@@ -307,6 +307,16 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.get_expedition_status(account)
         elif path == "/api/buildstatus":
             self.get_build_status(account)
+        elif path == "/api/controlresult":
+            self._send_json_file(account, "bot_control_result.json", {})
+        elif path == "/api/hourly":
+            self.get_hourly(account)
+        elif path == "/api/agenda":
+            self._send_json_file(account, "task_agenda.json", {})
+        elif path == "/api/botstatus":
+            self.get_botstatus(account)
+        elif path.startswith("/gui_captures/"):
+            self.serve_capture(account, path)
         elif path == "/api/live/status":
             self._set_live_target(account)
             self.send_json(200, {"available": live_status["available"]})
@@ -344,6 +354,8 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.save_build_queue(account)
         elif path == "/api/recall":
             self.request_recall(account)
+        elif path == "/api/control":
+            self.queue_control(account)
         elif path == "/api/live/click":
             self.handle_live_click(account)
         elif path == "/api/live/type":
@@ -905,6 +917,139 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.send_json(200, {"status": "ok"})
         except Exception as e:
             self.send_json(500, {"error": str(e)})
+
+    # ---------------------------------------------- control remoto (C1) ----
+    CONTROL_CMDS = ("pause", "resume", "screenshot", "restart_session", "close_browser")
+
+    def queue_control(self, account):
+        """Encola un comando remoto en bot_control.json; el bot lo consume en sus
+        bucles de espera y deja el resultado en bot_control_result.json."""
+        if not account:
+            return self.send_json(400, {"error": "Falta la cuenta"})
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b"{}")
+        except Exception:
+            body = {}
+        cmd = str(body.get("cmd") or "").strip()
+        if cmd not in self.CONTROL_CMDS:
+            return self.send_json(400, {"error": f"Comando no permitido: {cmd or '(vacío)'}"})
+        arg = body.get("arg")
+        if arg is not None:
+            try:
+                arg = int(arg)
+            except (TypeError, ValueError):
+                arg = None
+        path = acc_path(account, "bot_control.json")
+        try:
+            data = {"commands": []}
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict) and isinstance(loaded.get("commands"), list):
+                        data = loaded
+                except Exception:
+                    pass
+            cid = str(int(time.time() * 1000))
+            data["commands"].append({"id": cid, "cmd": cmd, "arg": arg})
+            try:
+                from ogbot.utils import atomic_write_json
+                atomic_write_json(path, data)
+            except ImportError:
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, path)
+            self.send_json(200, {"ok": True, "id": cid})
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+    def get_hourly(self, account):
+        """Últimas 72 líneas válidas de stats_hourly.jsonl, tolerante a corruptas."""
+        if not account:
+            return self.send_json(200, {"hourly": []})
+        p = acc_path(account, "stats_hourly.jsonl")
+        entries = []
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()
+            except Exception as e:
+                return self.send_json(500, {"error": str(e)})
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(entry, dict):
+                    entries.append(entry)
+        self.send_json(200, {"hourly": entries[-72:]})
+
+    def get_botstatus(self, account):
+        """Estado del bot (C6): running = bot.pid con proceso vivo o state.json
+        con mtime < 30 min; el resto sale de state.json / ogbot_stats.json."""
+        out = {"running": False, "paused_until": 0, "started_at": 0, "player_name": ""}
+        if not account:
+            return self.send_json(200, out)
+        state_path = acc_path(account, "state.json")
+        try:
+            pid = get_saved_pid(account)
+            if pid:
+                # Con pid registrado, él decide: un pid muerto es "parado" aunque
+                # state.json tenga mtime reciente (parada limpia).
+                running = is_pid_running(pid)
+            else:
+                running = os.path.exists(state_path) and \
+                    (time.time() - os.path.getmtime(state_path)) < 1800
+            out["running"] = running
+        except Exception:
+            pass
+        st = {}
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                st = json.load(f) or {}
+        except Exception:
+            pass
+        try:
+            out["paused_until"] = int(float(st.get("paused_until", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            out["started_at"] = int(float(st.get("started_at", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            with open(acc_path(account, "ogbot_stats.json"), "r", encoding="utf-8") as f:
+                stats = json.load(f) or {}
+            out["player_name"] = str(stats.get("player_name", "") or "")
+        except Exception:
+            pass
+        if not out["player_name"]:
+            out["player_name"] = str(st.get("player_name", "") or "")
+        self.send_json(200, out)
+
+    def serve_capture(self, account, path):
+        """Sirve las capturas PNG de gui_captures/ de la cuenta.
+        Solo .png y solo ese directorio (os.path.basename evita path traversal)."""
+        fname = os.path.basename(path)
+        if not account or not fname.lower().endswith(".png"):
+            return self.send_error(404, "File not found")
+        abs_path = os.path.join(account_dir(account), "gui_captures", fname)
+        if not os.path.isfile(abs_path):
+            return self.send_error(404, "File not found")
+        try:
+            with open(abs_path, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception:
+            self.send_error(500, "Error al leer la captura")
 
     # --------------------------------------------------------- visor vivo --
     def _set_live_target(self, account):

@@ -169,6 +169,8 @@ class GameClient:
         self._planet_cache: List[Planet] = []
         self._canary_done = False          # canario de selectores: una vez por proceso
         self._last_captcha_alert = 0.0     # epoch de la última alerta de CAPTCHA por Telegram
+        self.player_id: Optional[str] = None    # meta ogame-player-id (C5); brain lo persiste en state.json
+        self.player_name: Optional[str] = None  # meta ogame-player-name (C5)
 
     # ------------------------------------------------------------------
     def start(self):
@@ -214,6 +216,21 @@ class GameClient:
                 obj.close() if hasattr(obj, "close") else obj.stop()
             except Exception:
                 pass
+
+    def save_screenshot(self, path: str) -> bool:
+        """Guarda una captura PNG de la página actual en `path` (crea el directorio
+        padre). Devuelve False si el navegador no está arrancado o falla la captura."""
+        if self.page is None:
+            return False
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            self.page.screenshot(path=path, full_page=False)
+            return True
+        except Exception as e:
+            self.log.warning("No pude guardar captura en %s: %s", path, e)
+            return False
 
     def _delay(self):
         utils.human_delay(self.cfg.min_action_delay_s, self.cfg.max_action_delay_s)
@@ -521,9 +538,27 @@ class GameClient:
         except Exception as e:
             self.log.debug("Canario de selectores falló (ignorado): %s", e)
 
+    def _read_player_identity(self) -> None:
+        """Lee los meta ogame-player-id / ogame-player-name del DOM del juego (C5).
+        Repuebla self.player_id/self.player_name en cada login; nunca rompe el login."""
+        try:
+            pid, pname = self.page.evaluate("""() => {
+                const g = n => { const m = document.querySelector('meta[name="' + n + '"]');
+                                 return m ? m.content : null; };
+                return [g('ogame-player-id'), g('ogame-player-name')];
+            }""")
+        except Exception:
+            pid = pname = None
+        # No machacar con None una identidad ya conocida por un fallo puntual de lectura
+        self.player_id = pid or self.player_id
+        self.player_name = pname or self.player_name
+        if pid:
+            self.log.info("Identidad del jugador: %s (id=%s)", self.player_name, self.player_id)
+
     def login(self) -> bool:
         ok = self._do_login()
         if ok:
+            self._read_player_identity()
             self._run_selector_canary_once()
         return ok
 

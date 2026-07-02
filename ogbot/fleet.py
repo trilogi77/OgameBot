@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Tuple
 from . import gamedata as gd
+from . import combat
 from .models import Coords, Resources, Planet
 from .config import Config
 
@@ -131,6 +132,51 @@ def size_attack_fleet_for_planet(planet: Planet, loot: Resources, template: Dict
         fleet["small_cargo"] = needed_small
         
     return fleet
+
+
+# De más a menos potente: el greedy de auto_military_escort los prueba en este orden.
+MILITARY_PRIORITY = ["battlecruiser", "destroyer", "battleship", "bomber",
+                     "cruiser", "heavy_fighter", "light_fighter"]
+
+
+def auto_military_escort(available: Dict[str, int], defender_fleet: Dict[str, int],
+                         defender_defense: Dict[str, int], my_tech: combat.Tech,
+                         def_tech: combat.Tech, win_threshold: float = 0.95,
+                         runs: int = 15) -> Optional[Dict[str, int]]:
+    """Elige por simulación la escolta militar para limpiar un objetivo defendido.
+
+    Greedy por tipo (de más a menos potente): busca por bisección el mínimo de
+    cada tipo que alcanza win_threshold junto a lo ya elegido; si un tipo entero
+    no basta, lo añade completo y pasa al siguiente. Devuelve {} si el objetivo
+    está indefenso y None si ni todo el hangar junto gana el combate.
+    """
+    if sum(defender_fleet.values()) + sum(defender_defense.values()) == 0:
+        return {}
+
+    def win_rate(fleet: Dict[str, int]) -> float:
+        return combat.monte_carlo(fleet, my_tech, defender_fleet,
+                                  defender_defense, def_tech, runs=runs)["win_rate"]
+
+    escort: Dict[str, int] = {}
+    for ship in MILITARY_PRIORITY:
+        have = available.get(ship, 0)
+        if have <= 0:
+            continue
+        if win_rate(dict(escort, **{ship: have})) < win_threshold:
+            escort[ship] = have   # todo este tipo y aún no gana: seguir sumando tipos
+            continue
+        lo, hi = 1, have          # mínimo de este tipo que gana (con lo ya elegido)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if win_rate(dict(escort, **{ship: mid})) >= win_threshold:
+                hi = mid
+            else:
+                lo = mid + 1
+        # ponytail: margen fijo x1.5 — el exceso reduce pérdidas propias; el óptimo
+        # exacto dependería de distancia/combustible por objetivo.
+        escort[ship] = min(have, math.ceil(lo * 1.5))
+        return escort
+    return None  # ni con todo el hangar se alcanza win_threshold
 
 
 def size_attack_fleet_probes(planet: Planet, loot: Resources, template: Dict[str, int],

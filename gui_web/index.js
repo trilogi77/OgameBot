@@ -515,6 +515,10 @@ function mapConfigToUI(cfg) {
     setVal("min_loot_value", cfg.min_loot_value !== undefined ? cfg.min_loot_value : 50000);
     setCheck("farm_with_probes", cfg.farm_with_probes);
     setCheck("farm_recycle_debris", cfg.farm_recycle_debris !== undefined ? cfg.farm_recycle_debris : true);
+    setCheck("farm_auto_fleet", cfg.farm_auto_fleet);
+    setCheck("special_server_start", cfg.special_server_start);
+    setVal("special_new_planet", cfg.special_new_planet || "");
+    setCheck("special_new_planet_auto", cfg.special_new_planet_auto);
     setVal("espionage_probe_cargo", cfg.espionage_probe_cargo !== undefined ? cfg.espionage_probe_cargo : 0);
 
     // Objetivos de flota
@@ -656,6 +660,10 @@ function collectUIIntoConfig() {
     globalConfig.min_loot_value = parseI(getVal("min_loot_value"), 50000);
     globalConfig.farm_with_probes = getCheck("farm_with_probes");
     globalConfig.farm_recycle_debris = getCheck("farm_recycle_debris");
+    globalConfig.farm_auto_fleet = getCheck("farm_auto_fleet");
+    globalConfig.special_server_start = getCheck("special_server_start");
+    globalConfig.special_new_planet = (getVal("special_new_planet") || "").trim();
+    globalConfig.special_new_planet_auto = getCheck("special_new_planet_auto");
     globalConfig.espionage_probe_cargo = parseI(getVal("espionage_probe_cargo"), 0);
 
     // Guardar objetivos de flota
@@ -1706,10 +1714,11 @@ function renderFlights() {
         tr.appendChild(tdH);
 
         // Acción: Regresar + estimación de la hora de vuelta si se recupera AHORA.
+        // Las expediciones también se pueden retornar durante la IDA (no durante la
+        // exploración: arrival_epoch pasado deshabilita el botón como al resto).
         const tdAct = document.createElement("td");
         const stillFlying = !fl.arrival_epoch || fl.arrival_epoch > (Date.now() / 1000 + flightsServerOffset);
-        const isExpedition = fl.mission_code === "15" || fl.mission === "Expedición";
-        if (!fl.is_return && stillFlying && !isExpedition) {
+        if (!fl.is_return && stillFlying) {
             const btn = document.createElement("button");
             btn.type = "button";
             btn.className = "btn-secondary btn-sm flight-recall-btn";

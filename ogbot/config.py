@@ -101,6 +101,10 @@ class Config:
     # defensa y crea el campo de escombros) para poder despachar los recicladores
     # calculados sin esperar a que llegue la flota principal.
     farm_recycle_debris: bool = True
+    # Auto-flota de ataque: ignora attacker_fleet_template y el bot elige la escolta
+    # militar por simulación (mínimo que gana >=95% con margen) según el hangar del
+    # origen y la defensa del informe; los cargueros se dimensionan al botín.
+    farm_auto_fleet: bool = False
     attacker_fleet_template: dict = field(default_factory=lambda: {
         "small_cargo": 0, "large_cargo": 0, "light_fighter": 0, "cruiser": 0,
     })
@@ -138,6 +142,18 @@ class Config:
     expedition_system_range: int = 15            # +/- sistemas alrededor del tuyo
     # Reactivarse al volver/terminar las expediciones para reenviar nuevas
     expedition_smart_schedule: bool = True
+
+    # --- Configuraciones especiales (programas de desarrollo fijos) ---
+    # Inicio de servidor: se asume UN solo planeta (el principal) y se sigue sin
+    # parar el orden óptimo de arranque de universo (ver startorder.SERVER_START_ORDER),
+    # incluida la investigación, hasta completarlo; luego vuelve la economía normal.
+    special_server_start: bool = False
+    # Planeta nuevo: coordenadas "g:s:p" de un planeta que seguirá el orden óptimo
+    # de colonia (solo edificios). Vacío = ninguno elegido a mano.
+    special_new_planet: str = ""
+    # Aplicar el orden de colonia automáticamente a los planetas que aún no lo hayan
+    # completado (colonias recién fundadas, p.ej. con autocolonizar).
+    special_new_planet_auto: bool = False
 
     # --- Memoria de estado (caché de niveles de edificios/investigación/defensas) ---
     # El bot escanea todo al inicio y luego solo lee recursos/cola/naves en vivo,

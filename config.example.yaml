@@ -81,6 +81,22 @@ attacker_fleet_template:
 # contra la defensa y crea el campo de escombros) para poder despachar los
 # recicladores calculados cuanto antes.
 farm_recycle_debris: true
+# Auto-flota de ataque: ignora attacker_fleet_template y el bot elige la escolta
+# militar por simulación (mínimo que gana >=95% con margen) según el hangar y la
+# defensa del objetivo; los cargueros se dimensionan al botín.
+farm_auto_fleet: false
+
+# --- Configuraciones especiales (programas de desarrollo fijos) ---
+# Inicio de servidor: un solo planeta siguiendo SIN PARAR el orden óptimo de
+# arranque de universo (minas/energía/robótica/laboratorio y tecnologías hasta
+# Astrofísica 1); al completarlo vuelve la economía normal.
+special_server_start: false
+# Planeta nuevo: coordenadas "g:s:p" del planeta que seguirá el orden óptimo de
+# colonia (solo edificios). Vacío = ninguno.
+special_new_planet: ""
+# Aplicar el orden de colonia automáticamente a los planetas que aún no lo hayan
+# completado (colonias recién fundadas, p.ej. con autocolonizar).
+special_new_planet_auto: false
 
 # Multiplicadores de flota (escalados por el nivel de mina de metal del bot en el modo ofensivo)
 fleet_multipliers:

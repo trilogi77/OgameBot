@@ -29,6 +29,7 @@ from .config import Config
 from .client import GameClient
 from .universe_api import UniverseAPI
 from . import economy, research as research_mod, targets as tgt, fleet as fleet_mod, moons, gamedata as gd
+from . import startorder
 from . import combat
 from .models import Coords, Resources, Planet
 from . import utils
@@ -1495,13 +1496,24 @@ class Brain(StatsMixin):
         def round_economy():
             if run_economy:
                 self.log.info("Iniciando ronda de economía/construcción...")
-                # Economía / defensa / formas de vida / instalaciones por planeta
+                # Economía / defensa / formas de vida / instalaciones por planeta.
+                # Los planetas con un programa especial activo (inicio de servidor /
+                # planeta nuevo) siguen su orden fijo en lugar de la economía normal.
                 for p in planets:
+                    prog = self._special_program_for(p, planets)
+                    if prog is not None and not self._special_program_step(p, prog):
+                        continue
                     self._economy_step(p)
                     self._defense_step(p)
                     self._lifeforms_step(p)
                     self._facilities_step(p)
-                self._research_step(planets)
+                # Inicio de servidor: la investigación la marca el propio programa.
+                server_start_active = (
+                    bool(getattr(self.cfg, "special_server_start", False)) and planets
+                    and startorder.next_step(planets[0], self.research_levels,
+                                             startorder.SERVER_START_ORDER) is not None)
+                if not server_start_active:
+                    self._research_step(planets)
                 self._fleet_step(planets)
                 self.last_economy_run_time = time.time()
                 self._save_state()
@@ -1556,6 +1568,76 @@ class Brain(StatsMixin):
             self.log.debug("No se pudo publicar task_agenda.json: %s", e)
 
     # ------------------------------------------------------------------ #
+    # --- Configuraciones especiales: programas de desarrollo fijos --------- #
+    def _special_program_for(self, planet, planets):
+        """Orden de desarrollo especial aplicable a este planeta, o None."""
+        if getattr(self.cfg, "special_server_start", False) and planet is planets[0]:
+            return startorder.SERVER_START_ORDER
+        cstr = f"{planet.coords.galaxy}:{planet.coords.system}:{planet.coords.position}"
+        sel = (getattr(self.cfg, "special_new_planet", "") or "").strip()
+        if sel and cstr == sel:
+            return startorder.NEW_PLANET_ORDER
+        # Colonias nuevas (p.ej. de autocolonizar): mientras no completen el programa.
+        if getattr(self.cfg, "special_new_planet_auto", False) and \
+                startorder.next_step(planet, self.research_levels, startorder.NEW_PLANET_ORDER):
+            return startorder.NEW_PLANET_ORDER
+        return None
+
+    def _special_program_step(self, planet, order) -> bool:
+        """Ejecuta (si puede) el siguiente paso del programa fijo. True = programa
+        completado (el planeta vuelve a la economía normal este mismo ciclo)."""
+        step = startorder.next_step(planet, self.research_levels, order)
+        if step is None:
+            self.log.debug("%s: programa especial completado; economía normal.", planet.coords)
+            return True
+        kind, name, target = step
+
+        if kind == "research":
+            rc = self.state_cache.get("research", {}) or {}
+            if (rc.get("finish_epoch") or 0) > time.time():
+                return False  # investigación en curso: esperar
+            nxt = self.research_levels.get(name, 0) + 1
+            cost = gd.research_cost(name, nxt)
+            # Sin buffer: el programa gasta todo lo disponible ("sin parar").
+            if not planet.resources.can_afford(cost):
+                self.log.info("%s: programa especial ahorrando para %s %d.", planet.coords, name, nxt)
+                return False
+            if self._guard():
+                ok = self.client.research(name, planet=planet)
+                if ok:
+                    self.record_session_action("research", name, nxt)
+                    try:
+                        secs = gd.research_time(cost, planet.lvl("research_lab"), self.cfg.universe_speed)
+                        rc = self.state_cache.setdefault("research", {})
+                        rc.setdefault("levels", {})[name] = nxt
+                        self.research_levels[name] = nxt
+                        rc["finish_epoch"] = time.time() + secs
+                        rc["tech"] = name
+                        self._save_state_cache()
+                    except Exception as e:
+                        self.log.debug("Programa especial: sin ETA de investigación: %s", e)
+            return False
+
+        # Edificio
+        if self._active_queue_entry(planet) or planet.building_in_progress:
+            return False
+        nxt = planet.lvl(name) + 1
+        cost = gd.building_cost(name, nxt)
+        blocker = startorder.storage_blocker(cost, planet)
+        if blocker:
+            name, nxt = blocker, planet.lvl(blocker) + 1
+            cost = gd.building_cost(name, nxt)
+        if not planet.resources.can_afford(cost):
+            self.log.info("%s: programa especial ahorrando para %s %d.", planet.coords, name, nxt)
+            return False
+        comp = "facilities" if name in ("robotics_factory", "nanite_factory",
+                                        "shipyard", "research_lab") else "supplies"
+        if self._guard():
+            ok = self.client.build(planet, comp, name)
+            if ok:
+                self.record_session_action("buildings", name, nxt, str(planet.coords))
+        return False
+
     def _economy_step(self, planet):
         if not self._get_planet_setting(planet, "enable_economy", True):
             self.log.debug("%s: economía desactivada para este planeta.", planet.coords)
@@ -1715,15 +1797,35 @@ class Brain(StatsMixin):
             if not template:
                 template = {"large_cargo": 5}
 
-        # Dimensionado de la flota de ataque según el modo (sondas con bodega vs cargueros).
-        def size_fleet(p, full_loot):
+        # Auto-flota: el bot elige la escolta militar por simulación en vez de la plantilla.
+        use_auto = bool(getattr(self.cfg, "farm_auto_fleet", False)) and not use_probes
+
+        # Dimensionado de la flota de ataque según el modo (sondas / auto / plantilla).
+        # Devuelve None si en modo auto ni todo el hangar gana el combate.
+        def size_fleet(p, full_loot, report=None):
             if use_probes:
                 return fleet_mod.size_attack_fleet_probes(
                     p, full_loot, template, gd.SHIPS["espionage_probe"].cargo)
+            if use_auto and report is not None:
+                def_tech = combat.Tech(
+                    weapons=report.research.get("weapons_tech", 0),
+                    shielding=report.research.get("shielding_tech", 0),
+                    armor=report.research.get("armor_tech", 0),
+                )
+                escort = fleet_mod.auto_military_escort(
+                    p.ships, report.fleet, report.defense, self.my_tech, def_tech)
+                if escort is None:
+                    return None
+                return fleet_mod.size_attack_fleet_for_planet(p, full_loot, escort)
             return fleet_mod.size_attack_fleet_for_planet(p, full_loot, template)
 
         # Comprobar si tenemos al menos una naves de estos tipos en algún origen elegible
-        has_farming_fleet = any(self._has_ships(eligible_locations, ship_type, min_count=1) for ship_type in template.keys())
+        if use_auto:
+            # La plantilla se ignora: basta con tener cargueros en algún origen elegible.
+            has_farming_fleet = any(self._has_ships(eligible_locations, s, min_count=1)
+                                    for s in ("small_cargo", "large_cargo"))
+        else:
+            has_farming_fleet = any(self._has_ships(eligible_locations, ship_type, min_count=1) for ship_type in template.keys())
         if not has_farming_fleet:
             self.log.info("Farmeo omitido: sin flota de ataque/cargueros configurados en %s en ubicaciones con farmeo activo.", list(template.keys()))
             return
@@ -1841,8 +1943,11 @@ class Brain(StatsMixin):
             reasons_by_planet = {}
             for p in eligible_locations:
                 # 1. Dimensionar la flota específicamente para lo disponible en este origen
-                atk_fleet = size_fleet(p, full_loot)
-                
+                atk_fleet = size_fleet(p, full_loot, report)
+                if atk_fleet is None:
+                    reasons_by_planet[str(p.coords)] = "Auto-flota: el hangar no gana el combate"
+                    continue
+
                 # 2. Verificar que el origen tenga toda la flota requerida (cargueros + cazas del template)
                 if not can_afford_fleet(p, atk_fleet):
                     reasons_by_planet[str(p.coords)] = "Falta de flota en hangar"
@@ -1911,7 +2016,9 @@ class Brain(StatsMixin):
                 # Intentar buscar otro origen elegible sobre la marcha
                 best_alt = None
                 for p in eligible_locations:
-                    alt_fleet = size_fleet(p, full_loot)
+                    alt_fleet = size_fleet(p, full_loot, target.report)
+                    if alt_fleet is None:
+                        continue
                     if not can_afford_fleet(p, alt_fleet):
                         continue
                     if tgt.cargo_capacity(alt_fleet) == 0:

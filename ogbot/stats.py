@@ -17,12 +17,24 @@ from . import utils
 class StatsMixin:
 
     def initialize_session_stats(self):
-        """Inicializa las estadísticas a 0 para la nueva sesión e ignora mensajes existentes."""
-        self.log.info("Inicializando estadísticas de la sesión (ignorando mensajes previos)...")
+        """Crea la estructura de estadísticas la PRIMERA vez (ignorando el backlog de
+        mensajes). Si el fichero ya existe NO se resetea: los acumulados de farmeo,
+        expediciones y reciclaje sobreviven a los reinicios, y los combates que
+        aterrizaron con el bot parado se contabilizan al volver."""
         import json
         import os
 
         stats_file = "ogbot_stats.json"
+        if os.path.exists(stats_file):
+            try:
+                with open(stats_file, "r", encoding="utf-8") as f:
+                    json.load(f)
+                self.log.info("Estadísticas existentes conservadas (acumulados entre sesiones).")
+                return
+            except Exception:
+                self.log.warning("ogbot_stats.json corrupto: se reinicializa.")
+
+        self.log.info("Inicializando estadísticas (primera vez: ignorando mensajes previos)...")
         stats = {
             "total_farming": {"metal": 0, "crystal": 0, "deut": 0},
             "total_recycling": {"metal": 0, "crystal": 0, "deut": 0},
@@ -138,6 +150,7 @@ class StatsMixin:
                         return
 
             planet_list.append(action_data)
+            del planet_list[:-200]   # acumulado entre sesiones: acotar cada lista
 
         try:
             utils.atomic_write_json(stats_file, stats)
@@ -417,6 +430,9 @@ class StatsMixin:
 
         if changed:
             try:
+                # Sin reset por sesión el índice de vistos crece sin límite: conservar
+                # los últimos 3000 (los tabs de mensajes de OGame muestran muchos menos).
+                del stats["parsed_messages"][:-3000]
                 utils.atomic_write_json(stats_file, stats)
                 self.log.info("Estadísticas imperiales actualizadas en ogbot_stats.json.")
             except Exception as e:

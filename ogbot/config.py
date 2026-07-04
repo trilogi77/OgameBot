@@ -263,6 +263,10 @@ class Config:
 
     # --- Objetivos de flota ---
     fleet_targets: dict = field(default_factory=dict)
+    # Auto-gestión de flota: ignora fleet_targets y el bot calcula los objetivos
+    # según el tamaño de la economía (sondas, cargueros, recicladores y escolta
+    # militar) para que la flota crezca sola con el imperio.
+    fleet_auto_build: bool = False
 
     # --- Persistencia / logs ---
     state_file: str = "state.json"

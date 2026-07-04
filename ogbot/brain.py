@@ -897,6 +897,45 @@ class Brain(StatsMixin):
             d[name] = d.get(name, 0) + count
             self._save_state_cache()
 
+    def _mark_build_started(self, loc, name: str, cost) -> float:
+        """Marca la construcción recién iniciada en el planeta Y en la caché.
+        El overview hace fail-open al leer building_in_progress: sin este apunte,
+        el ciclo siguiente cree el planeta libre y re-encola el mismo nivel una y
+        otra vez. Devuelve la duración estimada en segundos."""
+        secs = gd.building_time(cost, loc.lvl("robotics_factory"),
+                                loc.lvl("nanite_factory"), self.cfg.universe_speed)
+        loc.building_in_progress = True
+        loc.building_remaining_seconds = int(secs)
+        if getattr(self.cfg, "enable_state_cache", True):
+            entry = self.state_cache["planets"].get(self._loc_key(loc.coords))
+            if entry is not None:
+                entry["build_finish_epoch"] = time.time() + secs
+                entry["build_queue"] = [name]
+                self._save_state_cache()
+        return secs
+
+    def _mark_ships_started(self, loc, ship: str, count: int):
+        """Marca el astillero como ocupado en la caché tras encargar un lote: las
+        naves en cola no aparecen ni en el planeta ni en vuelo, así que sin esto
+        el ciclo siguiente volvería a encargar el mismo lote."""
+        if not getattr(self.cfg, "enable_state_cache", True):
+            return
+        unit = gd.SHIPS[ship].cost
+        total = gd.Cost(unit.metal * count, unit.crystal * count, unit.deut * count)
+        # ponytail: la fórmula de edificios con nivel de astillero aproxima bien el
+        # tiempo de naves; solo se usa como pacing, no hace falta exactitud
+        secs = gd.building_time(total, loc.lvl("shipyard"),
+                                loc.lvl("nanite_factory"), self.cfg.universe_speed)
+        entry = self.state_cache["planets"].get(self._loc_key(loc.coords))
+        if entry is not None:
+            entry["shipyard_finish_epoch"] = time.time() + secs
+            self._save_state_cache()
+
+    def _shipyard_pending(self, loc) -> bool:
+        """True si el astillero de esta ubicación sigue (estimado) fabricando un lote."""
+        entry = self.state_cache["planets"].get(self._loc_key(loc.coords)) or {}
+        return (entry.get("shipyard_finish_epoch", 0.0) or 0.0) > time.time()
+
     def _write_build_status(self, planets):
         """Escribe build_status.json con los tiempos restantes de construcción/investigación."""
         try:
@@ -1534,7 +1573,7 @@ class Brain(StatsMixin):
                                              startorder.SERVER_START_ORDER) is not None)
                 if not server_start_active:
                     self._research_step(planets)
-                self._fleet_step(planets)
+                self._fleet_step(planets, ships_in_motion)
                 self.last_economy_run_time = time.time()
                 self._save_state()
 
@@ -1658,6 +1697,7 @@ class Brain(StatsMixin):
             ok = self.client.build(planet, comp, name)
             if ok:
                 self.record_session_action("buildings", name, nxt, str(planet.coords))
+                self._mark_build_started(planet, name, cost)
         return False
 
     def _economy_step(self, planet):
@@ -1680,6 +1720,7 @@ class Brain(StatsMixin):
                 ok = self.client.build(planet, comp, name)
                 if ok:
                     self.record_session_action("buildings", name, planet.lvl(name) + 1, str(planet.coords))
+                    self._mark_build_started(planet, name, cost)
         else:
             self.log.info("%s: nada rentable que construir ahora.", planet.coords)
 
@@ -1735,7 +1776,7 @@ class Brain(StatsMixin):
                 except Exception as e:
                     self.log.debug("No se pudo estimar ETA de investigación: %s", e)
 
-    def _fleet_step(self, planets):
+    def _fleet_step(self, planets, ships_in_motion=None):
         """Fabrica cargueros/naves según los objetivos definidos en la configuración."""
         if not getattr(self.cfg, "enable_fleet_building", True):
             self.log.debug("Construcción de flota desactivada globalmente.")
@@ -1749,15 +1790,23 @@ class Brain(StatsMixin):
 
         # Usar el planeta con el astillero de nivel más alto
         home = max(eligible_planets, key=lambda p: p.lvl("shipyard"))
+        if self._shipyard_pending(home):
+            self.log.debug("%s: astillero ocupado con el lote anterior; esperamos.", home.coords)
+            return
 
-        # Si hay objetivos de flota definidos, los procesamos
-        fleet_targets = getattr(self.cfg, "fleet_targets", {}) or {}
+        # Objetivos: auto-gestión (escalan con la economía) o los fijados a mano
+        if getattr(self.cfg, "fleet_auto_build", False):
+            fleet_targets = fleet_mod.auto_fleet_targets(home, planets, self.research_levels, self.cfg)
+            self.log.debug("Auto-flota: objetivos calculados %s", fleet_targets)
+        else:
+            fleet_targets = getattr(self.cfg, "fleet_targets", {}) or {}
+        in_motion = ships_in_motion or {}
         if fleet_targets:
             for ship_name, target_qty in fleet_targets.items():
                 if target_qty <= 0:
                     continue
-                # Contamos las naves totales en todo el imperio
-                current_qty = sum(p.ships.get(ship_name, 0) for p in planets)
+                # Contamos las naves totales en todo el imperio (incluidas las que vuelan)
+                current_qty = sum(p.ships.get(ship_name, 0) for p in planets) + in_motion.get(ship_name, 0)
                 if current_qty < target_qty:
                     needed = target_qty - current_qty
                     # Fabricar en lotes de máximo 10 para no drenar recursos
@@ -1768,6 +1817,7 @@ class Brain(StatsMixin):
                         ok = self.client.build_ships(home, ship_name, batch)
                         if ok:
                             self.record_session_action("fleet", ship_name, batch, str(home.coords))
+                            self._mark_ships_started(home, ship_name, batch)
                         # Actualizar inventario local para no duplicar en el mismo ciclo
                         home.ships[ship_name] = home.ships.get(ship_name, 0) + batch
                         break # Un solo lote de construcción por ciclo para balancear recursos
@@ -1777,11 +1827,12 @@ class Brain(StatsMixin):
                 return
             if home.lvl("metal_mine") < 4:
                 return
-            have_lc = home.ships.get("large_cargo", 0)
+            have_lc = home.ships.get("large_cargo", 0) + in_motion.get("large_cargo", 0)
             if have_lc < 20 and self._guard():
                 ok = self.client.build_ships(home, "large_cargo", 10)
                 if ok:
                     self.record_session_action("fleet", "large_cargo", 10, str(home.coords))
+                    self._mark_ships_started(home, "large_cargo", 10)
 
     def _apply_probe_cargo(self, warn: bool = False):
         """Servidores con bodega en sondas (raid con sondas): fija la capacidad real en el
@@ -2772,6 +2823,7 @@ class Brain(StatsMixin):
                     ok = self.client.build(planet, comp, name)
                     if ok:
                         self.record_session_action("buildings", name, planet.lvl(name) + 1, str(planet.coords))
+                        self._mark_build_started(planet, name, cost)
                     planet.building_in_progress = True
             else:
                 plasma = self.research_levels.get("plasma_tech", 0)
@@ -2886,9 +2938,7 @@ class Brain(StatsMixin):
             ok = self.client.build(planet, comp, real_name)
             if ok:
                 self.record_session_action("buildings", real_name, real_lvl, str(planet.coords))
-                planet.building_in_progress = True
-                dur = gd.building_time(cost, planet.lvl("robotics_factory"),
-                                       planet.lvl("nanite_factory"), self.cfg.universe_speed)
+                dur = self._mark_build_started(planet, real_name, cost)
                 return time.time() + max(30.0, dur)
             return time.time() + _QUEUE_RETRY_S       # el envío falló: reintentar pronto
 

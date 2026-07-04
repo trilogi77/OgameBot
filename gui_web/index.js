@@ -485,6 +485,7 @@ function mapConfigToUI(cfg) {
     setCheck("enable_farming", cfg.enable_farming);
     setVal("farming_run_interval_mins", cfg.farming_run_interval_mins !== undefined ? cfg.farming_run_interval_mins : 0);
     setCheck("enable_fleet_building", cfg.enable_fleet_building);
+    setCheck("fleet_auto_build", cfg.fleet_auto_build);
     setCheck("enable_expeditions", cfg.enable_expeditions);
     setVal("expeditions_run_interval_mins", cfg.expeditions_run_interval_mins !== undefined ? cfg.expeditions_run_interval_mins : 0);
     setCheck("expedition_auto_ships", cfg.expedition_auto_ships);
@@ -635,6 +636,7 @@ function collectUIIntoConfig() {
     globalConfig.enable_farming = getCheck("enable_farming");
     globalConfig.farming_run_interval_mins = parseI(getVal("farming_run_interval_mins"), 0);
     globalConfig.enable_fleet_building = getCheck("enable_fleet_building");
+    globalConfig.fleet_auto_build = getCheck("fleet_auto_build");
     globalConfig.enable_expeditions = getCheck("enable_expeditions");
     globalConfig.expeditions_run_interval_mins = parseI(getVal("expeditions_run_interval_mins"), 0);
     globalConfig.expedition_auto_ships = getCheck("expedition_auto_ships");

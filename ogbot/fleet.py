@@ -339,3 +339,37 @@ def harvest_plan(origin: Coords, debris_coords: Coords,
     dest = Coords(debris_coords.galaxy, debris_coords.system, debris_coords.position, type="debris")
     return {"mission": "harvest", "origin": origin, "destination": dest,
             "ships": {"recycler": n}}
+
+
+def auto_fleet_targets(home: Planet, planets: List[Planet],
+                       research_levels: Dict[str, int], cfg: Config) -> Dict[str, int]:
+    """Auto-gestión de flota: objetivos calculados según el tamaño de la economía.
+
+    La escala es la suma de niveles de minas (metal+cristal) del imperio: más
+    economía -> más cargueros para farmear/transportar y más escolta militar.
+    Solo incluye naves cuyos prerrequisitos (astillero/tecnologías) ya se
+    cumplen en `home`. El orden del dict es la prioridad de fabricación: el
+    bot fabrica un lote por ciclo del primer déficit, igual que con los
+    objetivos manuales.
+    """
+    def buildable(name: str) -> bool:
+        return all(
+            (home.lvl(req) if req in gd.BUILDING_COST else research_levels.get(req, 0)) >= lvl
+            for req, lvl in gd.SHIP_PREREQS.get(name, {}).items())
+
+    # ponytail: heurística lineal con las minas; afinar ratios si el crecimiento cojea
+    eco = sum(p.lvl("metal_mine") + p.lvl("crystal_mine") for p in planets)
+    targets: Dict[str, int] = {}
+    if getattr(cfg, "enable_farming", True):
+        targets["espionage_probe"] = 12
+    if buildable("large_cargo"):
+        targets["large_cargo"] = max(20, eco * 2)
+    else:
+        targets["small_cargo"] = 15  # puente hasta desbloquear el carguero grande
+    if getattr(cfg, "enable_recycling", False) or getattr(cfg, "farm_recycle_debris", False):
+        targets["recycler"] = max(4, eco // 3)
+    # Escolta militar (la usa farm_auto_fleet) y disuasión; crece con la economía
+    targets["light_fighter"] = eco * 2
+    targets["cruiser"] = eco // 2
+    targets["battleship"] = eco // 4
+    return {s: q for s, q in targets.items() if q > 0 and buildable(s)}

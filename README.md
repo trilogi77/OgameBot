@@ -338,6 +338,7 @@ journalctl -u ogbot -f
 | `farming_blacklist_days` | `7` | Días de veto a granjas pobres (3+ raids con botín medio bajo). 0 = off. |
 | `deuterium_reserve` | `0` | Deuterio intocable por planeta (combustible de emergencia). |
 | `enable_fleet_building` | `true` | Fabricar flota militar. |
+| `fleet_auto_build` | `false` | Auto-gestión de flota: el bot calcula los objetivos (sondas, cargueros, recicladores y escolta) según el tamaño de tu economía y los sube solo al crecer el imperio. Ignora `fleet_targets`. |
 | `enable_cargo_building` | `false` | Fabricar cargueros extra. |
 | `fleet_multipliers` | ver ejemplo | Objetivos de flota escalados por nivel de mina (modo ofensivo). |
 

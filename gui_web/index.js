@@ -516,6 +516,10 @@ function mapConfigToUI(cfg) {
     setCheck("farm_with_probes", cfg.farm_with_probes);
     setCheck("farm_recycle_debris", cfg.farm_recycle_debris !== undefined ? cfg.farm_recycle_debris : true);
     setCheck("farm_auto_fleet", cfg.farm_auto_fleet);
+    setCheck("farming_smart_schedule", cfg.farming_smart_schedule !== undefined ? cfg.farming_smart_schedule : true);
+    setCheck("farming_skip_active_targets", cfg.farming_skip_active_targets !== undefined ? cfg.farming_skip_active_targets : true);
+    setVal("farming_blacklist_days", cfg.farming_blacklist_days !== undefined ? cfg.farming_blacklist_days : 7);
+    setVal("deuterium_reserve", cfg.deuterium_reserve !== undefined ? cfg.deuterium_reserve : 0);
     setCheck("special_server_start", cfg.special_server_start);
     setVal("special_new_planet", cfg.special_new_planet || "");
     setCheck("special_new_planet_auto", cfg.special_new_planet_auto);
@@ -661,6 +665,10 @@ function collectUIIntoConfig() {
     globalConfig.farm_with_probes = getCheck("farm_with_probes");
     globalConfig.farm_recycle_debris = getCheck("farm_recycle_debris");
     globalConfig.farm_auto_fleet = getCheck("farm_auto_fleet");
+    globalConfig.farming_smart_schedule = getCheck("farming_smart_schedule");
+    globalConfig.farming_skip_active_targets = getCheck("farming_skip_active_targets");
+    globalConfig.farming_blacklist_days = parseF(getVal("farming_blacklist_days"), 7);
+    globalConfig.deuterium_reserve = parseI(getVal("deuterium_reserve"), 0);
     globalConfig.special_server_start = getCheck("special_server_start");
     globalConfig.special_new_planet = (getVal("special_new_planet") || "").trim();
     globalConfig.special_new_planet_auto = getCheck("special_new_planet_auto");

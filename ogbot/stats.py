@@ -9,9 +9,20 @@ parse_found_ships siguen viviendo en brain.py (los usan otras partes); aquí se
 importan de forma tardía dentro de los métodos para evitar el ciclo brain<->stats.
 """
 from __future__ import annotations
+import re
 import time
 from typing import Dict
 from . import utils
+
+_COORDS_BRACKET_RE = re.compile(r'\[(\d{1,2}):(\d{1,3}):(\d{1,2})\]')
+
+
+def combat_target_coords(raw: dict, text: str) -> str:
+    """Coordenadas del planeta atacado en un mensaje de combate, como 'G:S:P'.
+    Prioriza el atributo data-raw-coordinates; respaldo: primer [G:S:P] del texto."""
+    c = str(raw.get("coordinates", "") or "").strip()
+    m = re.match(r'^(\d{1,2}):(\d{1,3}):(\d{1,2})$', c) or _COORDS_BRACKET_RE.search(text or "")
+    return f"{m.group(1)}:{m.group(2)}:{m.group(3)}" if m else ""
 
 
 class StatsMixin:
@@ -412,6 +423,13 @@ class StatsMixin:
 
                 entry["summary"] = fmt_extracted(metal, crystal, deut, dark_matter, found_ships)
 
+                # Aprendizaje de farmeo: atribuir el botín REAL al objetivo del combate
+                # (también con 0 botín: los raids vacíos cuentan para la blacklist).
+                if key == "total_farming":
+                    tcoords = combat_target_coords(raw, text)
+                    if tcoords:
+                        self._record_target_loot(tcoords, metal, crystal, deut)
+
                 stats[key]["metal"] = stats[key].get("metal", 0) + metal
                 stats[key]["crystal"] = stats[key].get("crystal", 0) + crystal
                 stats[key]["deut"] = stats[key].get("deut", 0) + deut
@@ -437,6 +455,11 @@ class StatsMixin:
                 self.log.info("Estadísticas imperiales actualizadas en ogbot_stats.json.")
             except Exception as e:
                 self.log.debug("No se pudo escribir ogbot_stats.json: %s", e)
+            # El historial por objetivo (target_stats) vive en state.json: persistirlo ya.
+            try:
+                self._save_state()
+            except Exception:
+                pass
 
         if log_changed[0]:
             try:

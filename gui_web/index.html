@@ -417,6 +417,10 @@
                             </div>
                         </div>
                         <div class="form-group">
+                            <label for="deuterium_reserve">Reserva de deuterio por planeta (combustible de emergencia; 0 = sin reserva)</label>
+                            <input type="number" id="deuterium_reserve" min="0" step="1000" placeholder="0">
+                        </div>
+                        <div class="form-group">
                             <label for="server_url">URL del servidor</label>
                             <input type="text" id="server_url" placeholder="https://s123-es.ogame.gameforge.com/">
                         </div>
@@ -597,6 +601,18 @@
                             <span class="toggle-text"><strong>Auto-flota de ataque</strong><span>El bot elige la escolta militar por simulación según el hangar y la defensa del objetivo; ignora la plantilla.</span></span>
                             <span class="switch-container"><input type="checkbox" id="farm_auto_fleet"><span class="slider"></span></span>
                         </label>
+                        <label class="toggle-row">
+                            <span class="toggle-text"><strong>Relanzar al volver la flota</strong><span>Despierta al bot cuando vuelve una flota de farmeo para lanzar la siguiente ronda.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="farming_smart_schedule"><span class="slider"></span></span>
+                        </label>
+                        <label class="toggle-row">
+                            <span class="toggle-text"><strong>Evitar objetivos con actividad</strong><span>Descarta el ataque si el informe muestra actividad reciente (&lt;60 min): trampa probable.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="farming_skip_active_targets"><span class="slider"></span></span>
+                        </label>
+                        <div class="form-group">
+                            <label for="farming_blacklist_days">Blacklist de granjas pobres (días)</label>
+                            <input type="number" id="farming_blacklist_days" min="0" step="0.5" placeholder="7">
+                        </div>
                         <div class="form-group">
                             <label for="espionage_probe_cargo">Bodega por sonda</label>
                             <input type="number" id="espionage_probe_cargo" min="0" placeholder="5">

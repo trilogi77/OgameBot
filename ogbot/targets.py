@@ -128,3 +128,28 @@ def select_targets(candidates: List[dict], origins: List[Coords],
 
 def rank(targets: List[Target], limit: int) -> List[Target]:
     return sorted(targets, key=lambda t: t.score, reverse=True)[:limit]
+
+
+# --- Aprendizaje por objetivo (historial de botín REAL de los combates) -------
+# Entrada del historial: {"raids": int, "loot": float (valor metal-equiv.), "last": epoch}
+
+def avg_real_loot(entry: Optional[dict]) -> float:
+    """Botín real medio por raid del historial de un objetivo (0 = sin historial)."""
+    raids = int((entry or {}).get("raids", 0) or 0)
+    return float((entry or {}).get("loot", 0.0) or 0.0) / raids if raids > 0 else 0.0
+
+
+def blacklist_state(entry: Optional[dict], min_loot_value: float, now: float,
+                    days: float, min_raids: int = 3) -> str:
+    """Decisión de blacklist para una granja según su botín real:
+       'skip'  = pobre demostrada y dentro de la ventana de castigo -> no espiar/atacar
+       'reset' = ventana cumplida -> borrar historial y darle otra oportunidad
+       'ok'    = atacable (sin historial suficiente o rinde bien)."""
+    if days <= 0 or not entry:
+        return "ok"
+    if int(entry.get("raids", 0) or 0) < min_raids:
+        return "ok"
+    if avg_real_loot(entry) >= min_loot_value:
+        return "ok"
+    last = float(entry.get("last", 0.0) or 0.0)
+    return "skip" if now - last < days * 86400 else "reset"

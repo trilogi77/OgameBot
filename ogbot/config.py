@@ -105,6 +105,14 @@ class Config:
     # militar por simulación (mínimo que gana >=95% con margen) según el hangar del
     # origen y la defensa del informe; los cargueros se dimensionan al botín.
     farm_auto_fleet: bool = False
+    # Despertar al volver la flota de farmeo para relanzar la ronda (como las expediciones)
+    farming_smart_schedule: bool = True
+    # Descartar el ataque si el informe de espionaje muestra actividad reciente (<60 min):
+    # en un "inactivo" es señal de trampa o de que va a mover los recursos.
+    farming_skip_active_targets: bool = True
+    # Blacklist de granjas pobres: tras 3+ raids con botín real medio < min_loot_value,
+    # no volver a espiarlas/atacarlas durante estos días (0 = desactivado).
+    farming_blacklist_days: float = 7.0
     attacker_fleet_template: dict = field(default_factory=lambda: {
         "small_cargo": 0, "large_cargo": 0, "light_fighter": 0, "cruiser": 0,
     })
@@ -228,6 +236,10 @@ class Config:
     login_human_check_timeout_s: int = 300    # espera máx. para resolver el CAPTCHA desde el visor del GUI
     max_saving_hours_research: float = 6.0   # horas máx a ahorrar para investigación
     max_saving_hours_economy: float = 4.0    # horas máx a ahorrar para economía
+    # Deuterio mínimo a conservar en cada planeta como combustible de emergencia
+    # (fleetsave nocturno / evasión de ataques). Farmeo y expediciones no despegan
+    # si dejarían el depósito por debajo. Las misiones de emergencia lo ignoran. 0 = sin reserva.
+    deuterium_reserve: int = 0
 
     # --- Alimentación de recursos entre planetas (transporte para construir) ---
     # Se activa marcando planetas como "Recibe recursos" (destino) y "Cede recursos"

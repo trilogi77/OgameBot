@@ -85,6 +85,18 @@ farm_recycle_debris: true
 # militar por simulación (mínimo que gana >=95% con margen) según el hangar y la
 # defensa del objetivo; los cargueros se dimensionan al botín.
 farm_auto_fleet: false
+# Despertar al volver la flota de farmeo para relanzar la ronda (como expediciones)
+farming_smart_schedule: true
+# Descartar el ataque si el informe muestra actividad reciente (<60 min) en el
+# objetivo: en un "inactivo" es señal de trampa o de que moverá los recursos.
+farming_skip_active_targets: true
+# Blacklist de granjas pobres: tras 3+ raids con botín real medio < min_loot_value,
+# no volver a espiarlas/atacarlas durante estos días (0 = desactivado).
+farming_blacklist_days: 7
+# Deuterio mínimo a conservar por planeta como combustible de emergencia
+# (fleetsave/evasión). Farmeo y expediciones no despegan si dejarían el depósito
+# por debajo. 0 = sin reserva.
+deuterium_reserve: 0
 
 # --- Configuraciones especiales (programas de desarrollo fijos) ---
 # Inicio de servidor: un solo planeta siguiendo SIN PARAR el orden óptimo de

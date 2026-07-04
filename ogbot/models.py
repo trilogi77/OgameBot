@@ -96,6 +96,7 @@ class EspionageReport:
     research: Dict[str, int] = field(default_factory=dict)
     timestamp: float = 0.0
     counterespionage_risk: float = 0.0  # probabilidad de detección
+    activity_mins: Optional[int] = None  # actividad del informe (<60 = reciente); None = sin dato
 
     @property
     def is_undefended(self) -> bool:

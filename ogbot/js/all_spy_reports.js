@@ -32,7 +32,13 @@
                 fleet: {},
                 defense: {},
                 player_name: el.getAttribute('data-raw-playername') || '',
-                is_inactive: rawStatusStr.includes('inactive')
+                is_inactive: rawStatusStr.includes('inactive'),
+                // Actividad del informe (minutos): 15 = '*' (<15 min), 15-59 = minutos.
+                // Atributo ausente o no numérico -> null (sin dato, no bloquear).
+                activity: (() => {
+                    const a = parseInt(el.getAttribute('data-raw-activity'));
+                    return isNaN(a) ? null : a;
+                })()
             };
             
             const SHIP_MAP = {

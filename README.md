@@ -1,203 +1,221 @@
 # OGBot — Gestor autónomo para OGame
 
-> Bot modular en Python que automatiza economía, investigación, flota, farmeo,
-> reciclaje, expediciones, colonización y (opcional) creación de lunas, siguiendo
-> una estrategia configurable. Corre en segundo plano mientras usas el ordenador.
+> Bot modular en Python (Playwright) que automatiza **economía, investigación,
+> flota, farmeo, reciclaje, expediciones, defensa, colonización y fleetsave**
+> siguiendo una estrategia configurable. Incluye un **panel web** de control
+> (multicuenta), notificaciones y comandos por **Telegram**, estadísticas
+> persistentes y soporte **Docker**.
 
 ---
 
 ## ⚠️ Aviso importante (léelo antes de nada)
 
-**Gameforge prohíbe los bots en OGame** (sección de reglas anti-automatización).
-Las cuentas detectadas se **banean de forma permanente**, y existe detección por
-captcha en el Lobby y análisis de comportamiento. Este proyecto es **educativo**
-y de demostración de ingeniería (teoría de juegos, optimización, simulación de
-combate, automatización). Si lo usas en un servidor real:
+**Gameforge prohíbe los bots en OGame.** Las cuentas detectadas se **banean de
+forma permanente**; existe detección por captcha en el Lobby y análisis de
+comportamiento. Este proyecto es **educativo** (teoría de juegos, optimización,
+simulación de combate, automatización). Si lo usas en un servidor real:
 
 - Asumes el riesgo de **perder tu cuenta**.
 - La "humanización" (delays aleatorios, franja horaria, límite de acciones/hora,
   reutilización de sesión) **reduce pero NO elimina** el riesgo de detección.
-- Empieza siempre con `dry_run: true` para validar la estrategia **sin ejecutar
-  ninguna acción real**.
-
-Úsalo sobre todo para aprender cómo se diseña un agente autónomo de estrategia.
+- Empieza siempre con `dry_run: true` para ver el plan **sin ejecutar nada**.
 
 ---
 
-## 1. Diseño
+## Índice
 
-### 1.1 Arquitectura por capas
-
-El bot separa **estrategia** (lógica pura, testeable, estable) de la **interacción
-con el juego** (frágil, cambia con cada versión de OGame). Si Gameforge cambia el
-HTML, solo tocas un archivo (`client.py`); el cerebro estratégico no se entera.
-
-```
-                 ┌──────────────────────────────────────────────┐
-                 │                  brain.py                      │
-                 │  Orquestador: bucle de ciclos en 2º plano      │
-                 │  (prioriza fleetsave → economía → farmeo …)    │
-                 └───────────────┬───────────────┬────────────────┘
-                                 │               │
-          ┌──────────────────────┘               └───────────────────────┐
-          ▼  LÓGICA PURA (sin red, testeable)                 INTERACCIÓN ▼
- ┌───────────────────────────────────────────┐     ┌──────────────────────────┐
- │ economy.py   optimizador de minas (payback)│     │ client.py  (Playwright)  │
- │ research.py  prioridad de investigación    │     │  login, scraping, clicks │
- │ targets.py   rentabilidad/riesgo objetivos │     │  ⚠ selectores a verificar│
- │ combat.py    simulador Monte Carlo          │     └────────────┬─────────────┘
- │ fleet.py     fleetsave/expedición/reciclaje│                  │ solo lectura
- │ moons.py     lunas + colonización          │     ┌────────────▼─────────────┐
- │ gamedata.py  fórmulas/costes/stats          │     │ universe_api.py          │
- │ models.py    estructuras de datos          │     │  API XML pública (oficial)│
- └───────────────────────────────────────────┘     │  inteligencia del universo│
-                                                     └──────────────────────────┘
-```
-
-### 1.2 Componentes
-
-| Archivo | Responsabilidad |
-|---|---|
-| `gamedata.py` | Fórmulas reales de OGame: costes, producción, energía, distancia, tiempo de vuelo, combustible, slots de astrofísica. Stats de naves y defensas. |
-| `models.py` | `Resources`, `Planet`, `Coords`, `EspionageReport`, `Target`, `FleetMovement`. |
-| `universe_api.py` | Cliente de la **API XML pública** (`/api/players.xml`, `universe.xml`, `highscore.xml`…). Solo lectura, oficial. Es la base del buscador de objetivos. |
-| `economy.py` | Decide la siguiente construcción por **payback marginal** (ver §2). Gestiona energía (solar/fusión). |
-| `research.py` | Siguiente tecnología según prioridad + prerrequisitos. |
-| `combat.py` | **Simulador Monte Carlo**: rapidfire, escudos con rebote, casco, 6 rondas, explosiones, bonos de tecnología, cálculo de escombros. |
-| `targets.py` | Buscar, filtrar por distancia, espiar, **evaluar beneficio neto** (loot − combustible − pérdidas) y ordenar. |
-| `fleet.py` | **Fleetsave**, dimensionado de cargueros, expediciones, planificación de reciclaje. |
-| `moons.py` | Probabilidad de luna y naves a sacrificar; selección de mejor posición de colonia. |
-| `client.py` | **Única** capa que toca el juego (Playwright). Login con reutilización de sesión, detección de captcha, scraping y acciones. Respeta `dry_run`. |
-| `brain.py` | El bucle principal: prioridades, rate-limit, delays, franja horaria. |
-| `config.py` / `config.example.yaml` | Toda la parametrización. Sin tocar código. |
-
-### 1.3 Funcionamiento en segundo plano
-
-- Bucle infinito con **intervalo aleatorio** entre ciclos (`cycle_interval_*`).
-- Solo actúa dentro de tu **franja horaria** (`active_hours`), p.ej. 8:00–24:00.
-- **Rate limiter** (`max_actions_per_hour`) + **delays humanizados** entre clics.
-- **Reutiliza la sesión** del navegador (`ogame_session.json`) para minimizar
-  logins (cada login es donde más aparece el captcha).
-- Headless (`headless: true`) para no molestar mientras usas el PC.
+1. [Funciones](#1-funciones)
+2. [Instalación y arranque rápido](#2-instalación-y-arranque-rápido)
+3. [El panel web (GUI)](#3-el-panel-web-gui)
+4. [Uso por línea de comandos](#4-uso-por-línea-de-comandos)
+5. [Configuración completa (config.yaml)](#5-configuración-completa-configyaml)
+6. [Configuración por planeta](#6-configuración-por-planeta)
+7. [Telegram: avisos y comandos](#7-telegram-avisos-y-comandos)
+8. [Docker / multicuenta](#8-docker--multicuenta)
+9. [Captcha y sesión](#9-captcha-y-sesión)
+10. [Ficheros que genera el bot](#10-ficheros-que-genera-el-bot)
+11. [Arquitectura](#11-arquitectura)
+12. [Estrategia que implementa](#12-estrategia-que-implementa)
+13. [Seguridad operativa](#13-seguridad-operativa)
 
 ---
 
-## 2. La estrategia (el "cómo ganar")
+## 1. Funciones
 
-OGame se gana con **economía compuesta + expansión + farmeo eficiente + no perder
-flota nunca**. El bot implementa esa filosofía:
+### Economía y desarrollo
+- **Optimizador de minas por payback marginal**: sube siempre la mina que antes
+  se amortiza (`coste / producción_extra_por_hora`, en metal-equivalente según
+  `trade_ratio`). Si ninguna baja del umbral, ahorra para investigación/flota.
+- **Gestión de energía**: planta solar y reactor de fusión cuando compensa.
+- **Instalaciones** (robótica, hangar, laboratorio, nanobots) con niveles
+  objetivo configurables por planeta.
+- **Investigación** por prioridad + pesos + prerrequisitos, con topes de nivel
+  (`research_caps`) para tecnologías de utilidad limitada.
+- **Cola de construcción manual** por planeta (tipo Comandante) desde la GUI.
+- **Defensa**: construcción por lotes según el estilo de juego.
+- **Formas de vida (Lifeforms)**: soporte de edificios/investigación lifeform.
+- **Programas especiales**: orden óptimo de *inicio de servidor* (un planeta,
+  desde cero hasta Astrofísica 1) y orden óptimo de *colonia nueva*
+  (automático para colonias recién fundadas si lo activas).
+- **Alimentación entre planetas**: planetas "fuente" transportan su excedente a
+  planetas "destino" para acelerar sus construcciones.
 
-### 2.1 Economía: payback marginal, no ratios fijos
-En vez del clásico "cristal 2 niveles por debajo del metal", el bot calcula para
-cada mina el **tiempo de amortización** de subir un nivel:
+### Farmeo de inactivos
+- Busca inactivos vía la **API XML pública**, filtra por distancia, **espía** y
+  calcula `score = botín − combustible − pérdidas esperadas` con un
+  **simulador de combate Monte Carlo** (rapidfire, escudos, 6 rondas, escombros).
+- **Auto-flota** opcional: elige por simulación la escolta mínima que gana
+  ≥95% y dimensiona los cargueros al botín.
+- **Reciclaje de escombros del ataque**: sonda suicida para crear el campo y
+  recicladores despachados de inmediato.
+- **Raid con sondas** en servidores donde las sondas tienen bodega.
+- Protecciones: solo inactivos, evitar jugadores fuertes, descartar objetivos
+  con actividad reciente (trampas), **blacklist de granjas pobres**, cooldown
+  por objetivo y botín mínimo.
+- **Smart schedule**: despierta al volver la flota para relanzar la ronda.
 
-```
-payback (horas) = coste_del_nivel_siguiente / producción_extra_por_hora
-```
+### Expediciones
+- Envío a la posición 16 con rotación de sistemas.
+- **Auto-cálculo de cargueros** según el tope de botín de tu universo (puntos
+  del Top-1 leídos de la API), reparto entre todos los slots de expedición,
+  Pathfinder / Descubridor / destructores / sondas opcionales.
+- Estimación de vuelo con el **tiempo real de la página** y reenvío automático
+  al volver cada expedición (smart schedule).
 
-(todo en "metal-equivalente" usando el `trade_ratio`). Sube la mina con **menor
-payback**; si ninguna baja del umbral (`target_mine_ratio_payback_hours`, ~16h),
-deja de invertir en minas y mete recursos en investigación/flota. La energía
-(placa solar, y fusión cuando es rentable) tiene prioridad para no penalizar
-producción.
+### Reciclaje
+- Escaneo de campos de escombros en la galaxia y recogida de los que superen
+  el mínimo configurado.
 
-### 2.2 Investigación: la columna vertebral
-Orden recomendado (configurable):
-1. **Energía** → desbloquea todo.
-2. **Computación** → +1 slot de flota por nivel (clave para farmear en paralelo).
-3. **Espionaje** → informes fiables sin que te detecten.
-4. **Propulsión de combustión** → cargueros más rápidos y baratos de mover.
-5. **Astrofísica** → cada 2 niveles = **+1 colonia y +1 slot de expedición**.
-6. **Plasma** → **+1% metal, +0,66% cristal, +0,33% deut por nivel**. El mayor
-   multiplicador económico del juego a largo plazo.
+### Seguridad (lo que te mantiene vivo)
+- **Fleetsave nocturno**: antes del descanso envía flota+recursos en despliegue
+  lento, preferentemente a **luna** (no escaneable por phalanx), calculado para
+  volver cuando vuelvas a estar activo. Aviso si queda expuesto a phalanx.
+- **Evasión de ataques**: vigila ataques entrantes (intervalo aleatorio 5–13
+  min) y pone la flota a salvo automáticamente.
+- **Vigilancia de espionaje**: aviso por Telegram si te sondean (por movimiento
+  o por mensajes de contraespionaje).
+- **Barrido nocturno** opcional: cada N horas de descanso vacía los planetas
+  marcados para recoger la flota fabricada de noche.
+- **Retorno de flotas** (`/recall`), slots reservados para emergencias,
+  **reserva de deuterio** de emergencia por planeta.
+- **Canario de selectores**: al arrancar verifica el DOM del juego y avisa si
+  GameForge cambió la interfaz.
+- **Modo solo-monitoreo** (`monitor_only`): no juega, solo vigila y salva flota.
 
-### 2.3 Farmeo de inactivos (núcleo del beneficio)
-1. La **API pública** lista jugadores inactivos (`i`/`I`) y sus coordenadas.
-2. Filtro por distancia desde tus planetas (combustible importa).
-3. **Espía** los mejores candidatos.
-4. Para cada uno: `loot = min(recursos·loot_percent, capacidad_carga)`; si tiene
-   defensa, el **simulador de combate** estima probabilidad de victoria y pérdidas.
-5. `score = valor(loot) − combustible − pérdidas_esperadas`. Ataca los de score
-   positivo más alto, hasta `max_attack_targets_per_cycle`.
-6. Por defecto `only_inactive_targets: true` (más seguro y menos conflictivo).
+### Colonización y lunas
+- Colonización automática de las mejores posiciones libres (4–12 por defecto)
+  cuando Astrofísica da slot.
+- Módulo de lunas: calcula escombros/naves necesarios (la ejecución del crash
+  queda a tu criterio, el juego no permite auto-atacarse).
 
-### 2.4 Reciclaje y expediciones
-- Tras combates, se forma un **campo de escombros** (`debris_factor`, normalmente
-  30%). El bot programa **recicladores** para recogerlos.
-- **Expediciones** a la posición 16: recursos/naves/materia oscura gratis y
-  mantienen la flota "fuera" (efecto fleetsave colateral).
-
-### 2.5 No perder flota: FLEETSAVE
-La regla de oro de OGame. **Nunca** dejes flota/recursos en el planeta estando
-offline. El bot, antes de cada pausa larga, envía la flota en un **despliegue al
-10% de velocidad** a tu planeta más lejano (o a expedición) de modo que **vuelva
-justo cuando volverás a estar activo**. Esto es lo que te mantiene vivo.
-
-### 2.6 Lunas
-La probabilidad de luna = `min(20%, escombros / 100000)`. Para forzarla necesitas
-un campo de escombros sobre tu planeta. **No puedes atacarte a ti mismo**, así que
-en la práctica se aprovecha un ataque entrante contra tu defensa. El módulo calcula
-cuántas naves equivalen a 100.000 de escombros (≈84 cazas ligeros) pero **deja la
-ejecución a tu criterio** por las restricciones del juego.
-
-### 2.7 Colonización
-Prioriza posiciones centrales (4–12): más campos y más frías (más deuterio). El bot
-busca el primer hueco libre con mejor "score" y envía una nave colonizadora cuando
-la astrofísica te da un slot.
+### Panel, estadísticas y control
+- **Panel web** completo (ver §3) con visor del navegador en vivo y control
+  remoto, multicuenta.
+- **Estadísticas persistentes**: histórico de puntos/recursos/flota
+  (`stats_history.jsonl`, `stats_hourly.jsonl`), botín por granja, beneficio de
+  expediciones, resumen de sesión.
+- **Agenda de tareas** (`task_agenda.json`): qué va a hacer y cuándo.
+- **Memoria de estado**: escaneo completo inicial y re-sincronización periódica;
+  entre medias decide con caché (menos navegación = menos riesgo).
+- **Humanización**: delays aleatorios, franja horaria activa, límite de
+  acciones/hora, intervalos de ciclo aleatorios, orden de rondas configurable.
+- **Dry-run**: registra lo que haría sin ejecutar nada.
 
 ---
 
-## 3. Cómo usarlo
+## 2. Instalación y arranque rápido
 
-### 3.1 Instalación
+### Requisitos
+- Python 3.10+
+- Google Chrome/Chromium (lo instala Playwright)
+
+### Instalación local
+
 ```bash
 cd ogame-bot
-python -m venv .venv && source .venv/bin/activate     # opcional
+python -m venv .venv
+# Linux/Mac: source .venv/bin/activate      Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 playwright install chromium
 ```
 
-### 3.2 Configuración
+### Credenciales (nunca en el YAML)
+
 ```bash
-cp config.example.yaml config.yaml
-# edita config.yaml: server_url, universe_speed/fleet_speed/debris_factor
-# (míralos en https://sXXX-es.ogame.gameforge.com/api/serverData.xml)
-```
-Credenciales **por variables de entorno** (no en el YAML):
-```bash
+# Linux/Mac
 export OGBOT_USER="tu_email@dominio.com"
 export OGBOT_PASS="tu_password"
+# Windows PowerShell
+$env:OGBOT_USER = "tu_email@dominio.com"
+$env:OGBOT_PASS = "tu_password"
 ```
 
-### 3.3 Primer arranque en modo seguro (sin ejecutar nada)
-Con `dry_run: true` el bot **solo registra lo que haría**:
+### Primera ejecución
+
+La forma más fácil es arrancar **el panel web** y configurarlo todo desde ahí:
+
 ```bash
-python main.py --once          # un solo ciclo, para ver el plan
+python gui.py            # abre http://localhost:5000
+```
+
+O por consola: si no existe `config.yaml`, `python main.py` lanza el panel
+automáticamente. Para ir a mano:
+
+```bash
+cp config.example.yaml config.yaml
+# edita config.yaml: server_url, universe_speed, fleet_speed, debris_factor
+# (los valores reales están en https://sXXX-es.ogame.gameforge.com/api/serverData.xml)
+python main.py --once    # UN ciclo en dry-run para ver el plan
 tail -f ogbot.log
 ```
-Verás líneas tipo `[DRY-RUN] Construir solar_plant en [1:100:8]`,
-`[DRY-RUN] Flota {'large_cargo': 18} ... misión=attack`, etc.
 
-### 3.4 Verificar selectores (paso obligatorio)
-OGame cambia su HTML. Abre el juego en tu navegador con DevTools (F12), inspecciona
-los elementos y **ajusta `SEL` y `PAGE` en `client.py`** a tu versión. Implementa
-también el parseo de mensajes de espionaje y el formulario de `fleetdispatch`
-(están marcados con `# TODO` y documentados).
+Verás líneas tipo `[DRY-RUN] Construir solar_plant en [1:100:8]`. Cuando las
+decisiones te cuadren, pon `dry_run: false` y arranca en continuo:
 
-### 3.5 Activarlo de verdad
-Cuando el dry-run muestre decisiones razonables y los selectores estén verificados:
-```yaml
-dry_run: false
-headless: true
-```
 ```bash
-# segundo plano sencillo (Linux/Mac)
-nohup python main.py --config config.yaml > /dev/null 2>&1 &
+python main.py --config config.yaml
 ```
 
-#### Como servicio systemd (Linux, recomendado para 2º plano estable)
-`/etc/systemd/system/ogbot.service`:
+---
+
+## 3. El panel web (GUI)
+
+Arranque: `python gui.py` → <http://localhost:5000> (puerto configurable con la
+variable de entorno `PORT`). Desde el panel puedes **iniciar / pausar /
+reanudar / detener** el bot y editar toda la configuración sin tocar YAML.
+
+| Pestaña | Qué hay |
+|---|---|
+| **Dashboard** | Estado del bot, recursos y puntos, gráficas 24h/7d/30d, próxima acción, resumen de actividad. |
+| **Bot en directo** | La pantalla real del navegador del bot (vía CDP). Puedes **tomar el control**: clicar, escribir, Enter/Tab/Esc… Útil para resolver captchas o mirar algo a mano. También captura PNG, reiniciar sesión y cerrar navegador. |
+| **Planetas** | Estado por planeta (edificios, niveles, colas), configuración **por planeta** (§6), corrección manual de niveles y re-escaneo forzado. |
+| **Cola de tareas** | La agenda del bot: qué tarea toca, cuándo y por qué; cola de construcción manual. |
+| **Configuración** | Toda la config editable por secciones, perfiles de riesgo (🛡 Paranoico / ⚖ Normal / 🔥 Agresivo), orden de rondas por drag&drop, prueba de Telegram, gestión de **cuentas** (multicuenta). |
+| **Registro** | Log en vivo con filtros por nivel y exportación CSV. |
+| **¿Ataco?** | Simulador de combate manual: pega un informe y te dice si compensa atacar y con qué. |
+| **Estadísticas** | Histórico de puntos/recursos/flota, botín por granja, rentabilidad de expediciones. |
+| **Vuelos** | Movimientos de flota en curso, con retorno manual. |
+| **Mensajes** | Bandeja de mensajes del juego (espionaje, combate…). |
+| **Resumen de sesión** | Qué ha hecho el bot en la sesión actual: construcciones, ataques, botín, gastos. |
+| **Localizador** | Buscador de posiciones de colonia / objetivos. |
+
+---
+
+## 4. Uso por línea de comandos
+
+```bash
+python main.py                     # bucle infinito con config.yaml
+python main.py --config otra.yaml  # otra configuración
+python main.py --once              # un único ciclo y sale (ideal con dry_run)
+python gui.py                      # solo el panel web
+```
+
+- Hay un **lock por PID** (`bot.pid`): no puede haber dos instancias a la vez
+  sobre la misma cuenta.
+- En segundo plano (Linux/Mac): `nohup python main.py &`, o como servicio:
+
 ```ini
+# /etc/systemd/system/ogbot.service
 [Unit]
 Description=OGBot
 After=network-online.target
@@ -213,65 +231,351 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 ```
+
 ```bash
 sudo systemctl daemon-reload && sudo systemctl enable --now ogbot
 journalctl -u ogbot -f
 ```
 
-### 3.6 Captcha
-Si aparece captcha en el login, ejecuta con `headless: false` y **resuélvelo a mano**
-una vez; la sesión se guarda en `ogame_session.json` y reduce futuros logins.
+### Variables de entorno
+
+| Variable | Uso |
+|---|---|
+| `OGBOT_USER` / `OGBOT_PASS` | Credenciales del Lobby (siempre tienen prioridad sobre el YAML). |
+| `OGBOT_CDP_PORT` | Puerto de depuración del navegador (uno distinto por cuenta). |
+| `PORT` | Puerto del panel web (por defecto 5000). |
+| `OGBOT_CHROMIUM_NO_SANDBOX` | `1` para `--no-sandbox` (necesario dentro de Docker). |
 
 ---
 
-## 4. Lo que está implementado vs. lo que debes completar
+## 5. Configuración completa (config.yaml)
 
-**Listo y probado (lógica pura):** fórmulas de juego, optimizador económico por
-payback, prioridad de investigación con prerrequisitos, simulador de combate
-Monte Carlo, evaluación de objetivos, fleetsave, expediciones, reciclaje, lunas,
-colonización, cliente de la API pública, orquestador del ciclo, dry-run,
-rate-limit y humanización.
+Copia `config.example.yaml` a `config.yaml`. Todo lo de abajo también es
+editable desde la pestaña **Configuración** de la GUI. Valores = por defecto.
 
-**Debes verificar/completar (capa frágil del navegador, en `client.py`):**
-- Selectores `SEL`/`PAGE` para tu versión de OGame.
-- Parseo del **informe de espionaje** (`espionage()`).
-- Relleno del formulario **`fleetdispatch`** (`send_fleet()`): naves, coords, misión
-  (attack=1, transport=3, deploy=4, espionage=6, harvest=8, expedition=15), recursos.
-- Lectura de **movimientos** y de **campos de escombros** en la galaxia.
+### Servidor / cuenta
 
-Está así a propósito: esos detalles cambian con cada versión y no puedo verificarlos
-contra tu servidor. El resto del bot es independiente de ellos.
+| Clave | Defecto | Qué hace |
+|---|---|---|
+| `universe` | `""` | Nombre del universo. |
+| `country` | `es` | Comunidad/idioma. |
+| `server_url` | `""` | URL del servidor, ej. `https://s272-es.ogame.gameforge.com/`. |
+| `proxy_server` / `proxy_username` / `proxy_password` | `""` | Proxy del navegador (útil en VPS si GameForge bloquea la IP). |
+
+### Parámetros del universo (míralos en `/api/serverData.xml`)
+
+| Clave | Defecto | Qué hace |
+|---|---|---|
+| `universe_speed` | `1.0` | Velocidad de economía. |
+| `fleet_speed` | `1.0` | Velocidad de flotas. |
+| `debris_factor` | `0.30` | % de naves destruidas que va a escombros. |
+| `debris_includes_deut` | `false` | Si el deuterio también genera escombros. |
+| `loot_percent` | `0.50` | % de recursos saqueables. |
+| `trade_ratio` | `[2.5, 1.5, 1.0]` | Ratio metal:cristal:deuterio para valorar recursos. |
+
+### Economía
+
+| Clave | Defecto | Qué hace |
+|---|---|---|
+| `enable_economy` | `true` | Ronda de economía (minas/energía/almacenes). |
+| `enable_build_queue` | `true` | Cola de construcción manual por planeta. |
+| `target_mine_ratio_payback_hours` | `16` | Sube una mina solo si se amortiza en ≤ X horas. |
+| `keep_resources_buffer` | `0.10` | % de recursos que nunca gasta. |
+| `enable_fusion_reactor` | `true` | Permite reactor de fusión. |
+| `fusion_reactor_solar_offset` | `25` | Niveles que la solar debe superar a la fusión antes de subir fusión. |
+| `max_mine_level` | `40` | Tope voluntario de minas. |
+| `target_metal_mine` / `target_crystal_mine` / `target_deut_synth` | `99` | Niveles objetivo por tipo de mina. |
+| `storage_fill_trigger_percent` | `0.90` | % de llenado que dispara ampliar almacén. |
+| `enable_facilities` | `true` | Construcción de instalaciones. |
+| `target_robotics_factory` / `target_shipyard` / `target_research_lab` / `target_nanite_factory` | `0` | Niveles objetivo de instalaciones (0 = automático). |
+| `max_saving_hours_economy` | `4.0` | Horas máximas ahorrando para un edificio. |
+
+### Investigación
+
+| Clave | Defecto | Qué hace |
+|---|---|---|
+| `enable_research` | `true` | Ronda de investigación. |
+| `research_priority` | ver ejemplo | Orden de evaluación de tecnologías. |
+| `research_weights` | ver ejemplo | Peso por tecnología (mayor = antes). |
+| `research_caps` | láser 12, ion 5, energía 8, hiperespacio 15 | Nivel máximo voluntario por tecnología. |
+| `max_saving_hours_research` | `6.0` | Horas máximas ahorrando para una tecnología. |
+
+### Farmeo
+
+| Clave | Defecto | Qué hace |
+|---|---|---|
+| `enable_farming` | `true` | Ronda de farmeo. |
+| `only_inactive_targets` | `true` | Solo jugadores inactivos (i/I). **Recomendado.** |
+| `avoid_strong_players` | `true` | Evita objetivos con mucha flota/defensa. |
+| `max_attack_targets_per_cycle` | `8` | Ataques máximos por ronda. |
+| `min_loot_value` | `50000` | Botín mínimo (metal-equivalente) para atacar. |
+| `max_target_distance_systems` | `200` | Distancia máxima en sistemas. |
+| `farming_attack_cooldown_hours` | `2.0` | Espera antes de repetir objetivo. |
+| `attacker_fleet_template` | cargueros | Flota fija por ataque (si no hay auto-flota). |
+| `farm_auto_fleet` | `false` | Escolta elegida por simulación (gana ≥95%) + cargueros al botín. |
+| `farm_recycle_debris` | `true` | Sonda suicida + recicladores para los escombros del combate. |
+| `farm_with_probes` | `false` | Raid con sondas (solo servidores con bodega en sondas). |
+| `espionage_probe_cargo` | `0` | Bodega real por sonda (0 = tabla estándar). |
+| `farming_smart_schedule` | `true` | Relanza la ronda al volver la flota. |
+| `farming_skip_active_targets` | `true` | Descarta "inactivos" con actividad <60 min (trampas). |
+| `farming_blacklist_days` | `7` | Días de veto a granjas pobres (3+ raids con botín medio bajo). 0 = off. |
+| `deuterium_reserve` | `0` | Deuterio intocable por planeta (combustible de emergencia). |
+| `enable_fleet_building` | `true` | Fabricar flota militar. |
+| `enable_cargo_building` | `false` | Fabricar cargueros extra. |
+| `fleet_multipliers` | ver ejemplo | Objetivos de flota escalados por nivel de mina (modo ofensivo). |
+
+### Expediciones
+
+| Clave | Defecto | Qué hace |
+|---|---|---|
+| `enable_expeditions` | `true` | Ronda de expediciones. |
+| `expedition_position` | `16` | Posición destino. |
+| `expedition_ships` | `{large_cargo: 1}` | Flota fija por expedición (si no hay auto). |
+| `expedition_auto_ships` | `false` | Dimensiona cargueros al botín máximo del universo y reparte por slots. |
+| `expedition_cargo_ship` | `large_cargo` | Tipo de carguero a dimensionar. |
+| `expedition_use_pathfinder` | `false` | +1 Pathfinder por expedición (x2 botín). |
+| `expedition_send_probe` / `expedition_probe_count` | `false` / `1` | Sondas extra por expedición. |
+| `expedition_destroyer_count` | `0` | Destructores de escolta. |
+| `expedition_discoverer_class` | `false` | Marca si tienes clase Descubridor (x1.5). |
+| `expedition_top1_points` | `0` | Puntos del Top-1 (0 = leer de la API). |
+| `expedition_hyperspace_level` | `0` | Override de Hiperespacio para bodega (0 = leer del juego). |
+| `expedition_find_safety` | `1.0` | Escala del botín objetivo. |
+| `expedition_min_cargo` / `expedition_max_cargo` | `1` / `0` | Mín/máx cargueros (0 = sin tope). |
+| `expedition_hold_hours` | `1.0` | Permanencia en la posición 16. |
+| `expedition_rotate_systems` / `expedition_system_range` | `true` / `15` | Rotar sistemas ±N. |
+| `expedition_smart_schedule` | `true` | Reenvía al volver cada expedición. |
+
+### Reciclaje
+
+| Clave | Defecto | Qué hace |
+|---|---|---|
+| `enable_recycling` | `true` | Ronda de reciclaje. |
+| `recycling_min_debris` | `8000` | Escombros mínimos para ir a por ellos. |
+| `recycling_system_range` | `0` | Rango de sistemas a escanear. |
+
+### Seguridad / fleetsave / humanización
+
+| Clave | Defecto | Qué hace |
+|---|---|---|
+| `monitor_only` | `false` | Solo vigilar ataques y salvar flota; no juega. |
+| `enable_fleetsave` | `true` | Fleetsave antes del descanso. |
+| `fleetsave_mission` | `deploy` | Misión del fleetsave (`deploy`/`transport`/`expedition`). |
+| `fleetsave_prefer_moon` | `true` | Preferir destino luna (invisible a phalanx). |
+| `fleetsave_carry_resources` | `true` | Llevarse también los recursos. |
+| `fleetsave_recall_halfway` | `false` | Retornar el despliegue a mitad del descanso. |
+| `fleetsave_warn_phalanx` | `true` | Aviso Telegram si el fleetsave es phalanxeable. |
+| `fleetsave_only_if_hostile` | `false` | Solo hacer fleetsave si hubo hostilidad reciente (12 h). |
+| `enable_attack_escape` | `true` | Evasión automática de ataques entrantes. |
+| `attack_check_interval_min_s` / `max_s` | `300` / `780` | Comprobar ataques cada 5–13 min (aleatorio). |
+| `enable_spy_watch` | `true` | Aviso si te espían (movimiento entrante misión 6). |
+| `spy_watch_messages` | `true` | También vía mensajes de contraespionaje. |
+| `spy_watch_cooldown_mins` | `30` | No repetir aviso del mismo origen. |
+| `enable_night_sweep` / `night_sweep_interval_hours` | `false` / `2.0` | Barrido nocturno de los planetas marcados. |
+| `keep_free_fleet_slots` | `1` | Slots de flota reservados para emergencias. |
+| `enable_selector_canary` | `true` | Verificación de selectores del DOM al arrancar. |
+| `risk_profile` | `normal` | Perfil aplicado desde la GUI (`paranoid`/`normal`/`aggressive`). |
+| `cycle_order` | economy, recycling, expeditions, farming, feed | Orden de las rondas (drag&drop en la GUI). |
+| `min_action_delay_s` / `max_action_delay_s` | `3` / `11` | Delay aleatorio entre acciones. |
+| `cycle_interval_min_s` / `max_s` | `600` / `1500` | Pausa aleatoria entre ciclos. |
+| `active_hours` | `[8, 24]` | Franja horaria local en la que "juega". |
+| `max_actions_per_hour` | `40` | Rate-limit de acciones. |
+| `headless` | `true` | Navegador sin ventana. |
+| `cdp_port` | `9222` | Puerto de depuración (visor en vivo; único por cuenta). |
+| `login_human_check_timeout_s` | `300` | Espera máxima del captcha para resolverlo desde el visor. |
+
+### Otros
+
+| Clave | Defecto | Qué hace |
+|---|---|---|
+| `server_playstyle` | `defensive` | `offensive` (prioriza flota) o `defensive` (prioriza defensa). |
+| `enable_defense` / `defense_batch_size` | `true` / `25` | Construcción de defensas por lotes. |
+| `enable_lifeforms` | `true` | Edificios/investigación de formas de vida. |
+| `enable_colonization` | `true` | Colonizar cuando Astrofísica da slot. |
+| `preferred_colony_positions` | `[4..12]` | Posiciones preferidas. |
+| `max_colonies` | `9` | Tope de colonias. |
+| `enable_moon_creation` / `moon_target_debris` / `moon_sacrifice_ship` | `false` / `100000` / `light_fighter` | Módulo de lunas (cálculo). |
+| `special_server_start` | `false` | Programa de inicio de servidor (1 planeta, orden óptimo). |
+| `special_new_planet` | `""` | Coordenadas `g:s:p` de un planeta con orden de colonia. |
+| `special_new_planet_auto` | `false` | Aplicar orden de colonia a colonias nuevas automáticamente. |
+| `feed_min_send` / `feed_round_up` | `5000` / `1000` | Alimentación entre planetas: envío mínimo y redondeo. |
+| `enable_state_cache` / `state_resync_hours` | `true` / `6.0` | Memoria de estado y re-escaneo completo periódico. |
+| `economy_run_interval_mins` etc. | `0` | Frecuencia independiente por ronda (`economy`, `farming`, `expeditions`, `recycling`); 0 = en cada ciclo. |
+| `state_file` / `log_file` / `log_level` | `state.json` / `ogbot.log` / `INFO` | Persistencia y logs. |
+| `dry_run` | `true` | **No ejecuta acciones reales.** Déjalo así hasta validar. |
+| `telegram_token` / `telegram_chat_id` | `""` | Credenciales del bot de Telegram (§7). |
 
 ---
 
-## 5. Seguridad operativa (si decides usarlo)
-- `dry_run: true` hasta validar.
-- `only_inactive_targets: true`, `max_actions_per_hour` bajo, `active_hours`
-  realista (no 24/7), intervalos de ciclo amplios y aleatorios.
-- No uses segundas cuentas ni coordines crashes con cuentas tuyas (es sancionable).
-- Recuerda: **ningún ajuste hace el botting permitido**. Es tu cuenta y tu riesgo.
+## 6. Configuración por planeta
+
+En la GUI, pestaña **Planetas**, cada planeta puede sobrescribir el
+comportamiento global (se guarda en `planets_config` dentro del YAML):
+
+- Activar/desactivar por planeta: economía, farmeo, expediciones, reciclaje,
+  construcción de flota/defensa.
+- **Cede recursos / Recibe recursos**: define fuentes y destinos de la
+  alimentación entre planetas (ronda `feed`).
+- **Barrido nocturno**: qué planetas se vacían durante el descanso.
+- Niveles objetivo propios (minas/instalaciones) y cola de construcción manual.
+- Corrección manual de niveles y re-escaneo forzado si la caché se desvía.
 
 ---
 
-## 6. Estructura del proyecto
+## 7. Telegram: avisos y comandos
+
+1. Crea un bot con **@BotFather** → copia el token en `telegram_token`.
+2. Averigua tu chat ID con **@userinfobot** → `telegram_chat_id`.
+3. Prueba desde la GUI (botón "📨 Probar Telegram").
+
+**Avisos**: ataques entrantes, sondeos de espionaje, fleetsave expuesto a
+phalanx, captcha pendiente, cambios de interfaz (canario de selectores),
+errores de login…
+
+**Comandos** (solo atiende a tu `chat_id`; `enable_telegram_commands: true`):
+
+| Comando | Efecto |
+|---|---|
+| `/status` | Estado del bot, recursos, flotas en vuelo. |
+| `/fleetsave` | Fleetsave inmediato. |
+| `/recall` | Retornar flotas en vuelo. |
+| `/pausa` | Pausar el bot. |
+| `/reanudar` | Reanudarlo. |
+| `/ayuda` | Lista de comandos. |
+
+---
+
+## 8. Docker / multicuenta
+
+El contenedor levanta el **panel web multicuenta** en `http://localhost:5000`;
+cada cuenta corre su propio bot (Chromium headless) con su propia
+configuración, estado y sesión persistidos en `./accounts`.
+
+```bash
+docker compose up -d --build
+# o sin compose:
+docker build -t ogbot .
+docker run -d --name ogbot -p 5000:5000 -v "$(pwd)/accounts:/app/accounts" ogbot
+```
+
+Abre el panel → **Cuentas** → crea la cuenta → pon usuario/contraseña/servidor
+en Configuración → **Iniciar**. Detalles y notas (Xvfb, puertos CDP, sandbox)
+en [DOCKER.md](DOCKER.md).
+
+---
+
+## 9. Captcha y sesión
+
+- El bot **reutiliza la sesión** (`ogame_session.json`): cuantos menos logins,
+  menos captchas.
+- Si aparece el "soy humano", el bot **espera** (hasta
+  `login_human_check_timeout_s`) y te avisa por log/Telegram. Resuélvelo desde
+  la pestaña **Bot en directo** del panel (funciona incluso en headless, vía
+  CDP) o ejecuta una vez con `headless: false` y hazlo a mano.
+
+---
+
+## 10. Ficheros que genera el bot
+
+| Fichero | Contenido |
+|---|---|
+| `config.yaml` | Tu configuración (editada por la GUI). |
+| `state.json` | Estado persistente del bot (timers, cooldowns…). |
+| `ogame_session.json` | Cookies/sesión del navegador. |
+| `ogbot.log` | Log principal. |
+| `ogbot_stats.json` | Estadísticas acumuladas (botín, granjas, expediciones). |
+| `stats_history.jsonl` / `stats_hourly.jsonl` | Histórico de puntos/recursos/flota para las gráficas. |
+| `task_agenda.json` | Agenda de próximas tareas (pestaña Cola de tareas). |
+| `game_state_cache.json` / `planets_cache.json` | Caché de niveles y planetas. |
+| `bot.pid` | Lock de instancia única. |
+| `accounts/` | (Docker/multicuenta) config+estado+sesión por cuenta. |
+
+---
+
+## 11. Arquitectura
+
+El bot separa la **estrategia** (lógica pura, testeable) de la **interacción
+con el juego** (frágil, cambia con cada versión de OGame). Si Gameforge cambia
+el HTML, solo se toca `client.py`.
+
+```
+                 ┌──────────────────────────────────────────────┐
+                 │                  brain.py                      │
+                 │  Orquestador: ciclo, prioridades, agenda,      │
+                 │  fleetsave, Telegram, humanización             │
+                 └───────────────┬───────────────┬────────────────┘
+                                 │               │
+          ┌──────────────────────┘               └───────────────────────┐
+          ▼  LÓGICA PURA (sin red, testeable)                 INTERACCIÓN ▼
+ ┌───────────────────────────────────────────┐     ┌──────────────────────────┐
+ │ economy.py   optimizador de minas (payback)│     │ client.py  (Playwright)  │
+ │ research.py  prioridad de investigación    │     │  login, scraping, clicks │
+ │ targets.py   rentabilidad/riesgo objetivos │     └────────────┬─────────────┘
+ │ combat.py    simulador Monte Carlo         │                  │ solo lectura
+ │ fleet.py     fleetsave/expedición/reciclaje│     ┌────────────▼─────────────┐
+ │ moons.py     lunas + colonización          │     │ universe_api.py          │
+ │ startorder.py órdenes óptimos de arranque  │     │  API XML pública (oficial)│
+ │ gamedata.py  fórmulas/costes/stats         │     │  inteligencia del universo│
+ │ stats.py     estadísticas persistentes     │     └──────────────────────────┘
+ │ models.py    estructuras de datos          │
+ └───────────────────────────────────────────┘
+          gui.py + gui_web/  →  panel de control (multicuenta, visor CDP)
+```
+
 ```
 ogame-bot/
-├── main.py                 # entrada
-├── requirements.txt
+├── main.py                 # entrada CLI
+├── gui.py                  # servidor del panel web (puerto 5000)
+├── gui_web/                # frontend del panel
 ├── config.example.yaml     # copia a config.yaml
-├── README.md
+├── Dockerfile / docker-compose.yml / DOCKER.md
 └── ogbot/
-    ├── gamedata.py         # fórmulas y stats
-    ├── models.py
-    ├── config.py
+    ├── gamedata.py         # fórmulas y stats del juego
+    ├── models.py           # Resources, Planet, Coords, Target…
+    ├── config.py           # carga de config.yaml + env vars
     ├── utils.py            # logging, delays, rate-limit
     ├── universe_api.py     # API XML pública (inteligencia)
-    ├── economy.py          # optimizador de minas
-    ├── research.py
+    ├── economy.py          # optimizador de minas + instalaciones
+    ├── research.py         # prioridad de investigación
     ├── combat.py           # simulador Monte Carlo
-    ├── targets.py          # rentabilidad/riesgo
+    ├── targets.py          # búsqueda/valoración de objetivos
     ├── fleet.py            # fleetsave / expediciones / reciclaje
     ├── moons.py            # lunas + colonización
-    ├── client.py           # ⚠ Playwright: verifica selectores
+    ├── startorder.py       # órdenes óptimos (server start / colonia)
+    ├── prereqs.py          # prerrequisitos de edificios/techs
+    ├── stats.py            # estadísticas persistentes
+    ├── client.py           # ÚNICA capa que toca el juego (Playwright)
     └── brain.py            # orquestador del ciclo
 ```
+
+---
+
+## 12. Estrategia que implementa
+
+OGame se gana con **economía compuesta + expansión + farmeo eficiente + no
+perder flota nunca**:
+
+1. **Economía por payback marginal**: en vez de ratios fijos, sube siempre la
+   mina que antes se amortiza; si ninguna baja del umbral, invierte en
+   investigación/flota. Plasma es el mayor multiplicador a largo plazo.
+2. **Investigación como columna vertebral**: Energía → Computación (slots) →
+   Espionaje → Propulsión → **Astrofísica** (colonias + expediciones) →
+   **Plasma** (+1%/+0,66%/+0,33% producción por nivel).
+3. **Farmeo de inactivos** como fuente principal de ingresos, con simulación
+   de combate para no atacar nunca a pérdida.
+4. **Expediciones** para recursos/naves gratis con la flota dimensionada al
+   tope de botín del universo.
+5. **Fleetsave religioso**: la flota nunca duerme en casa. Preferencia por
+   lunas (invisibles a phalanx) y retorno sincronizado con tu horario.
+6. **Expansión**: colonias en posiciones 4–12 (más campos, más deuterio).
+
+---
+
+## 13. Seguridad operativa
+
+- `dry_run: true` hasta que el plan te convenza.
+- `only_inactive_targets: true`, `max_actions_per_hour` bajo, `active_hours`
+  realista (no 24/7), intervalos amplios y aleatorios.
+- Perfil **Paranoico** de la GUI si tu prioridad es no destacar.
+- No uses segundas cuentas ni coordines crashes entre cuentas tuyas.
+- Recuerda: **ningún ajuste hace el botting permitido**. Es tu cuenta y tu
+  riesgo.

@@ -430,6 +430,10 @@ class Brain(StatsMixin):
         self._expedition_returns: List[float] = []
         self._expedition_top1_cache: Tuple[float, int] = (0.0, 0)
         self.expedition_flight_cal = 1.0  # factor real/estimado de vuelo (autocalibrado)
+        # Farmeo: reactivación por vuelta de flota + historial de botín real por objetivo
+        self.next_farming_event = 0.0
+        self._farming_returns: List[float] = []
+        self.target_stats: Dict[str, dict] = {}  # "g:s:p" -> {raids, loot (valor real), last}
         self.next_build_event = 0.0       # despertar para encolar la siguiente construcción
         self.paused_until = 0.0           # pausa remota (/pausa por Telegram); persistido
         self._tg_offset = 0               # offset de getUpdates de Telegram; persistido
@@ -467,6 +471,9 @@ class Brain(StatsMixin):
                     self.next_expedition_event = data.get("next_expedition_event", 0.0)
                     self._expedition_returns = data.get("expedition_returns", [])
                     self.expedition_flight_cal = data.get("expedition_flight_cal", 1.0)
+                    self.next_farming_event = data.get("next_farming_event", 0.0)
+                    self._farming_returns = data.get("farming_returns", [])
+                    self.target_stats = data.get("target_stats", {}) or {}
                     self.sent_fleetsaves = data.get("sent_fleetsaves", []) or []
                     self.paused_until = float(data.get("paused_until", 0.0) or 0.0)
                     self._tg_offset = int(data.get("tg_offset", 0) or 0)
@@ -523,6 +530,11 @@ class Brain(StatsMixin):
                 "next_expedition_event": self.next_expedition_event,
                 "expedition_returns": [e for e in self._expedition_returns if e > now],
                 "expedition_flight_cal": self.expedition_flight_cal,
+                "next_farming_event": self.next_farming_event,
+                "farming_returns": [e for e in self._farming_returns if e > now],
+                # Historial de botín real por granja; se podan entradas sin raids en 90 días
+                "target_stats": {k: v for k, v in self.target_stats.items()
+                                 if float(v.get("last", 0.0) or 0.0) > now - 90 * 86400},
                 "sent_fleetsaves": [e for e in self.sent_fleetsaves
                                     if now - e.get("sent_at", 0) <= 86400],
                 "paused_until": self.paused_until,
@@ -1001,6 +1013,13 @@ class Brain(StatsMixin):
                             if time.time() >= self.next_expedition_event:
                                 self.log.info("Despertando por evento de expedición (vuelta/fin) para reenviar.")
                                 self.next_expedition_event = 0.0
+                                break
+
+                        # Reactivarse al volver una flota de farmeo para relanzar la ronda
+                        if getattr(self.cfg, "farming_smart_schedule", True) and self.next_farming_event > 0:
+                            if time.time() >= self.next_farming_event:
+                                self.log.info("Despertando por vuelta de flota de farmeo para relanzar.")
+                                self.next_farming_event = 0.0
                                 break
 
                         # Reactivarse en el momento justo para encolar la siguiente
@@ -1491,6 +1510,7 @@ class Brain(StatsMixin):
                 if self.cfg.enable_moon_creation:
                     self._moonshot(planets)
                 self.last_farming_run_time = time.time()
+                self._update_next_farming_event()
                 self._save_state()
 
         def round_economy():
@@ -1542,6 +1562,8 @@ class Brain(StatsMixin):
         # ejecutado este ciclo (p.ej. bloqueada por su intervalo), para no perder reenvíos.
         if self.cfg.enable_expeditions:
             self._update_next_expedition_event()
+        if self.cfg.enable_farming:
+            self._update_next_farming_event()
 
         # Publicar tiempos restantes de construcciones/investigación para la GUI
         self._write_build_status(planets)
@@ -1838,8 +1860,9 @@ class Brain(StatsMixin):
             only_inactive=bool(getattr(self.cfg, "only_inactive_targets", True)),
             max_rank_safe=max_rank_safe)
 
-        # Filtrar candidatos por cooldown de ataques
+        # Filtrar candidatos por cooldown de ataques y blacklist de granjas pobres
         cooldown_s = getattr(self.cfg, "farming_attack_cooldown_hours", 2.0) * 3600
+        bl_days = float(getattr(self.cfg, "farming_blacklist_days", 7.0) or 0.0)
         now = time.time()
         filtered_candidates = []
         for cand in candidates:
@@ -1851,10 +1874,23 @@ class Brain(StatsMixin):
                 remaining_min = (cooldown_s - (now - last_atk)) / 60
                 self.log.debug("Candidato %s omitido por cooldown de ataque (restan %.1f min).", coords_str, remaining_min)
                 continue
+            # Blacklist por botín real: granjas que demostraron no pagar no gastan sondas.
+            bl = tgt.blacklist_state(self.target_stats.get(coords_str),
+                                     self.cfg.min_loot_value, now, bl_days)
+            if bl == "skip":
+                self.log.debug("Candidato %s omitido por blacklist (botín real medio %.0f < mín %.0f).",
+                               coords_str, tgt.avg_real_loot(self.target_stats.get(coords_str)),
+                               self.cfg.min_loot_value)
+                continue
+            if bl == "reset":  # cumplió la condena: otra oportunidad con historial limpio
+                self.target_stats.pop(coords_str, None)
             filtered_candidates.append(cand)
 
         origins = [p.coords for p in eligible_locations]
         pre = tgt.select_targets(filtered_candidates, origins, self.cfg.max_target_distance_systems)
+        # Granjas con botín real demostrado primero (sort estable: el resto de candidatos
+        # conserva el orden por distancia de select_targets).
+        pre.sort(key=lambda c: -tgt.avg_real_loot(self.target_stats.get(c.get("coords", ""))))
         limit = self.cfg.max_attack_targets_per_cycle
         # Espiar el doble del límite para tener margen tras la evaluación
         spy_batch = pre[: limit * 2]
@@ -1935,6 +1971,14 @@ class Brain(StatsMixin):
                 self.record_session_action("espionage", f"{coords}", "Sin informe: no se pudo leer el reporte de espionaje")
                 continue
 
+            # Actividad reciente en un "inactivo" = trampa probable o recursos a punto
+            # de moverse: no arriesgar la flota.
+            act = getattr(report, "activity_mins", None)
+            if getattr(self.cfg, "farming_skip_active_targets", True) and act is not None and act < 60:
+                self.log.info("Farmeo: %s descartado por actividad reciente (%d min).", coords, act)
+                self.record_session_action("espionage", f"{coords}", f"Descartado: actividad reciente ({act} min)")
+                continue
+
             # Calcular botín completo (sin limitar por la capacidad inicial del template)
             full_loot = tgt.estimate_loot(report.resources, 10**9, self.cfg.loot_percent)
 
@@ -1963,6 +2007,12 @@ class Brain(StatsMixin):
                 target, reason = res_eval
                 if not target:
                     reasons_by_planet[str(p.coords)] = reason
+                    continue
+
+                # 5. Reserva de deuterio: no dejar el origen sin combustible de emergencia
+                reserve = int(getattr(self.cfg, "deuterium_reserve", 0) or 0)
+                if reserve > 0 and p.resources.deut - target.fuel_cost < reserve:
+                    reasons_by_planet[str(p.coords)] = "Reserva de deuterio insuficiente"
                     continue
 
                 dist_value = gd.distance(p.coords.tuple(), coords.tuple())
@@ -2027,7 +2077,11 @@ class Brain(StatsMixin):
                     alt_target = tgt.evaluate(target.report, p.coords, alt_fleet, self.my_tech, self.cfg)
                     if not alt_target:
                         continue
-                    
+
+                    reserve = int(getattr(self.cfg, "deuterium_reserve", 0) or 0)
+                    if reserve > 0 and p.resources.deut - alt_target.fuel_cost < reserve:
+                        continue
+
                     if best_alt is None or alt_target.score > best_alt["target"].score:
                         best_alt = {
                             "target": alt_target,
@@ -2073,6 +2127,8 @@ class Brain(StatsMixin):
                 # Guardar timestamp de ataque para el cooldown
                 coords_str = f"{coords.galaxy}:{coords.system}:{coords.position}"
                 self.attack_history[coords_str] = time.time()
+                # Vuelta estimada (ida+vuelta) para despertar y relanzar la ronda
+                self._farming_returns.append(time.time() + total_duration)
                 self._save_state()
 
                 # Reciclaje del combate: sonda suicida para crear el campo de
@@ -2291,6 +2347,20 @@ class Brain(StatsMixin):
         # toma send_fleet leyendo la DURACIÓN EXACTA en la propia página de envío.
         seconds_left = utils.seconds_until_inactive(self.cfg.active_hours)
 
+        # Reserva de deuterio: no despegar si el combustible dejaría el depósito
+        # por debajo del mínimo de emergencia (fleetsave/evasión).
+        reserve = int(getattr(self.cfg, "deuterium_reserve", 0) or 0)
+        if reserve > 0:
+            origin_loc = next((l for p in self.last_planets
+                               for l in [p] + ([p.moon] if getattr(p, "moon", None) else [])
+                               if l.coords.tuple() == home.tuple() and l.coords.type == home.type), None)
+            if origin_loc is not None:
+                fuel = 2 * gd.fuel_cost(plan["ships"], dist, 1.0, self.cfg.fleet_speed)
+                if origin_loc.resources.deut - fuel < reserve:
+                    self.log.info("Expedición desde %s omitida: dejaría el deuterio bajo la reserva "
+                                  "(%d - %.0f < %d).", home, origin_loc.resources.deut, fuel, reserve)
+                    return False
+
         if self._guard():
             self.client.last_flight_seconds = None
             ok = self.client.send_fleet(home, plan["destination"], plan["ships"],
@@ -2482,6 +2552,35 @@ class Brain(StatsMixin):
         interval = max(0, int(getattr(self.cfg, "expeditions_run_interval_mins", 0) or 0))
         boundary = self.last_expeditions_run_time + interval * 60
         self.next_expedition_event = max(soonest, boundary)
+
+    def _update_next_farming_event(self):
+        """
+        Próximo instante (epoch) para despertar y relanzar el farmeo: cuando vuelve la
+        primera flota de ataque, pero NUNCA antes de que el intervalo de ronda lo permita.
+        Mismo patrón que _update_next_expedition_event.
+        """
+        now = time.time()
+        self._farming_returns = [e for e in self._farming_returns if e > now]
+        if not self._farming_returns:
+            self.next_farming_event = 0.0
+            return
+        soonest = min(self._farming_returns)
+        interval = max(0, int(getattr(self.cfg, "farming_run_interval_mins", 0) or 0))
+        boundary = self.last_farming_run_time + interval * 60
+        self.next_farming_event = max(soonest, boundary)
+
+    def _record_target_loot(self, coords_str: str, metal: int, crystal: int, deut: int):
+        """Acumula el botín REAL de un combate ganado en el historial del objetivo
+        (aprendizaje del farmeo). Ignora coordenadas propias (defensas ganadas)."""
+        own = {f"{p.coords.galaxy}:{p.coords.system}:{p.coords.position}"
+               for p in (self.last_planets or [])}
+        if not coords_str or coords_str in own:
+            return
+        val = Resources(metal, crystal, deut).value(self.cfg.trade_ratio)
+        e = self.target_stats.setdefault(coords_str, {"raids": 0, "loot": 0.0, "last": 0.0})
+        e["raids"] = int(e.get("raids", 0) or 0) + 1
+        e["loot"] = float(e.get("loot", 0.0) or 0.0) + val
+        e["last"] = time.time()
 
     def _write_expedition_status(self, top1, max_find, optimal, per_exp, cargo_ship, auto):
         """Escribe expedition_status.json para que la GUI muestre cálculo y temporizadores."""

@@ -1254,6 +1254,7 @@ class GameClient:
                     fleet={k: int(v) for k, v in raw.get("fleet", {}).items()},
                     defense={k: int(v) for k, v in raw.get("defense", {}).items()},
                     timestamp=time.time(),
+                    activity_mins=raw.get("activity"),
                 )
             except Exception as e:
                 self.log.debug("Error parseando informe espionaje: %s", e)

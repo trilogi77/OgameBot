@@ -125,6 +125,9 @@ simulación de combate, automatización). Si lo usas en un servidor real:
 
 ## 2. Instalación y arranque rápido
 
+> 🐳 **¿Prefieres Docker?** Salta directamente a la [sección 8](#8-docker--multicuenta):
+> `docker compose up -d --build` y todo lo demás se hace desde el panel web.
+
 ### Requisitos
 - Python 3.10+
 - Google Chrome/Chromium (lo instala Playwright)
@@ -150,16 +153,26 @@ $env:OGBOT_USER = "tu_email@dominio.com"
 $env:OGBOT_PASS = "tu_password"
 ```
 
-### Primera ejecución
+### Primera ejecución (recomendado: todo desde la GUI)
 
-La forma más fácil es arrancar **el panel web** y configurarlo todo desde ahí:
+**No necesitas rellenar `config.yaml` a mano.** Arranca el panel web y
+configúralo todo desde ahí — la GUI crea y guarda el `config.yaml` por ti:
 
 ```bash
 python gui.py            # abre http://localhost:5000
 ```
 
-O por consola: si no existe `config.yaml`, `python main.py` lanza el panel
-automáticamente. Para ir a mano:
+1. Pestaña **Configuración** → pon usuario, contraseña, servidor y los
+   parámetros del universo (velocidades, escombros…).
+2. **GUARDAR** → la GUI escribe `config.yaml` automáticamente.
+3. Deja `dry_run` activado y pulsa **► INICIAR** para ver el plan sin riesgo.
+4. Cuando las decisiones te cuadren, desactiva `dry_run` desde la misma GUI.
+
+Si ejecutas `python main.py` sin que exista `config.yaml`, se lanza el panel
+automáticamente para que configures ahí.
+
+<details>
+<summary>Alternativa manual (sin GUI, editando el YAML)</summary>
 
 ```bash
 cp config.example.yaml config.yaml
@@ -168,6 +181,7 @@ cp config.example.yaml config.yaml
 python main.py --once    # UN ciclo en dry-run para ver el plan
 tail -f ogbot.log
 ```
+</details>
 
 Verás líneas tipo `[DRY-RUN] Construir solar_plant en [1:100:8]`. Cuando las
 decisiones te cuadren, pon `dry_run: false` y arranca en continuo:
@@ -250,8 +264,11 @@ journalctl -u ogbot -f
 
 ## 5. Configuración completa (config.yaml)
 
-Copia `config.example.yaml` a `config.yaml`. Todo lo de abajo también es
-editable desde la pestaña **Configuración** de la GUI. Valores = por defecto.
+> **No hace falta editar este fichero a mano**: la pestaña **Configuración**
+> de la GUI lo crea y lo guarda por ti. Esta sección es la **referencia** de
+> cada clave, por si prefieres el YAML o quieres saber qué hace cada opción.
+> Si vas a mano, copia `config.example.yaml` a `config.yaml`. Valores = por
+> defecto.
 
 ### Servidor / cuenta
 
@@ -446,20 +463,72 @@ errores de login…
 
 ## 8. Docker / multicuenta
 
-El contenedor levanta el **panel web multicuenta** en `http://localhost:5000`;
-cada cuenta corre su propio bot (Chromium headless) con su propia
-configuración, estado y sesión persistidos en `./accounts`.
+Es la forma más cómoda de tenerlo corriendo 24/7 (VPS, NAS, mini-PC): el
+contenedor levanta el **panel web multicuenta** en `http://localhost:5000` y
+cada cuenta corre su propio bot (Chromium headless) dentro del contenedor.
+**Todo se configura desde la GUI** — no tienes que crear ni editar ningún
+`config.yaml` ni pasar variables de entorno.
+
+### Requisitos
+- Docker (y opcionalmente Docker Compose; en Windows/Mac, Docker Desktop).
+
+### Paso a paso
 
 ```bash
+git clone https://github.com/trilogi77/OgameBot.git
+cd OgameBot
 docker compose up -d --build
-# o sin compose:
+```
+
+O sin compose:
+
+```bash
 docker build -t ogbot .
 docker run -d --name ogbot -p 5000:5000 -v "$(pwd)/accounts:/app/accounts" ogbot
 ```
 
-Abre el panel → **Cuentas** → crea la cuenta → pon usuario/contraseña/servidor
-en Configuración → **Iniciar**. Detalles y notas (Xvfb, puertos CDP, sandbox)
-en [DOCKER.md](DOCKER.md).
+1. Abre <http://localhost:5000>.
+2. Pestaña **Configuración → Cuentas** → **+ Crear cuenta** (una por cada
+   cuenta de OGame que quieras manejar).
+3. Con la cuenta seleccionada, rellena en **Configuración** el usuario,
+   contraseña, servidor y parámetros del universo → **GUARDAR**.
+4. Pulsa **► INICIAR**. Con `dry_run` activado verás el plan en la pestaña
+   **Registro** sin que ejecute nada; desactívalo cuando quieras que actúe.
+
+### Persistencia
+
+Toda la información de cada cuenta (configuración, estado, sesión del
+navegador, estadísticas) vive en `./accounts/`, montado como volumen: 
+**sobrevive a reinicios y reconstrucciones** del contenedor.
+
+```bash
+docker compose restart          # reiniciar
+docker compose up -d --build    # actualizar tras un git pull
+docker logs -f ogbot            # logs del contenedor
+```
+
+### Captcha en headless
+
+Dentro de Docker el navegador no tiene ventana, así que GameForge pide el
+"soy humano" más a menudo. No necesitas pantalla ni VNC:
+
+1. Cuando el bot detecta el captcha, **espera** (hasta
+   `login_human_check_timeout_s`, 5 min por defecto) y avisa por log/Telegram.
+2. Abre el panel → pestaña **Bot en directo** (con esa cuenta seleccionada).
+3. Verás la pantalla real del navegador del bot (vía CDP interno): haz clic /
+   escribe para resolver el captcha.
+4. El bot detecta que se resolvió y continúa el login solo.
+
+### Notas
+
+- Para **menos captchas** puedes correr el navegador "headful" con display
+  virtual: cambia el `CMD` del Dockerfile a `xvfb-run python gui.py` y pon
+  `headless: false` en la cuenta.
+- Cada cuenta usa un puerto CDP interno distinto (9222, 9223…); no hay que
+  exponerlos.
+- La imagen ya lleva `OGBOT_CHROMIUM_NO_SANDBOX=1` (`--no-sandbox` +
+  `--disable-dev-shm-usage`), necesario para Chromium dentro de Docker.
+- Más detalles en [DOCKER.md](DOCKER.md).
 
 ---
 

@@ -441,7 +441,9 @@ a { color: var(--cyan); }
     flex: none;
     cursor: pointer;
 }
-.switch-container input { opacity: 0; width: 0; height: 0; position: absolute; }
+/* El input invisible cubre todo el switch y queda por encima del slider: así el
+   clic funciona también fuera de un <label> (interruptores de cabecera de tarjeta) */
+.switch-container input { opacity: 0; position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 1; }
 .switch-container .slider {
     position: absolute;
     inset: 0;

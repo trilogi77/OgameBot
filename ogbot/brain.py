@@ -1875,6 +1875,7 @@ class Brain(StatsMixin):
         else:
             fleet_targets = getattr(self.cfg, "fleet_targets", {}) or {}
         in_motion = ships_in_motion or {}
+        auto_build = getattr(self.cfg, "fleet_auto_build", False)
         if fleet_targets:
             for ship_name, target_qty in fleet_targets.items():
                 if target_qty <= 0:
@@ -1886,17 +1887,18 @@ class Brain(StatsMixin):
                     # Fabricar en lotes de máximo 10 para no drenar recursos
                     batch = min(needed, 10)
                     if self._guard():
-                        self.log.info("Fabricando %d %s (objetivo: %d, actual imperio: %d)", 
+                        self.log.info("Fabricando %d %s (objetivo: %d, actual imperio: %d)",
                                        batch, ship_name, target_qty, current_qty)
                         ok = self.client.build_ships(home, ship_name, batch)
                         if ok:
                             self.record_session_action("fleet", ship_name, batch, str(home.coords))
                             self._mark_ships_started(home, ship_name, batch)
-                        # Actualizar inventario local para no duplicar en el mismo ciclo
-                        home.ships[ship_name] = home.ships.get(ship_name, 0) + batch
+                            # Solo actualizar inventario local si la orden fue aceptada
+                            home.ships[ship_name] = home.ships.get(ship_name, 0) + batch
                         break # Un solo lote de construcción por ciclo para balancear recursos
-        else:
-            # Fallback al comportamiento original (cargueros grandes para farmear)
+        elif not auto_build:
+            # Fallback al comportamiento original solo cuando NO está en modo auto-flota.
+            # Si auto_build=True pero no hay naves buildables (astillero bajo), no hacer nada.
             if not self.cfg.enable_farming:
                 return
             if home.lvl("metal_mine") < 4:

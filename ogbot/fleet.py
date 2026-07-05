@@ -386,6 +386,11 @@ def auto_fleet_targets(home: Planet, planets: List[Planet],
     # Colonizar necesita una nave de colonización en el hangar
     if getattr(cfg, "enable_colonization", False) and len(planets) < getattr(cfg, "max_colonies", 1):
         targets["colony_ship"] = 1
+    # Pathfinder: 1 por slot de expedición cuando se usa para explorar (duplica hallazgos)
+    if getattr(cfg, "expedition_use_pathfinder", False):
+        astro = research_levels.get("astrophysics", 0)
+        expe_slots = max(1, astro // 2 + 1)
+        targets["pathfinder"] = expe_slots
     # Escolta militar (la usa farm_auto_fleet) y disuasión; crece con la economía
     targets["light_fighter"] = lf
     targets["cruiser"] = cr

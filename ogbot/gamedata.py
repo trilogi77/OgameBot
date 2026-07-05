@@ -127,6 +127,8 @@ SHIP_PREREQS = {
     "bomber": {"shipyard": 8, "impulse_drive": 6, "plasma_tech": 5},
     "destroyer": {"shipyard": 9, "hyperspace_drive": 6, "hyperspace_tech": 5},
     "deathstar": {"shipyard": 12, "hyperspace_drive": 7, "hyperspace_tech": 6},
+    "reaper": {"shipyard": 10, "hyperspace_drive": 6, "hyperspace_tech": 6, "shielding_tech": 6},
+    "pathfinder": {"shipyard": 5, "hyperspace_drive": 2, "espionage_tech": 2},
 }
 
 

@@ -937,6 +937,67 @@ class Brain(StatsMixin):
         entry = self.state_cache["planets"].get(self._loc_key(loc.coords)) or {}
         return (entry.get("shipyard_finish_epoch", 0.0) or 0.0) > time.time()
 
+    def _write_auto_plan(self, planets):
+        """Publica auto_plan.json: el plan de decisiones del modo automático — qué
+        subiría el bot en cada planeta (simulando economy.next_build con niveles
+        incrementados, sin gastar recursos), próximas investigaciones y déficits
+        de la auto-flota. Es una previsión: cada ciclo re-decide con los recursos
+        reales en mano."""
+        import copy
+        try:
+            plasma = self.research_levels.get("plasma_tech", 0)
+            plan = {"generated_at": int(time.time()), "planets": [], "research": [], "fleet": []}
+            for p in planets:
+                sim = copy.copy(p)
+                sim.buildings = dict(p.buildings)
+                sim.building_queue = list(p.building_queue)
+                steps = []
+                for _ in range(8):
+                    choice = economy.next_build(sim, self.cfg, plasma=plasma,
+                                                research_levels=self.research_levels)
+                    if not choice:
+                        break
+                    name, _cost = choice
+                    lvl = sim.lvl(name) + 1
+                    steps.append({"action": name, "level": lvl})
+                    sim.buildings[name] = lvl
+                plan["planets"].append({
+                    "coords": f"{p.coords.galaxy}:{p.coords.system}:{p.coords.position}",
+                    "name": p.name, "steps": steps})
+            # Investigación: siguientes técnicas desde el mejor laboratorio
+            if planets:
+                best = max(planets, key=lambda x: x.lvl("research_lab"))
+                levels = dict(self.research_levels)
+                for _ in range(5):
+                    ch = research_mod.next_research(levels, best, self.cfg)
+                    if not ch:
+                        break
+                    lvl = levels.get(ch[0], 0) + 1
+                    entry = {"tech": ch[0], "level": lvl}
+                    if ch[2] is not None:
+                        entry["blocked_lab"] = ch[2]   # esperando ese nivel de laboratorio
+                        plan["research"].append(entry)
+                        break
+                    plan["research"].append(entry)
+                    levels[ch[0]] = lvl
+            # Flota: déficits de la auto-gestión (objetivo vs naves actuales)
+            if getattr(self.cfg, "fleet_auto_build", False):
+                eligible = [p for p in planets if p.lvl("shipyard") >= 1]
+                if eligible:
+                    home = max(eligible, key=lambda x: x.lvl("shipyard"))
+                    expe_total = 0
+                    if (getattr(self.cfg, "fleet_priority", "economy") or "").lower() == "expeditions":
+                        expe_total = self._expedition_optimal_cargo_total()
+                    targets = fleet_mod.auto_fleet_targets(
+                        home, planets, self.research_levels, self.cfg, expe_total)
+                    for ship, target in targets.items():
+                        have = sum(pl.ships.get(ship, 0) for pl in planets)
+                        if have < target:
+                            plan["fleet"].append({"ship": ship, "have": have, "target": target})
+            utils.atomic_write_json("auto_plan.json", plan)
+        except Exception as e:
+            self.log.debug("No se pudo publicar auto_plan.json: %s", e)
+
     def _write_build_status(self, planets):
         """Escribe build_status.json con los tiempos restantes de construcción/investigación."""
         try:
@@ -1608,6 +1669,8 @@ class Brain(StatsMixin):
 
         # Publicar tiempos restantes de construcciones/investigación para la GUI
         self._write_build_status(planets)
+        # Publicar el plan del modo automático (pestaña "Automático" de la GUI)
+        self._write_auto_plan(planets)
 
         # 11. Actualizar estadísticas imperiales
         self.update_imperial_stats()

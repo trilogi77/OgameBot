@@ -40,6 +40,7 @@
             <button type="button" class="nav-item tab-btn" data-tab="tab-live" data-screen="live"><span class="nav-bullet"></span>Bot en directo</button>
             <button type="button" class="nav-item tab-btn" data-tab="tab-planets" data-screen="planets"><span class="nav-bullet"></span>Planetas</button>
             <button type="button" class="nav-item tab-btn" data-tab="tab-tasks" data-screen="tasks"><span class="nav-bullet"></span>Cola de tareas</button>
+            <button type="button" class="nav-item tab-btn" data-tab="tab-auto" data-screen="auto"><span class="nav-bullet"></span>Automático</button>
             <button type="button" class="nav-item tab-btn" data-tab="tab-config" data-screen="config"><span class="nav-bullet"></span>Configuración</button>
             <button type="button" class="nav-item tab-btn" data-tab="tab-log" data-screen="log"><span class="nav-bullet"></span>Registro</button>
             <button type="button" class="nav-item tab-btn" data-tab="tab-simulator" data-screen="simulator"><span class="nav-bullet"></span>¿Ataco?</button>
@@ -382,6 +383,21 @@
                     <div id="taskAgendaList" class="task-timeline">
                         <div class="text-muted empty-note">El bot aún no ha publicado su agenda (task_agenda.json). Inícialo para ver las próximas tareas.</div>
                     </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========================= AUTOMÁTICO (PLAN DEL BOT) ========================= -->
+        <section class="tab-pane screen" id="tab-auto" data-screen="auto">
+            <header class="topbar">
+                <h1>Automático — plan del bot</h1>
+                <div class="topbar-spacer"></div>
+                <span class="mono dim" id="autoPlanSummary"></span>
+            </header>
+            <div class="screen-body">
+                <p class="text-muted sm">Lo que el bot pretende hacer, en orden, con la lógica automática actual: construcciones por planeta, investigaciones y flota. Es una previsión — cada ciclo re-decide con los recursos reales en mano.</p>
+                <div id="autoPlanList" class="config-grid">
+                    <div class="text-muted empty-note">El bot aún no ha publicado su plan (auto_plan.json). Inícialo para verlo.</div>
                 </div>
             </div>
         </section>

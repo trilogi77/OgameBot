@@ -557,6 +557,7 @@ Dentro de Docker el navegador no tiene ventana, así que GameForge pide el
 | `ogbot_stats.json` | Estadísticas acumuladas (botín, granjas, expediciones). |
 | `stats_history.jsonl` / `stats_hourly.jsonl` | Histórico de puntos/recursos/flota para las gráficas. |
 | `task_agenda.json` | Agenda de próximas tareas (pestaña Cola de tareas). |
+| `auto_plan.json` | Plan de decisiones del modo automático: qué subirá en cada planeta, investigaciones y flota (pestaña Automático). |
 | `game_state_cache.json` / `planets_cache.json` | Caché de niveles y planetas. |
 | `bot.pid` | Lock de instancia única. |
 | `accounts/` | (Docker/multicuenta) config+estado+sesión por cuenta. |

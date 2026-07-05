@@ -313,6 +313,8 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.get_hourly(account)
         elif path == "/api/agenda":
             self._send_json_file(account, "task_agenda.json", {})
+        elif path == "/api/autoplan":
+            self._send_json_file(account, "auto_plan.json", {})
         elif path == "/api/botstatus":
             self.get_botstatus(account)
         elif path.startswith("/gui_captures/"):

@@ -3766,6 +3766,73 @@ function renderAgenda() {
     });
 }
 
+// -------------------------------------------------- plan del modo automático
+function loadAutoPlan() {
+    fetch(api("/api/autoplan"))
+        .then(r => r.json())
+        .then(d => renderAutoPlan(d || {}))
+        .catch(() => {});
+}
+
+function renderAutoPlan(plan) {
+    const list = document.getElementById("autoPlanList");
+    if (!list) return;
+    const summary = document.getElementById("autoPlanSummary");
+    const planets = plan.planets || [];
+    const research = plan.research || [];
+    const fleet = plan.fleet || [];
+    if (summary) {
+        summary.textContent = plan.generated_at ? `publicado ${fmtHM(plan.generated_at)}` : "";
+    }
+    if (!planets.length && !research.length && !fleet.length) {
+        list.innerHTML = '<div class="text-muted empty-note">El bot aún no ha publicado su plan (auto_plan.json). Inícialo para verlo.</div>';
+        return;
+    }
+    list.innerHTML = "";
+    const card = (title, items, emptyText) => {
+        const c = document.createElement("div");
+        c.className = "card cfg-card";
+        const head = document.createElement("div");
+        head.className = "cfg-head";
+        head.innerHTML = `<span>${title}</span>`;
+        c.appendChild(head);
+        if (!items.length) {
+            const em = document.createElement("div");
+            em.className = "text-muted sm";
+            em.textContent = emptyText;
+            c.appendChild(em);
+        } else {
+            const ol = document.createElement("ol");
+            ol.className = "auto-plan-steps";
+            items.forEach(txt => {
+                const li = document.createElement("li");
+                li.textContent = txt;
+                ol.appendChild(li);
+            });
+            c.appendChild(ol);
+        }
+        list.appendChild(c);
+    };
+    planets.forEach(p => {
+        const steps = (p.steps || []).map(s =>
+            `Subir ${BUILDING_TRANSLATIONS[s.action] || s.action} al ${s.level}`);
+        card(`${p.name || "Planeta"} [${p.coords}]`, steps,
+             "Nada rentable que construir con la lógica actual (objetivos alcanzados o amortización alta).");
+    });
+    const rSteps = research.map(r => {
+        const name = (TECH_NAMES[r.tech] || r.tech).replace(/\s*\(.*\)$/, "");
+        return r.blocked_lab !== undefined
+            ? `Investigar ${name} al ${r.level} (esperando laboratorio ${r.blocked_lab})`
+            : `Investigar ${name} al ${r.level}`;
+    });
+    card("Investigación", rSteps, "Sin investigaciones pendientes según la lógica actual.");
+    if (fleet.length) {
+        card("Flota (auto-gestión)", fleet.map(f =>
+            `Fabricar ${SHIP_TRANSLATIONS[f.ship] || f.ship}: ${f.have} de ${f.target}`),
+            "");
+    }
+}
+
 // -------------------------------------------------- orden del ciclo (C4)
 const DEFAULT_CYCLE_ORDER = ["economy", "recycling", "expeditions", "farming", "feed"];
 
@@ -4262,10 +4329,12 @@ window.addEventListener("DOMContentLoaded", () => {
     initLogFilters();
     initDirtyTracking();
     loadAgenda();
+    loadAutoPlan();
     loadHourly();
     loadBotStatus();
     setInterval(loadBotStatus, 10000);   // poll del estado (C6)
     setInterval(loadAgenda, 15000);      // agenda del bot (C3)
+    setInterval(loadAutoPlan, 15000);    // plan del modo automático
     setInterval(loadHourly, 60000);      // actividad/recursos por hora (C2)
     setInterval(updateDashAlert, 1000);  // cuenta atrás del banner de ataque
     setInterval(updateDashKPIs, 5000);   // KPIs (vuelos aterrizando, etc.)

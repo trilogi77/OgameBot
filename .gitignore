@@ -47,6 +47,7 @@ planets_cache.json.tmp
 stats_history.jsonl
 stats_hourly.jsonl
 task_agenda.json
+auto_plan.json
 
 # Recursos locales de diseño
 *.zip

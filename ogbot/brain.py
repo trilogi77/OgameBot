@@ -403,6 +403,7 @@ class Brain(StatsMixin):
         self.cfg = cfg
         self.log = utils.setup_logger("ogbot", cfg.log_file, cfg.log_level)
         self._apply_probe_cargo(warn=True)
+        self._apply_empire_auto()
         self.client = GameClient(cfg, self.log)
         self.api = UniverseAPI(cfg.server_url, logger=self.log) if cfg.server_url else None
         self.rate = utils.RateLimiter(cfg.max_actions_per_hour)
@@ -1342,6 +1343,7 @@ class Brain(StatsMixin):
             for k, v in new_cfg.__dict__.items():
                 setattr(self.cfg, k, v)
             self._apply_probe_cargo()   # aplicar cambios de bodega de sonda hechos desde la GUI
+            self._apply_empire_auto()
             self.log.info("Configuración recargada desde el disco.")
         except Exception as e:
             self.log.warning("No se pudo recargar la configuración desde el disco: %s", e)
@@ -1796,8 +1798,13 @@ class Brain(StatsMixin):
 
         # Objetivos: auto-gestión (escalan con la economía) o los fijados a mano
         if getattr(self.cfg, "fleet_auto_build", False):
-            fleet_targets = fleet_mod.auto_fleet_targets(home, planets, self.research_levels, self.cfg)
-            self.log.debug("Auto-flota: objetivos calculados %s", fleet_targets)
+            expe_total = 0
+            if (getattr(self.cfg, "fleet_priority", "economy") or "").lower() == "expeditions":
+                expe_total = self._expedition_optimal_cargo_total()
+            fleet_targets = fleet_mod.auto_fleet_targets(
+                home, planets, self.research_levels, self.cfg, expe_total)
+            self.log.debug("Auto-flota (%s): objetivos calculados %s",
+                           getattr(self.cfg, "fleet_priority", "economy"), fleet_targets)
         else:
             fleet_targets = getattr(self.cfg, "fleet_targets", {}) or {}
         in_motion = ships_in_motion or {}
@@ -1833,6 +1840,53 @@ class Brain(StatsMixin):
                 if ok:
                     self.record_session_action("fleet", "large_cargo", 10, str(home.coords))
                     self._mark_ships_started(home, "large_cargo", 10)
+
+    def _apply_empire_auto(self):
+        """Autogestión del imperio: un solo interruptor que enciende todos los
+        subsistemas de decisión automática (qué subir, dónde, flota, expediciones,
+        colonización y reparto de recursos). Solo fuerza flags en memoria; el
+        config.yaml del usuario no se toca. No activa el farmeo (ataques): eso
+        sigue siendo decisión explícita del usuario."""
+        if not getattr(self.cfg, "empire_auto", False):
+            return
+        c = self.cfg
+        c.enable_economy = True
+        c.enable_facilities = True
+        c.enable_research = True
+        c.enable_fleet_building = True
+        c.fleet_auto_build = True
+        c.enable_expeditions = True
+        c.expedition_auto_ships = True
+        c.enable_colonization = True
+        c.special_new_planet_auto = True   # colonias nuevas siguen el orden óptimo
+        self.log.info("Autogestión del imperio ACTIVA: economía, instalaciones, "
+                      "investigación, flota, expediciones, colonización y reparto "
+                      "de recursos en automático (prioridad: %s).",
+                      getattr(c, "fleet_priority", "economy"))
+
+    def _expedition_optimal_cargo_total(self) -> int:
+        """Cargueros necesarios para llenar TODOS los slots de expedición al óptimo
+        (mismo dimensionado que usan las auto-expediciones)."""
+        try:
+            top1 = self._expedition_top1_points()
+            hyper = int(getattr(self.cfg, "expedition_hyperspace_level", 0) or 0)
+            if hyper <= 0:
+                hyper = int(self.research_levels.get("hyperspace_tech", 0)) if self.research_levels else 0
+            discoverer = bool(getattr(self.cfg, "expedition_discoverer_class", False))
+            find = gd.expedition_max_find_units(top1, self.cfg.universe_speed, discoverer,
+                                                bool(getattr(self.cfg, "expedition_use_pathfinder", False)))
+            cargo_ship = getattr(self.cfg, "expedition_cargo_ship", "large_cargo") or "large_cargo"
+            per_exp = fleet_mod.optimal_expedition_cargo(
+                find, cargo_ship, float(getattr(self.cfg, "expedition_find_safety", 1.0)), hyper)
+            max_cargo = int(getattr(self.cfg, "expedition_max_cargo", 0) or 0)
+            if max_cargo > 0:
+                per_exp = min(per_exp, max_cargo)
+            slots = self._total_expe_slots_effective() or gd.expedition_slots(
+                self.research_levels.get("astrophysics", 0))
+            return per_exp * max(1, slots)
+        except Exception as e:
+            self.log.debug("Sin óptimo de expediciones para la auto-flota: %s", e)
+            return 0
 
     def _apply_probe_cargo(self, warn: bool = False):
         """Servidores con bodega en sondas (raid con sondas): fija la capacidad real en el
@@ -2788,6 +2842,13 @@ class Brain(StatsMixin):
         target_shipyard = self._get_planet_setting(planet, "target_shipyard", 0)
         target_lab = self._get_planet_setting(planet, "target_research_lab", 0)
         target_nanite = self._get_planet_setting(planet, "target_nanite_factory", 0)
+        if getattr(self.cfg, "empire_auto", False):
+            # Autogestión: objetivos de instalaciones si el usuario no fijó otros mayores.
+            # ponytail: niveles fijos de medio juego (astillero 8 = naves de batalla);
+            # escalarlos con la economía si el imperio los deja atrás.
+            target_robotics = max(target_robotics, 10)
+            target_shipyard = max(target_shipyard, 8)
+            target_lab = max(target_lab, 12)
 
         # Buscar qué instalación subir de nivel
         to_upgrade = None
@@ -2985,6 +3046,18 @@ class Brain(StatsMixin):
                 moon = getattr(p, "moon", None) if getattr(p, "has_moon", False) else None
                 if moon:
                     fuentes.append(moon)
+        # Autogestión del imperio: sin marcas manuales, los destinos son los planetas
+        # en programa especial (colonias nuevas creciendo) y las fuentes el resto.
+        if getattr(self.cfg, "empire_auto", False) and not destinos:
+            destinos = [p for p in planets if self._special_program_for(p, planets)]
+            if destinos and not fuentes:
+                for p in planets:
+                    if p in destinos:
+                        continue
+                    fuentes.append(p)
+                    moon = getattr(p, "moon", None) if getattr(p, "has_moon", False) else None
+                    if moon:
+                        fuentes.append(moon)
         # La luna propia de cada destino alimenta primero (no hace falta marcarla), así que
         # basta con tener destinos: si no hay fuentes marcadas, las lunas pueden cubrirlo.
         if not destinos:

@@ -342,15 +342,18 @@ def harvest_plan(origin: Coords, debris_coords: Coords,
 
 
 def auto_fleet_targets(home: Planet, planets: List[Planet],
-                       research_levels: Dict[str, int], cfg: Config) -> Dict[str, int]:
+                       research_levels: Dict[str, int], cfg: Config,
+                       expe_cargo_total: int = 0) -> Dict[str, int]:
     """Auto-gestión de flota: objetivos calculados según el tamaño de la economía.
 
     La escala es la suma de niveles de minas (metal+cristal) del imperio: más
     economía -> más cargueros para farmear/transportar y más escolta militar.
-    Solo incluye naves cuyos prerrequisitos (astillero/tecnologías) ya se
-    cumplen en `home`. El orden del dict es la prioridad de fabricación: el
-    bot fabrica un lote por ciclo del primer déficit, igual que con los
-    objetivos manuales.
+    `cfg.fleet_priority` inclina los ratios: "economy" (cargueros), "military"
+    (escolta x2) o "expeditions" (cargueros para llenar TODOS los slots de
+    expedición al óptimo —`expe_cargo_total`, lo calcula el brain— más margen
+    para mover recursos). Solo incluye naves cuyos prerrequisitos ya se cumplen
+    en `home`. El orden del dict es la prioridad de fabricación: el bot fabrica
+    un lote por ciclo del primer déficit, igual que con los objetivos manuales.
     """
     def buildable(name: str) -> bool:
         return all(
@@ -359,17 +362,32 @@ def auto_fleet_targets(home: Planet, planets: List[Planet],
 
     # ponytail: heurística lineal con las minas; afinar ratios si el crecimiento cojea
     eco = sum(p.lvl("metal_mine") + p.lvl("crystal_mine") for p in planets)
+    priority = (getattr(cfg, "fleet_priority", "economy") or "economy").lower()
+    if priority == "military":
+        cargo, lf, cr, bs = eco, eco * 4, eco, eco // 2
+    elif priority == "expeditions":
+        # Flota óptima para todas las expediciones + cargueros extra para mover recursos
+        cargo, lf, cr, bs = expe_cargo_total + eco, eco, eco // 4, eco // 8
+    else:  # economy
+        cargo, lf, cr, bs = eco * 2, eco * 2, eco // 2, eco // 4
+
     targets: Dict[str, int] = {}
     if getattr(cfg, "enable_farming", True):
         targets["espionage_probe"] = 12
-    if buildable("large_cargo"):
-        targets["large_cargo"] = max(20, eco * 2)
+    cargo_ship = "large_cargo"
+    if priority == "expeditions":
+        cargo_ship = getattr(cfg, "expedition_cargo_ship", "large_cargo") or "large_cargo"
+    if buildable(cargo_ship):
+        targets[cargo_ship] = max(20, cargo)
     else:
         targets["small_cargo"] = 15  # puente hasta desbloquear el carguero grande
     if getattr(cfg, "enable_recycling", False) or getattr(cfg, "farm_recycle_debris", False):
         targets["recycler"] = max(4, eco // 3)
+    # Colonizar necesita una nave de colonización en el hangar
+    if getattr(cfg, "enable_colonization", False) and len(planets) < getattr(cfg, "max_colonies", 1):
+        targets["colony_ship"] = 1
     # Escolta militar (la usa farm_auto_fleet) y disuasión; crece con la economía
-    targets["light_fighter"] = eco * 2
-    targets["cruiser"] = eco // 2
-    targets["battleship"] = eco // 4
+    targets["light_fighter"] = lf
+    targets["cruiser"] = cr
+    targets["battleship"] = bs
     return {s: q for s, q in targets.items() if q > 0 and buildable(s)}

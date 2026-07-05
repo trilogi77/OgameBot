@@ -432,6 +432,61 @@
                             <label for="password">Contraseña (Gameforge)</label>
                             <input type="password" id="password" placeholder="••••••••">
                         </div>
+                        <div class="cfg-sub">Proxy del navegador (opcional, útil en VPS)</div>
+                        <div class="form-group">
+                            <label for="proxy_server">Servidor proxy</label>
+                            <input type="text" id="proxy_server" placeholder="http://host:puerto o socks5://host:puerto (vacío = sin proxy)">
+                        </div>
+                        <div class="cfg-cols">
+                            <div class="form-group">
+                                <label for="proxy_username">Usuario del proxy</label>
+                                <input type="text" id="proxy_username" placeholder="(opcional)">
+                            </div>
+                            <div class="form-group">
+                                <label for="proxy_password">Contraseña del proxy</label>
+                                <input type="password" id="proxy_password" placeholder="(opcional)">
+                            </div>
+                        </div>
+                        <div class="cfg-sub">Parámetros del universo</div>
+                        <div class="cfg-cols">
+                            <div class="form-group">
+                                <label for="fleet_speed">Velocidad de flotas (x)</label>
+                                <input type="number" id="fleet_speed" min="1" step="0.5" placeholder="1">
+                            </div>
+                            <div class="form-group">
+                                <label for="loot_percent">Botín saqueable (0-1)</label>
+                                <input type="number" id="loot_percent" min="0" max="1" step="0.05" placeholder="0.5">
+                            </div>
+                            <div class="form-group">
+                                <label for="debris_factor">Factor de escombros (0-1)</label>
+                                <input type="number" id="debris_factor" min="0" max="1" step="0.05" placeholder="0.3">
+                            </div>
+                        </div>
+                        <label class="toggle-row">
+                            <span class="toggle-text"><strong>Escombros con deuterio</strong><span>En este universo el deuterio también va al campo de escombros.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="debris_includes_deut"><span class="slider"></span></span>
+                        </label>
+                        <div class="form-group">
+                            <label for="server_playstyle">Estilo de juego</label>
+                            <select id="server_playstyle" class="form-control">
+                                <option value="defensive">Defensivo — prioriza defensas</option>
+                                <option value="offensive">Ofensivo — prioriza flota</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- OBJETIVO DEL BOT / AUTOGESTIÓN DEL IMPERIO -->
+                    <div class="card cfg-card">
+                        <div class="cfg-head"><span>OBJETIVO DEL BOT</span><span class="switch-container"><input type="checkbox" id="empire_auto"><span class="slider"></span></span></div>
+                        <p class="text-muted sm"><strong>Autogestión del imperio:</strong> el bot lo decide todo — qué subir y dónde, investigación, flota automática, expediciones, colonización y envío de recursos a las colonias nuevas. El farmeo (ataques) se controla aparte en su propia tarjeta.</p>
+                        <div class="form-group">
+                            <label for="fleet_priority">Prioridad de crecimiento (flota automática)</label>
+                            <select id="fleet_priority" class="form-control">
+                                <option value="economy">Economía — cargueros y crecimiento</option>
+                                <option value="military">Militar — escolta y disuasión</option>
+                                <option value="expeditions">Expediciones — flota óptima para todos los slots + cargueros para mover recursos</option>
+                            </select>
+                        </div>
                     </div>
 
                     <!-- GENERAL / HUMANIZACIÓN -->
@@ -542,6 +597,15 @@
                             <span class="switch-container"><input type="checkbox" id="fleetsave_prefer_moon"><span class="slider"></span></span>
                         </label>
                         <label class="toggle-row">
+                            <span class="toggle-text"><strong>Aviso de phalanx</strong><span>Telegram si el fleetsave queda expuesto a un phalanx enemigo.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="fleetsave_warn_phalanx"><span class="slider"></span></span>
+                        </label>
+                        <div class="form-group">
+                            <label for="keep_free_fleet_slots">Slots de flota reservados (emergencias)</label>
+                            <input type="number" id="keep_free_fleet_slots" min="0" step="1" placeholder="1">
+                            <span class="field-help">Farmeo, expediciones y alimentación nunca consumen estos slots.</span>
+                        </div>
+                        <label class="toggle-row">
                             <span class="toggle-text"><strong>Barrido nocturno</strong><span>Durante el descanso vacía (fleetsave) los planetas marcados en Planetas.</span></span>
                             <span class="switch-container"><input type="checkbox" id="enable_night_sweep"><span class="slider"></span></span>
                         </label>
@@ -589,6 +653,14 @@
                             <label for="farming_run_interval_mins">Intervalo de ronda (min)</label>
                             <input type="number" id="farming_run_interval_mins" min="0" placeholder="15">
                         </div>
+                        <div class="form-group">
+                            <label for="max_target_distance_systems">Distancia máx. a objetivos (sistemas)</label>
+                            <input type="number" id="max_target_distance_systems" min="1" placeholder="200">
+                        </div>
+                        <label class="toggle-row">
+                            <span class="toggle-text"><strong>Evitar jugadores fuertes</strong><span>Excluye el top 100 del ranking como objetivos.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="avoid_strong_players"><span class="slider"></span></span>
+                        </label>
                         <label class="toggle-row">
                             <span class="toggle-text"><strong>Atacar con sondas</strong><span>Para servidores con bodega en sondas de espionaje.</span></span>
                             <span class="switch-container"><input type="checkbox" id="farm_with_probes"><span class="slider"></span></span>
@@ -635,6 +707,11 @@
                                 <label for="temp_cruiser">Cruceros escolta</label>
                                 <input type="number" id="temp_cruiser" min="0" placeholder="0">
                             </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="fleet_multipliers">Multiplicadores de flota (nave: x, …)</label>
+                            <input type="text" id="fleet_multipliers" class="mono" placeholder="large_cargo: 6.0, light_fighter: 40.0">
+                            <span class="field-help">Objetivos de flota escalados por nivel de mina (modo ofensivo). Vacío = por defecto.</span>
                         </div>
                     </div>
 
@@ -809,6 +886,62 @@
                                 <input type="number" id="target_mine_ratio_payback_hours" min="1" placeholder="30">
                             </div>
                         </div>
+                        <div class="cfg-cols">
+                            <div class="form-group">
+                                <label for="max_mine_level">Nivel máx. de mina</label>
+                                <input type="number" id="max_mine_level" min="1" placeholder="40">
+                            </div>
+                            <div class="form-group">
+                                <label for="keep_resources_buffer">Buffer de recursos (0-1)</label>
+                                <input type="number" id="keep_resources_buffer" min="0" max="1" step="0.05" placeholder="0.10">
+                            </div>
+                            <div class="form-group">
+                                <label for="storage_fill_trigger_percent">Ampliar almacén al (0-1)</label>
+                                <input type="number" id="storage_fill_trigger_percent" min="0" max="1" step="0.05" placeholder="0.90">
+                            </div>
+                            <div class="form-group">
+                                <label for="max_saving_hours_economy">Ahorro máx. economía (h)</label>
+                                <input type="number" id="max_saving_hours_economy" min="0" step="0.5" placeholder="4">
+                            </div>
+                        </div>
+                        <label class="toggle-row">
+                            <span class="toggle-text"><strong>Reactor de fusión</strong><span>Construirlo como apoyo de energía.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="enable_fusion_reactor"><span class="slider"></span></span>
+                        </label>
+                        <div class="form-group">
+                            <label for="fusion_reactor_solar_offset">Planta solar por encima del reactor (niveles)</label>
+                            <input type="number" id="fusion_reactor_solar_offset" min="0" placeholder="25">
+                        </div>
+                        <div class="cfg-sub">Objetivos de instalaciones (global; 0 = desactivado)</div>
+                        <div class="cfg-cols">
+                            <div class="form-group">
+                                <label for="target_robotics_factory">Fábrica de robots</label>
+                                <input type="number" id="target_robotics_factory" min="0" placeholder="0">
+                            </div>
+                            <div class="form-group">
+                                <label for="target_shipyard">Hangar</label>
+                                <input type="number" id="target_shipyard" min="0" placeholder="0">
+                            </div>
+                            <div class="form-group">
+                                <label for="target_research_lab">Laboratorio</label>
+                                <input type="number" id="target_research_lab" min="0" placeholder="0">
+                            </div>
+                            <div class="form-group">
+                                <label for="target_nanite_factory">Fábrica de nanobots</label>
+                                <input type="number" id="target_nanite_factory" min="0" placeholder="0">
+                            </div>
+                        </div>
+                        <div class="cfg-sub">Colonización</div>
+                        <div class="cfg-cols">
+                            <div class="form-group">
+                                <label for="max_colonies">Máx. colonias</label>
+                                <input type="number" id="max_colonies" min="1" placeholder="9">
+                            </div>
+                            <div class="form-group">
+                                <label for="preferred_colony_positions">Posiciones preferidas (CSV)</label>
+                                <input type="text" id="preferred_colony_positions" class="mono" placeholder="4, 5, 6, 7, 8, 9, 10, 11, 12">
+                            </div>
+                        </div>
                     </div>
 
                     <!-- INVESTIGACIÓN -->
@@ -831,6 +964,15 @@
                                 <label for="cap_hyperspace_tech">Cap · Hiperespacial</label>
                                 <input type="number" id="cap_hyperspace_tech" min="0" placeholder="0">
                             </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="max_saving_hours_research">Ahorro máx. investigación (h)</label>
+                            <input type="number" id="max_saving_hours_research" min="0" step="0.5" placeholder="6">
+                        </div>
+                        <div class="form-group">
+                            <label for="research_weights">Pesos de investigación (tec: peso, …)</label>
+                            <input type="text" id="research_weights" class="mono" placeholder="astrophysics: 2.0, plasma_tech: 1.8">
+                            <span class="field-help">Vacío = pesos por defecto del bot.</span>
                         </div>
                         <div class="cfg-sub">Prioridad de investigaciones</div>
                         <p class="text-muted sm">De arriba a abajo. Usa ▲ y ▼ para ordenar.</p>
@@ -859,6 +1001,30 @@
                                 <label for="recycling_run_interval_mins">Intervalo de ronda (min)</label>
                                 <input type="number" id="recycling_run_interval_mins" min="0" placeholder="10">
                             </div>
+                            <div class="form-group">
+                                <label for="recycling_system_range">Rango de sistemas (±)</label>
+                                <input type="number" id="recycling_system_range" min="0" placeholder="0">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- LUNAS -->
+                    <div class="card cfg-card">
+                        <div class="cfg-head"><span>LUNAS</span><span class="switch-container"><input type="checkbox" id="enable_moon_creation"><span class="slider"></span></span></div>
+                        <p class="text-muted sm">Crear lunas estrellando naves propias para generar escombros (20% de probabilidad máx. por intento).</p>
+                        <div class="cfg-cols">
+                            <div class="form-group">
+                                <label for="moon_target_debris">Escombros objetivo</label>
+                                <input type="number" id="moon_target_debris" min="0" step="1000" placeholder="100000">
+                            </div>
+                            <div class="form-group">
+                                <label for="moon_sacrifice_ship">Nave a sacrificar</label>
+                                <select id="moon_sacrifice_ship" class="form-control">
+                                    <option value="light_fighter">Caza ligero</option>
+                                    <option value="small_cargo">Carguero pequeño</option>
+                                    <option value="large_cargo">Carguero grande</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
 
@@ -869,6 +1035,10 @@
                         <label class="toggle-row">
                             <span class="toggle-text"><strong>Auto-gestión de flota</strong><span>El bot calcula los objetivos según tu economía (sondas, cargueros, recicladores y escolta) y los sube solo al crecer el imperio. Ignora los objetivos manuales de abajo.</span></span>
                             <span class="switch-container"><input type="checkbox" id="fleet_auto_build"><span class="slider"></span></span>
+                        </label>
+                        <label class="toggle-row">
+                            <span class="toggle-text"><strong>Cargueros extra</strong><span>Fabricar cargueros adicionales para transporte.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="enable_cargo_building"><span class="slider"></span></span>
                         </label>
                         <div class="cfg-cols">
                             <div class="form-group">
@@ -910,6 +1080,16 @@
                     <div class="card cfg-card">
                         <div class="cfg-head"><span>TRANSPORTE · ALIMENTACIÓN</span></div>
                         <p class="text-muted sm">El reparto de recursos entre planetas se marca por planeta en la pantalla <b>Planetas</b>: <b>Recibe recursos</b> (paga sus objetivos con el excedente ajeno) y <b>Cede recursos</b> (envía su excedente dejando el buffer). La ronda "Alimentación" del ciclo ejecuta esos envíos; puedes reordenarla en <b>Cola de tareas</b>.</p>
+                        <div class="cfg-cols">
+                            <div class="form-group">
+                                <label for="feed_min_send">Envío mínimo (recursos)</label>
+                                <input type="number" id="feed_min_send" min="0" step="500" placeholder="5000">
+                            </div>
+                            <div class="form-group">
+                                <label for="feed_round_up">Redondear déficit a (múltiplo; 0 = off)</label>
+                                <input type="number" id="feed_round_up" min="0" step="500" placeholder="1000">
+                            </div>
+                        </div>
                     </div>
 
                     <!-- TELEGRAM -->
@@ -923,6 +1103,10 @@
                             <label for="telegram_chat_id">ID de chat</label>
                             <input type="text" id="telegram_chat_id" placeholder="987654321">
                         </div>
+                        <label class="toggle-row">
+                            <span class="toggle-text"><strong>Comandos por Telegram</strong><span>/status, /fleetsave, /recall, /pausa… solo desde el chat configurado.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="enable_telegram_commands"><span class="slider"></span></span>
+                        </label>
                         <div class="inline-tools">
                             <button type="button" id="btnTestTelegram" class="btn btn-secondary">📨 Probar Telegram</button>
                             <span id="telegram_test_status" class="text-muted sm">Envía un mensaje de prueba al chat configurado.</span>
@@ -941,7 +1125,7 @@
 
                     <!-- COLA DE CONSTRUCCIÓN MANUAL -->
                     <div class="card cfg-card cfg-card-wide">
-                        <div class="cfg-head"><span>COLA DE CONSTRUCCIÓN MANUAL</span></div>
+                        <div class="cfg-head"><span>COLA DE CONSTRUCCIÓN MANUAL</span><span class="switch-container"><input type="checkbox" id="enable_build_queue"><span class="slider"></span></span></div>
                         <div class="exp-live" id="buildQueuePanel">
                             <p class="text-muted sm">Dile al bot qué construir y hasta qué nivel, en orden. Construye la siguiente en cuanto termina la anterior; si faltan recursos, calcula cuándo los tendrá y la coloca en ese momento. Mientras haya cola, la economía automática cede el paso en ese planeta.</p>
                             <div class="inline-tools">
@@ -964,6 +1148,42 @@
                                 <button type="button" id="btnQueueSave" class="btn btn-primary">Guardar cola</button>
                             </div>
                             <span id="queue_status" class="text-muted sm block-note"></span>
+                        </div>
+                    </div>
+
+                    <!-- AVANZADO -->
+                    <div class="card cfg-card">
+                        <div class="cfg-head"><span>AVANZADO</span></div>
+                        <label class="toggle-row">
+                            <span class="toggle-text"><strong>Caché de estado</strong><span>Escaneo completo solo al inicio y en el resync; el resto de ciclos, lectura ligera.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="enable_state_cache"><span class="slider"></span></span>
+                        </label>
+                        <div class="form-group">
+                            <label for="state_resync_hours">Re-escaneo completo cada (h)</label>
+                            <input type="number" id="state_resync_hours" min="0.5" step="0.5" placeholder="6">
+                        </div>
+                        <label class="toggle-row">
+                            <span class="toggle-text"><strong>Canario de selectores</strong><span>Al arrancar verifica el DOM del juego y avisa por Telegram si GameForge cambió la interfaz.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="enable_selector_canary"><span class="slider"></span></span>
+                        </label>
+                        <div class="cfg-cols">
+                            <div class="form-group">
+                                <label for="cdp_port">Puerto CDP del navegador</label>
+                                <input type="number" id="cdp_port" min="1024" max="65535" placeholder="9222">
+                            </div>
+                            <div class="form-group">
+                                <label for="login_human_check_timeout_s">Espera CAPTCHA (s)</label>
+                                <input type="number" id="login_human_check_timeout_s" min="30" placeholder="300">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="log_level">Nivel de log</label>
+                            <select id="log_level" class="form-control">
+                                <option value="DEBUG">DEBUG</option>
+                                <option value="INFO">INFO</option>
+                                <option value="WARNING">WARNING</option>
+                                <option value="ERROR">ERROR</option>
+                            </select>
                         </div>
                     </div>
 

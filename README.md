@@ -339,6 +339,8 @@ journalctl -u ogbot -f
 | `deuterium_reserve` | `0` | Deuterio intocable por planeta (combustible de emergencia). |
 | `enable_fleet_building` | `true` | Fabricar flota militar. |
 | `fleet_auto_build` | `false` | Auto-gestión de flota: el bot calcula los objetivos (sondas, cargueros, recicladores y escolta) según el tamaño de tu economía y los sube solo al crecer el imperio. Ignora `fleet_targets`. |
+| `fleet_priority` | `economy` | Prioridad de la flota automática: `economy` (cargueros y crecimiento), `military` (escolta x2) o `expeditions` (flota para llenar todos los slots de expedición al óptimo + cargueros extra para mover recursos). |
+| `empire_auto` | `false` | **Autogestión del imperio**: un solo interruptor que enciende economía, instalaciones, investigación, flota auto, expediciones auto, colonización y reparto de recursos a colonias nuevas. El bot decide qué subir, dónde y desde dónde alimentar. No activa el farmeo. |
 | `enable_cargo_building` | `false` | Fabricar cargueros extra. |
 | `fleet_multipliers` | ver ejemplo | Objetivos de flota escalados por nivel de mina (modo ofensivo). |
 

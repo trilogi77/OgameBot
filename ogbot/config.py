@@ -267,6 +267,15 @@ class Config:
     # según el tamaño de la economía (sondas, cargueros, recicladores y escolta
     # militar) para que la flota crezca sola con el imperio.
     fleet_auto_build: bool = False
+    # Prioridad de la flota automática: "economy" (cargueros y crecimiento),
+    # "military" (escolta y disuasión) o "expeditions" (flota para llenar TODOS
+    # los slots de expedición al óptimo + cargueros extra para mover recursos).
+    fleet_priority: str = "economy"
+    # Autogestión del imperio: un solo interruptor que lo enciende todo (economía,
+    # instalaciones, investigación, flota auto, expediciones auto, colonización y
+    # reparto de recursos a colonias nuevas). El bot decide qué subir, dónde
+    # subirlo y desde dónde mandar recursos. No toca enable_farming.
+    empire_auto: bool = False
 
     # --- Persistencia / logs ---
     state_file: str = "state.json"

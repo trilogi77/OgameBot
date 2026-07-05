@@ -41,4 +41,21 @@ dev2 = planet({"shipyard": 7, "metal_mine": 15, "crystal_mine": 12})
 t3 = auto_fleet_targets(dev, [dev, dev2], tech, cfg)
 assert t3["large_cargo"] > t["large_cargo"]
 
+# Prioridad militar: más escolta, menos cargueros que en economía
+cfg.fleet_priority = "military"
+tm = auto_fleet_targets(dev, [dev], tech, cfg)
+assert tm["light_fighter"] > t["light_fighter"] and tm["large_cargo"] < t["large_cargo"]
+
+# Prioridad expediciones: cargueros = óptimo de expediciones + margen (eco)
+cfg.fleet_priority = "expeditions"
+te = auto_fleet_targets(dev, [dev], tech, cfg, expe_cargo_total=200)
+assert te["large_cargo"] == 200 + eco
+
+# Colonización activa y colonias libres -> 1 nave de colonización (impulse_drive 4 ok)
+cfg.fleet_priority = "economy"
+cfg.enable_colonization = True
+cfg.max_colonies = 5
+tc = auto_fleet_targets(dev, [dev], tech, cfg)
+assert tc.get("colony_ship") == 1
+
 print("auto_fleet_targets self-check OK:", t)

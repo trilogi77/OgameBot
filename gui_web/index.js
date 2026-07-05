@@ -486,6 +486,8 @@ function mapConfigToUI(cfg) {
     setVal("farming_run_interval_mins", cfg.farming_run_interval_mins !== undefined ? cfg.farming_run_interval_mins : 0);
     setCheck("enable_fleet_building", cfg.enable_fleet_building);
     setCheck("fleet_auto_build", cfg.fleet_auto_build);
+    setCheck("empire_auto", cfg.empire_auto);
+    setVal("fleet_priority", cfg.fleet_priority || "economy");
     setCheck("enable_expeditions", cfg.enable_expeditions);
     setVal("expeditions_run_interval_mins", cfg.expeditions_run_interval_mins !== undefined ? cfg.expeditions_run_interval_mins : 0);
     setCheck("expedition_auto_ships", cfg.expedition_auto_ships);
@@ -567,6 +569,50 @@ function mapConfigToUI(cfg) {
     researchPriorityList = cfg.research_priority || [];
     renderResearchPriorityList();
 
+    // Cobertura completa del config.yaml (campos sin GUI hasta ahora)
+    setVal("proxy_server", cfg.proxy_server || "");
+    setVal("proxy_username", cfg.proxy_username || "");
+    setVal("proxy_password", cfg.proxy_password || "");
+    setVal("fleet_speed", cfg.fleet_speed !== undefined ? cfg.fleet_speed : 1);
+    setVal("loot_percent", cfg.loot_percent !== undefined ? cfg.loot_percent : 0.5);
+    setVal("debris_factor", cfg.debris_factor !== undefined ? cfg.debris_factor : 0.3);
+    setCheck("debris_includes_deut", cfg.debris_includes_deut);
+    setVal("server_playstyle", cfg.server_playstyle || "defensive");
+    setCheck("fleetsave_warn_phalanx", cfg.fleetsave_warn_phalanx !== false);
+    setVal("keep_free_fleet_slots", cfg.keep_free_fleet_slots !== undefined ? cfg.keep_free_fleet_slots : 1);
+    setVal("max_mine_level", cfg.max_mine_level !== undefined ? cfg.max_mine_level : 40);
+    setVal("keep_resources_buffer", cfg.keep_resources_buffer !== undefined ? cfg.keep_resources_buffer : 0.10);
+    setVal("storage_fill_trigger_percent", cfg.storage_fill_trigger_percent !== undefined ? cfg.storage_fill_trigger_percent : 0.90);
+    setVal("max_saving_hours_economy", cfg.max_saving_hours_economy !== undefined ? cfg.max_saving_hours_economy : 4);
+    setCheck("enable_fusion_reactor", cfg.enable_fusion_reactor !== false);
+    setVal("fusion_reactor_solar_offset", cfg.fusion_reactor_solar_offset !== undefined ? cfg.fusion_reactor_solar_offset : 25);
+    setVal("target_robotics_factory", cfg.target_robotics_factory || "");
+    setVal("target_shipyard", cfg.target_shipyard || "");
+    setVal("target_research_lab", cfg.target_research_lab || "");
+    setVal("target_nanite_factory", cfg.target_nanite_factory || "");
+    setVal("max_colonies", cfg.max_colonies !== undefined ? cfg.max_colonies : 9);
+    setVal("preferred_colony_positions", fmtList(cfg.preferred_colony_positions));
+    setVal("max_saving_hours_research", cfg.max_saving_hours_research !== undefined ? cfg.max_saving_hours_research : 6);
+    setVal("research_weights", fmtPairs(cfg.research_weights));
+    setVal("max_target_distance_systems", cfg.max_target_distance_systems !== undefined ? cfg.max_target_distance_systems : 200);
+    setCheck("avoid_strong_players", cfg.avoid_strong_players !== false);
+    setVal("fleet_multipliers", fmtPairs(cfg.fleet_multipliers));
+    setVal("recycling_system_range", cfg.recycling_system_range !== undefined ? cfg.recycling_system_range : 0);
+    setCheck("enable_cargo_building", cfg.enable_cargo_building);
+    setCheck("enable_moon_creation", cfg.enable_moon_creation);
+    setVal("moon_target_debris", cfg.moon_target_debris !== undefined ? cfg.moon_target_debris : 100000);
+    setVal("moon_sacrifice_ship", cfg.moon_sacrifice_ship || "light_fighter");
+    setVal("feed_min_send", cfg.feed_min_send !== undefined ? cfg.feed_min_send : 5000);
+    setVal("feed_round_up", cfg.feed_round_up !== undefined ? cfg.feed_round_up : 1000);
+    setCheck("enable_telegram_commands", cfg.enable_telegram_commands !== false);
+    setCheck("enable_build_queue", cfg.enable_build_queue !== false);
+    setCheck("enable_state_cache", cfg.enable_state_cache !== false);
+    setVal("state_resync_hours", cfg.state_resync_hours !== undefined ? cfg.state_resync_hours : 6);
+    setCheck("enable_selector_canary", cfg.enable_selector_canary !== false);
+    setVal("cdp_port", cfg.cdp_port !== undefined ? cfg.cdp_port : 9222);
+    setVal("login_human_check_timeout_s", cfg.login_human_check_timeout_s !== undefined ? cfg.login_human_check_timeout_s : 300);
+    setVal("log_level", cfg.log_level || "INFO");
+
     // Orden del ciclo (C4) + módulos del dashboard
     applyCycleOrderToChips(cfg.cycle_order);
     renderDashModules();
@@ -637,6 +683,8 @@ function collectUIIntoConfig() {
     globalConfig.farming_run_interval_mins = parseI(getVal("farming_run_interval_mins"), 0);
     globalConfig.enable_fleet_building = getCheck("enable_fleet_building");
     globalConfig.fleet_auto_build = getCheck("fleet_auto_build");
+    globalConfig.empire_auto = getCheck("empire_auto");
+    globalConfig.fleet_priority = getVal("fleet_priority") || "economy";
     globalConfig.enable_expeditions = getCheck("enable_expeditions");
     globalConfig.expeditions_run_interval_mins = parseI(getVal("expeditions_run_interval_mins"), 0);
     globalConfig.expedition_auto_ships = getCheck("expedition_auto_ships");
@@ -734,6 +782,53 @@ function collectUIIntoConfig() {
 
     // Guardar prioridades de investigación
     globalConfig.research_priority = researchPriorityList;
+
+    // Cobertura completa del config.yaml (campos sin GUI hasta ahora)
+    globalConfig.proxy_server = getVal("proxy_server");
+    globalConfig.proxy_username = getVal("proxy_username");
+    globalConfig.proxy_password = getVal("proxy_password");
+    globalConfig.fleet_speed = parseF(getVal("fleet_speed"), 1);
+    globalConfig.loot_percent = parseF(getVal("loot_percent"), 0.5);
+    globalConfig.debris_factor = parseF(getVal("debris_factor"), 0.3);
+    globalConfig.debris_includes_deut = getCheck("debris_includes_deut");
+    globalConfig.server_playstyle = getVal("server_playstyle") || "defensive";
+    globalConfig.fleetsave_warn_phalanx = getCheck("fleetsave_warn_phalanx");
+    globalConfig.keep_free_fleet_slots = parseI(getVal("keep_free_fleet_slots"), 1);
+    globalConfig.max_mine_level = parseI(getVal("max_mine_level"), 40);
+    globalConfig.keep_resources_buffer = parseF(getVal("keep_resources_buffer"), 0.10);
+    globalConfig.storage_fill_trigger_percent = parseF(getVal("storage_fill_trigger_percent"), 0.90);
+    globalConfig.max_saving_hours_economy = parseF(getVal("max_saving_hours_economy"), 4);
+    globalConfig.enable_fusion_reactor = getCheck("enable_fusion_reactor");
+    globalConfig.fusion_reactor_solar_offset = parseI(getVal("fusion_reactor_solar_offset"), 25);
+    globalConfig.target_robotics_factory = parseI(getVal("target_robotics_factory"), 0);
+    globalConfig.target_shipyard = parseI(getVal("target_shipyard"), 0);
+    globalConfig.target_research_lab = parseI(getVal("target_research_lab"), 0);
+    globalConfig.target_nanite_factory = parseI(getVal("target_nanite_factory"), 0);
+    globalConfig.max_colonies = parseI(getVal("max_colonies"), 9);
+    const colonyPos = parseIntList(getVal("preferred_colony_positions"));
+    if (colonyPos.length) globalConfig.preferred_colony_positions = colonyPos;
+    globalConfig.max_saving_hours_research = parseF(getVal("max_saving_hours_research"), 6);
+    const rWeights = parsePairs(getVal("research_weights"));
+    if (Object.keys(rWeights).length) globalConfig.research_weights = rWeights;
+    globalConfig.max_target_distance_systems = parseI(getVal("max_target_distance_systems"), 200);
+    globalConfig.avoid_strong_players = getCheck("avoid_strong_players");
+    const fMult = parsePairs(getVal("fleet_multipliers"));
+    if (Object.keys(fMult).length) globalConfig.fleet_multipliers = fMult;
+    globalConfig.recycling_system_range = parseI(getVal("recycling_system_range"), 0);
+    globalConfig.enable_cargo_building = getCheck("enable_cargo_building");
+    globalConfig.enable_moon_creation = getCheck("enable_moon_creation");
+    globalConfig.moon_target_debris = parseI(getVal("moon_target_debris"), 100000);
+    globalConfig.moon_sacrifice_ship = getVal("moon_sacrifice_ship") || "light_fighter";
+    globalConfig.feed_min_send = parseI(getVal("feed_min_send"), 5000);
+    globalConfig.feed_round_up = parseI(getVal("feed_round_up"), 1000);
+    globalConfig.enable_telegram_commands = getCheck("enable_telegram_commands");
+    globalConfig.enable_build_queue = getCheck("enable_build_queue");
+    globalConfig.enable_state_cache = getCheck("enable_state_cache");
+    globalConfig.state_resync_hours = parseF(getVal("state_resync_hours"), 6);
+    globalConfig.enable_selector_canary = getCheck("enable_selector_canary");
+    globalConfig.cdp_port = parseI(getVal("cdp_port"), 9222);
+    globalConfig.login_human_check_timeout_s = parseI(getVal("login_human_check_timeout_s"), 300);
+    globalConfig.log_level = getVal("log_level") || "INFO";
 
     // Recoger valores de planetas
     const planetCards = document.querySelectorAll(".planet-card");
@@ -1437,6 +1532,26 @@ function setVal(id, val) {
 function getVal(id) {
     const el = document.getElementById(id);
     return el ? el.value.trim() : "";
+}
+
+// Dicts "clave: valor, clave: valor" y listas CSV (campos avanzados del config.yaml)
+function fmtPairs(obj) {
+    return Object.entries(obj || {}).map(([k, v]) => `${k}: ${v}`).join(", ");
+}
+function parsePairs(str) {
+    const out = {};
+    (str || "").split(",").forEach(part => {
+        const i = part.indexOf(":");
+        if (i < 0) return;
+        const k = part.slice(0, i).trim();
+        const v = parseFloat(part.slice(i + 1));
+        if (k && !isNaN(v)) out[k] = v;
+    });
+    return out;
+}
+function fmtList(arr) { return (arr || []).join(", "); }
+function parseIntList(str) {
+    return (str || "").split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
 }
 
 function setCheck(id, val) {

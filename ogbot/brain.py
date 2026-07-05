@@ -2627,6 +2627,19 @@ class Brain(StatsMixin):
                 optimal_pf = min(optimal_pf, max_cargo)
             free_slots = max(1, (self._total_expe_slots_effective() or 1) - self.active_expe_slots)
             total_avail = sum(loc.ships.get(cargo_ship, 0) for loc in enabled_locs)
+            # Fallback a NPG si no hay NGC: usar small_cargo como puente
+            if total_avail == 0 and cargo_ship == "large_cargo":
+                fallback_avail = sum(loc.ships.get("small_cargo", 0) for loc in enabled_locs)
+                if fallback_avail > 0:
+                    cargo_ship = "small_cargo"
+                    total_avail = fallback_avail
+                    optimal_nopf = fleet_mod.optimal_expedition_cargo(base_find, "small_cargo", safety, hyper)
+                    optimal_pf = fleet_mod.optimal_expedition_cargo(
+                        pf_find if use_pf else base_find, "small_cargo", safety, hyper)
+                    if max_cargo > 0:
+                        optimal_nopf = min(optimal_nopf, max_cargo)
+                        optimal_pf = min(optimal_pf, max_cargo)
+                    self.log.info("Expediciones: sin NGC, usando NPG como carguero temporal")
             # ¿Hay NGC de sobra para llenar todos los slots al óptimo? Si no, repartir
             # las disponibles entre todos los slots para maximizar el nº de expediciones.
             if total_avail >= optimal_nopf * free_slots:

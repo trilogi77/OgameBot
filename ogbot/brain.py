@@ -960,7 +960,11 @@ class Brain(StatsMixin):
                     name, _cost = choice
                     lvl = sim.lvl(name) + 1
                     steps.append({"action": name, "level": lvl})
-                    sim.buildings[name] = lvl
+                    # Avanzar por la COLA, no por los niveles: energy_balance se ancla
+                    # en la energía real y solo descuenta lo encolado (lvl() = niveles
+                    # + cola); si tocáramos buildings, el balance nunca mejoraría y el
+                    # plan repetiría "planta solar" hasta agotar los pasos.
+                    sim.building_queue.append(name)
                 plan["planets"].append({
                     "coords": f"{p.coords.galaxy}:{p.coords.system}:{p.coords.position}",
                     "name": p.name, "steps": steps})

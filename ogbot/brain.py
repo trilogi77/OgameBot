@@ -1884,8 +1884,23 @@ class Brain(StatsMixin):
                 current_qty = sum(p.ships.get(ship_name, 0) for p in planets) + in_motion.get(ship_name, 0)
                 if current_qty < target_qty:
                     needed = target_qty - current_qty
-                    # Fabricar en lotes de máximo 10 para no drenar recursos
                     batch = min(needed, 10)
+                    # Comprobar recursos disponibles y ajustar el lote
+                    unit = gd.SHIPS.get(ship_name)
+                    if unit:
+                        buf = 1 - getattr(self.cfg, "keep_resources_buffer", 0.0)
+                        avail_m = home.resources.metal * buf
+                        avail_c = home.resources.crystal * buf
+                        avail_d = home.resources.deut * buf
+                        max_m = int(avail_m // unit.cost.metal) if unit.cost.metal > 0 else batch
+                        max_c = int(avail_c // unit.cost.crystal) if unit.cost.crystal > 0 else batch
+                        max_d = int(avail_d // unit.cost.deut) if unit.cost.deut > 0 else batch
+                        affordable = min(max_m, max_c, max_d)
+                        if affordable <= 0:
+                            self.log.debug("Sin recursos para %s (necesita %s); esperando.",
+                                           ship_name, unit.cost)
+                            continue
+                        batch = min(batch, affordable)
                     if self._guard():
                         self.log.info("Fabricando %d %s (objetivo: %d, actual imperio: %d)",
                                        batch, ship_name, target_qty, current_qty)

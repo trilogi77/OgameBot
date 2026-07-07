@@ -15,7 +15,6 @@ También gestiona energía (placas solares / reactor de fusión) y robótica/nan
 para acelerar colas, y almacenes para no desbordar producción.
 """
 from __future__ import annotations
-import math
 from typing import Optional, Tuple
 from . import gamedata as gd
 from .models import Planet, Resources
@@ -138,6 +137,36 @@ def time_to_accumulate(cost: gd.Cost, planet: Planet, cfg: Config, plasma: int) 
     return max(t_m, t_c, t_d)
 
 
+def _next_storage_build(planet: Planet, cfg: Config, get_resolved_building):
+    """Devuelve (nombre_almacén, coste) del almacén a subir con PRIORIDAD MÁXIMA, o None.
+
+    Regla: cuando un recurso se acerca a llenar su almacén, subir ese almacén es la
+    máxima prioridad de construcción. Además, mientras el almacén no pueda guardar el
+    mínimo objetivo (``storage_min_capacity_target``, 1M por defecto) el disparador es
+    más agresivo (se subirá aunque solo esté a medio llenar) para llegar cuanto antes
+    a un nivel capaz de almacenar 1M de recursos.
+    """
+    from . import startorder
+    trigger = getattr(cfg, "storage_fill_trigger_percent", 0.90)
+    min_cap_target = getattr(cfg, "storage_min_capacity_target", 1_000_000)
+    for res_name, b_name in (("metal", "metal_storage"),
+                             ("crystal", "crystal_storage"),
+                             ("deut", "deut_tank")):
+        lvl = planet.lvl(b_name)
+        cap = startorder.storage_capacity(lvl)
+        current_amount = getattr(planet.resources, res_name)
+        # Mientras el almacén no alcance el nivel capaz de guardar el mínimo objetivo,
+        # bajamos el umbral de disparo para forzar su subida cuanto antes.
+        effective_trigger = trigger
+        if min_cap_target > 0 and cap < min_cap_target:
+            effective_trigger = min(trigger, 0.5)
+        if current_amount >= cap * effective_trigger:
+            res = get_resolved_building(b_name, lvl + 1)
+            if res:
+                return res
+    return None
+
+
 def get_mine_target_level(mine: str, cfg: Config) -> int:
     target = cfg.max_mine_level
     if mine == "metal_mine":
@@ -172,6 +201,13 @@ def next_build(
             return res[1], gd.building_cost(res[1], res[2])
         return None
 
+    # 0) PRIORIDAD MÁXIMA: almacenes. Si algún recurso se acerca a llenar su almacén
+    #    (o el almacén aún no puede guardar el mínimo objetivo de 1M), subir el almacén
+    #    manda por encima de laboratorio, astillero, energía y minas.
+    storage_choice = _next_storage_build(planet, cfg, get_resolved_building)
+    if storage_choice:
+        return storage_choice
+
     # 1) Laboratorio de investigación si es solicitado y este es el planeta designado
     if best_lab_planet_coords and planet.coords.tuple() == best_lab_planet_coords.tuple():
         if planet.lvl("research_lab") < requested_research_lab_lvl:
@@ -195,19 +231,6 @@ def next_build(
             if res:
                 return res
         return get_resolved_building("solar_plant", planet.lvl("solar_plant") + 1)
-
-    # 3.5) Almacenes: si algún recurso está al 90% (o el ratio configurado) del límite de su almacén,
-    # construir el almacén correspondiente.
-    storage_trigger = getattr(cfg, "storage_fill_trigger_percent", 0.90)
-    for res_name, b_name in [("metal", "metal_storage"), ("crystal", "crystal_storage"), ("deut", "deut_tank")]:
-        lvl = planet.lvl(b_name)
-        # Capacidad de almacenamiento: 5000 * floor(2.5 * e^(20 * lvl / 33))
-        cap = 5000 * math.floor(2.5 * math.exp(20 * lvl / 33))
-        current_amount = getattr(planet.resources, res_name)
-        if current_amount >= cap * storage_trigger:
-            res = get_resolved_building(b_name, lvl + 1)
-            if res:
-                return res
 
     # 4) Robótica temprana solo después de tener deut básico
     if planet.lvl("robotics_factory") < 2 and planet.lvl("deut_synth") >= 3:
@@ -250,6 +273,11 @@ def next_resources_build(
             return res[1], gd.building_cost(res[1], res[2])
         return None
 
+    # 0) PRIORIDAD MÁXIMA: almacenes (antes que energía y minas).
+    storage_choice = _next_storage_build(planet, cfg, get_resolved_building)
+    if storage_choice:
+        return storage_choice
+
     # 1) Energía
     energy_tech = research_levels.get("energy_tech", 0) if research_levels else 0
     if energy_balance(planet, energy_tech) < 0:
@@ -259,17 +287,6 @@ def next_resources_build(
             if res:
                 return res
         return get_resolved_building("solar_plant", planet.lvl("solar_plant") + 1)
-
-    # 2) Almacenes
-    storage_trigger = getattr(cfg, "storage_fill_trigger_percent", 0.90)
-    for res_name, b_name in [("metal", "metal_storage"), ("crystal", "crystal_storage"), ("deut", "deut_tank")]:
-        lvl = planet.lvl(b_name)
-        cap = 5000 * math.floor(2.5 * math.exp(20 * lvl / 33))
-        current_amount = getattr(planet.resources, res_name)
-        if current_amount >= cap * storage_trigger:
-            res = get_resolved_building(b_name, lvl + 1)
-            if res:
-                return res
 
     # 3) Minas por payback
     best_mine, best_pb, best_cost = None, float("inf"), None

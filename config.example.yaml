@@ -23,6 +23,8 @@ keep_resources_buffer: 0.10
 enable_fusion_reactor: true
 fusion_reactor_solar_offset: 25        # Diferencia de niveles mínima que debe haber entre la planta solar y la de fusión (solar - fusión >= offset) antes de subir la de fusión
 max_mine_level: 40
+storage_fill_trigger_percent: 0.90     # % de llenado que dispara la subida del almacén
+storage_min_capacity_target: 1000000   # capacidad mínima (por recurso) garantizada con prioridad MÁXIMA: mientras el almacén no pueda guardar esto, subirlo manda sobre minas/energía/lab. 0 = desactivar
 
 # --- Investigación (orden de prioridad para evaluación en paralelo) ---
 research_priority:

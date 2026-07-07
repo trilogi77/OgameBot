@@ -44,6 +44,11 @@ class Config:
     target_crystal_mine: int = 99
     target_deut_synth: int = 99
     storage_fill_trigger_percent: float = 0.90
+    # Capacidad mínima de almacén (por recurso) que se garantiza con PRIORIDAD MÁXIMA:
+    # mientras un almacén no pueda guardar al menos esta cantidad, subirlo es la máxima
+    # prioridad de construcción en cuanto el recurso se acerca a llenarlo. 0 = desactivar
+    # el objetivo (solo se aplica el disparador de llenado normal).
+    storage_min_capacity_target: int = 1_000_000
     enable_facilities: bool = True
     target_robotics_factory: int = 0
     target_shipyard: int = 0

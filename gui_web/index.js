@@ -583,6 +583,7 @@ function mapConfigToUI(cfg) {
     setVal("max_mine_level", cfg.max_mine_level !== undefined ? cfg.max_mine_level : 40);
     setVal("keep_resources_buffer", cfg.keep_resources_buffer !== undefined ? cfg.keep_resources_buffer : 0.10);
     setVal("storage_fill_trigger_percent", cfg.storage_fill_trigger_percent !== undefined ? cfg.storage_fill_trigger_percent : 0.90);
+    setVal("storage_min_capacity_target", cfg.storage_min_capacity_target !== undefined ? cfg.storage_min_capacity_target : 1000000);
     setVal("max_saving_hours_economy", cfg.max_saving_hours_economy !== undefined ? cfg.max_saving_hours_economy : 4);
     setCheck("enable_fusion_reactor", cfg.enable_fusion_reactor !== false);
     setVal("fusion_reactor_solar_offset", cfg.fusion_reactor_solar_offset !== undefined ? cfg.fusion_reactor_solar_offset : 25);
@@ -797,6 +798,7 @@ function collectUIIntoConfig() {
     globalConfig.max_mine_level = parseI(getVal("max_mine_level"), 40);
     globalConfig.keep_resources_buffer = parseF(getVal("keep_resources_buffer"), 0.10);
     globalConfig.storage_fill_trigger_percent = parseF(getVal("storage_fill_trigger_percent"), 0.90);
+    globalConfig.storage_min_capacity_target = parseI(getVal("storage_min_capacity_target"), 1000000);
     globalConfig.max_saving_hours_economy = parseF(getVal("max_saving_hours_economy"), 4);
     globalConfig.enable_fusion_reactor = getCheck("enable_fusion_reactor");
     globalConfig.fusion_reactor_solar_offset = parseI(getVal("fusion_reactor_solar_offset"), 25);

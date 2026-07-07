@@ -580,6 +580,7 @@ function mapConfigToUI(cfg) {
     setVal("server_playstyle", cfg.server_playstyle || "defensive");
     setCheck("fleetsave_warn_phalanx", cfg.fleetsave_warn_phalanx !== false);
     setVal("keep_free_fleet_slots", cfg.keep_free_fleet_slots !== undefined ? cfg.keep_free_fleet_slots : 1);
+    setCheck("allow_last_slot_for_missions", cfg.allow_last_slot_for_missions !== false);
     setVal("max_mine_level", cfg.max_mine_level !== undefined ? cfg.max_mine_level : 40);
     setVal("keep_resources_buffer", cfg.keep_resources_buffer !== undefined ? cfg.keep_resources_buffer : 0.10);
     setVal("storage_fill_trigger_percent", cfg.storage_fill_trigger_percent !== undefined ? cfg.storage_fill_trigger_percent : 0.90);
@@ -795,6 +796,7 @@ function collectUIIntoConfig() {
     globalConfig.server_playstyle = getVal("server_playstyle") || "defensive";
     globalConfig.fleetsave_warn_phalanx = getCheck("fleetsave_warn_phalanx");
     globalConfig.keep_free_fleet_slots = parseI(getVal("keep_free_fleet_slots"), 1);
+    globalConfig.allow_last_slot_for_missions = getCheck("allow_last_slot_for_missions");
     globalConfig.max_mine_level = parseI(getVal("max_mine_level"), 40);
     globalConfig.keep_resources_buffer = parseF(getVal("keep_resources_buffer"), 0.10);
     globalConfig.storage_fill_trigger_percent = parseF(getVal("storage_fill_trigger_percent"), 0.90);

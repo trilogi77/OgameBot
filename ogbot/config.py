@@ -213,6 +213,13 @@ class Config:
     # Slots de flota reservados para emergencias (evasión/fleetsave). El farmeo,
     # las expediciones y la alimentación nunca consumen estos slots.
     keep_free_fleet_slots: int = 1
+    # Reserva "blanda": nunca dejar que la reserva bloquee el ÚLTIMO slot libre para
+    # misiones (farmeo/espionaje/expediciones/alimentación). Necesario para que las
+    # cuentas con poca Tecnología de Computación (1-2 slots) puedan espiar y atacar:
+    # el bot manda las sondas, espera a que vuelvan y recién entonces ataca. En cuentas
+    # grandes no cambia nada (la reserva se respeta igual). False = respetar siempre la
+    # reserva completa (el farmeo queda desactivado si todos los slots están reservados).
+    allow_last_slot_for_missions: bool = True
     # Comandos por Telegram (/status, /fleetsave, /recall, /pausa...). Solo atiende
     # al chat_id configurado en telegram_chat_id.
     enable_telegram_commands: bool = True

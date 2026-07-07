@@ -1380,14 +1380,28 @@ class Brain(StatsMixin):
             return False
         return self.active_expe_slots < total
 
+    def _effective_slot_reserve(self, total: int) -> int:
+        """Reserva de slots de emergencia efectiva.
+
+        Con reserva "blanda" (allow_last_slot_for_missions) nunca dejamos que la
+        reserva se coma el último slot disponible: se limita a total-1. Así una cuenta
+        con poca Computación (1-2 slots) puede seguir farmeando, mientras que en cuentas
+        grandes la reserva se respeta igual (total-1 >= reserva)."""
+        reserve = max(0, int(getattr(self.cfg, "keep_free_fleet_slots", 1)))
+        if getattr(self.cfg, "allow_last_slot_for_missions", True):
+            reserve = min(reserve, max(0, total - 1))
+        return reserve
+
     def _has_free_slots_for_mission(self) -> bool:
         total = self.total_fleet_slots if self.total_fleet_slots else (
             self.research_levels.get("computer_tech", 0) + 1 if self.research_levels else 1)
         free = total - self.active_slots
-        reserve = max(0, int(getattr(self.cfg, "keep_free_fleet_slots", 1)))
-        return free >= 1 + reserve
+        return free >= 1 + self._effective_slot_reserve(total)
 
     def _has_free_slots_for_espionage(self) -> bool:
+        # El espionaje es un viaje corto de ida y vuelta que el bot ESPERA antes de
+        # atacar, así que puede usar la reserva blanda igual que el resto de misiones.
+        # (Método propio por si en el futuro se quiere una política distinta.)
         return self._has_free_slots_for_mission()
 
     def _has_ships(self, planets, ship_type: str, min_count: int = 1) -> bool:

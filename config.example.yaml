@@ -182,6 +182,7 @@ fleetsave_mission: deploy
 fleetsave_prefer_moon: true    # preferir destino luna en el fleetsave (no escaneable por phalanx)
 fleetsave_warn_phalanx: true   # avisar por Telegram si el fleetsave queda expuesto a phalanx
 keep_free_fleet_slots: 1       # slots reservados para emergencias (evasión/fleetsave)
+allow_last_slot_for_missions: true # reserva "blanda": nunca bloquear el último slot para misiones (necesario para farmear con poca Computación, 1-2 slots). En cuentas grandes no cambia nada
 enable_telegram_commands: true # /status /fleetsave /recall /pausa por Telegram (solo tu chat_id)
 enable_selector_canary: true   # al arrancar, verifica selectores clave del DOM y avisa si cambió la interfaz
 risk_profile: normal           # perfil aplicado desde la GUI: paranoid/normal/aggressive (informativo)

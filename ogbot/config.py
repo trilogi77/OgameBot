@@ -189,6 +189,10 @@ class Config:
     preferred_colony_positions: List[int] = field(default_factory=lambda: [4, 5, 6, 7, 8, 9, 10, 11, 12])
     max_colonies: int = 9
 
+    # --- Directivas / misiones ---
+    # Reclama automáticamente las recompensas de misiones/directivas completadas.
+    enable_directive_rewards: bool = True
+
     # --- Seguridad / fleetsave / humanización ---
     # Modo solo-monitoreo: el bot NO hace economía/farming/expediciones/defensa/investigación.
     # Solo vigila ataques y espionaje entrantes y ejecuta la salvación de flota (fleetsave).

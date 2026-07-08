@@ -170,6 +170,10 @@ enable_colonization: true
 preferred_colony_positions: [4, 5, 6, 7, 8, 9, 10, 11, 12]
 max_colonies: 9
 
+# --- Directivas / misiones ---
+# Reclama automáticamente las recompensas de misiones/directivas completadas.
+enable_directive_rewards: true
+
 # --- Seguridad / humanización ---
 enable_fleetsave: true
 enable_attack_escape: true

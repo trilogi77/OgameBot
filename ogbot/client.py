@@ -171,6 +171,8 @@ class GameClient:
         self._last_captcha_alert = 0.0     # epoch de la última alerta de CAPTCHA por Telegram
         self.player_id: Optional[str] = None    # meta ogame-player-id (C5); brain lo persiste en state.json
         self.player_name: Optional[str] = None  # meta ogame-player-name (C5)
+        # Componente de la página de directivas: None=por descubrir, ""=no disponible (no reintentar).
+        self._directives_component: Optional[str] = None
 
     # ------------------------------------------------------------------
     def start(self):
@@ -963,6 +965,58 @@ class GameClient:
             return True
         self.log.info("[ACCION] %s", description)
         return False
+
+    def claim_directive_rewards(self) -> int:
+        """Reclama las recompensas de misiones/directivas completadas. Devuelve cuántas.
+
+        Descubre el componente de la página de directivas la primera vez (probando
+        candidatos) y lo cachea; si ninguno la muestra, se autodesactiva.
+        ponytail: 2 candidatos + caché es un hedge ante no conocer el nombre real del
+        componente, no flexibilidad especulativa. Upgrade path: fijar el nombre exacto.
+        """
+        if self._act("Reclamar recompensas de directivas"):
+            return 0
+        if self._directives_component == "":
+            return 0  # ya se determinó que no está disponible
+        candidates = [self._directives_component] if self._directives_component else ["directives", "rewards"]
+        base = self.cfg.server_url.rstrip("/")
+        for comp in candidates:
+            url = f"{base}/game/index.php?page=ingame&component={comp}"
+            try:
+                self.page.goto(url, wait_until="domcontentloaded")
+            except Exception as e:
+                self.log.debug("Directivas: navegación a %s falló: %s", comp, e)
+                continue
+            if not self._is_game_url(self.page.url):
+                self.log.warning("Directivas: sesión caducada; se reintentará el próximo ciclo.")
+                return 0
+            try:
+                is_dir = bool(self.page.evaluate(
+                    "() => /directiva|directive/i.test(document.body.innerText || '')"))
+            except Exception:
+                is_dir = False
+            if not is_dir:
+                continue
+            self._directives_component = comp
+            claimed = 0
+            for _ in range(12):  # tope duro por si el re-render nunca se "seca"
+                try:
+                    label = self.page.evaluate(_load_js("claim_directive_reward"))
+                except Exception as e:
+                    self.log.debug("Directivas: error reclamando: %s", e)
+                    break
+                if not label:
+                    break
+                claimed += 1
+                self.log.info("Recompensa de directiva reclamada: %s", label)
+                time.sleep(1.5)  # esperar el re-render AJAX antes del siguiente reclamo
+            if claimed:
+                self.log.info("Directivas: %d recompensa(s) reclamada(s).", claimed)
+            return claimed
+        # Ninguna candidata mostró directivas: desactivar para no navegar en balde.
+        self._directives_component = ""
+        self.log.info("Directivas: componente no encontrado; reclamo automático desactivado.")
+        return 0
 
     def _find_upgrade_locator(self, tech_id: int):
         """Devuelve el primer locator visible del botón de upgrade, o None."""

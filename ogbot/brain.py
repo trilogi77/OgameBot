@@ -1694,6 +1694,14 @@ class Brain(StatsMixin):
         for k in order:
             rounds[k]()
 
+        # Reclamar recompensas de misiones/directivas completadas (comparte el timer de
+        # economía: las directivas se completan despacio, no hace falta mirar cada ciclo).
+        if run_economy and getattr(self.cfg, "enable_directive_rewards", True):
+            try:
+                self.client.claim_directive_rewards()
+            except Exception as e:
+                self.log.debug("No se pudieron reclamar recompensas de directivas: %s", e)
+
         # Mantener armado el despertar por vuelta de expedición aunque la ronda no se haya
         # ejecutado este ciclo (p.ej. bloqueada por su intervalo), para no perder reenvíos.
         if self.cfg.enable_expeditions:

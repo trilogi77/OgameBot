@@ -1031,6 +1031,59 @@ class GameClient:
             self.log.info("Directivas: %d recompensa(s) recogida(s).", claimed)
         return claimed
 
+    def rename_planet(self, planet: "Planet", new_name: str) -> bool:
+        """Renombra un planeta/colonia. Devuelve True si el nombre quedó aplicado.
+
+        Usa el form 'planetMaintenance' (a.openPlanetRenameGiveupBox -> #planetName ->
+        submit 'Renombrar', que hace ajaxFormSubmit a page=planetRename). NUNCA toca el
+        form de abandonar (#planetMaintenanceDelete, exige contraseña). Verificado contra
+        el HTML vivo del diálogo (2026-07-08).
+        """
+        if self._act(f"Renombrar {planet.coords} -> {new_name}"):
+            return True
+        self._goto("overview", planet)
+        try:
+            opened = self.page.evaluate(
+                "() => { const a = document.querySelector('a.openPlanetRenameGiveupBox');"
+                " if (!a) return false; a.click(); return true; }")
+            if not opened:
+                self.log.warning("Renombrado: no encontré el enlace abandonar/renombrar.")
+                return False
+            self.page.wait_for_selector("#planetMaintenance #planetName", timeout=8000)
+        except Exception as e:
+            self.log.warning("Renombrado: no se pudo abrir el diálogo (%s).", e)
+            return False
+        # Rellenar SOLO el form de rename y disparar su onsubmit (copia a #newPlanetName
+        # y hace ajaxFormSubmit a planetRename). Clic en el submit del propio form.
+        try:
+            fired = self.page.evaluate(
+                "(name) => {"
+                " const inp = document.querySelector('#planetMaintenance #planetName');"
+                " const btn = document.querySelector('#planetMaintenance input[type=submit]');"
+                " if (!inp || !btn) return false;"
+                " inp.value = name; inp.dispatchEvent(new Event('input', {bubbles:true}));"
+                " btn.click(); return true; }", new_name)
+        except Exception as e:
+            self.log.warning("Renombrado: fallo al enviar el form (%s).", e)
+            return False
+        if not fired:
+            self.log.warning("Renombrado: form de rename no encontrado en el diálogo.")
+            return False
+        time.sleep(2.0)  # esperar el ajaxFormSubmit y el callback planetRenamed
+        # Verificación POSITIVA: el nombre en el menú de planetas debe ser el nuevo.
+        try:
+            actual = self.page.evaluate(
+                "(pid) => { const el = document.querySelector('#' + pid + ' .planet-name');"
+                " return el ? el.textContent.trim() : null; }", planet.id)
+        except Exception:
+            actual = None
+        if actual == new_name:
+            planet.name = new_name
+            return True
+        self.log.warning("Renombrado: no se pudo confirmar el nuevo nombre de %s (leído: %r).",
+                         planet.coords, actual)
+        return False
+
     def _find_upgrade_locator(self, tech_id: int):
         """Devuelve el primer locator visible del botón de upgrade, o None."""
         for sel in [

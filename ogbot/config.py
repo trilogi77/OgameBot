@@ -192,6 +192,8 @@ class Config:
     # --- Directivas / misiones ---
     # Reclama automáticamente las recompensas de misiones/directivas completadas.
     enable_directive_rewards: bool = True
+    # Renombra una vez cada planeta/colonia con un nombre aleatorio (misiones 5022/5039).
+    enable_planet_rename: bool = True
 
     # --- Seguridad / fleetsave / humanización ---
     # Modo solo-monitoreo: el bot NO hace economía/farming/expediciones/defensa/investigación.

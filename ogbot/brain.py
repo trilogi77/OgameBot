@@ -2928,7 +2928,15 @@ class Brain(StatsMixin):
         if not self._has_free_slots_for_mission():
             self.log.info("Colonización: deteniendo envío por falta de slots libres.")
             return
-        dest = moons.pick_colony(occupied, self.cfg, home_coords=planets[0].coords)
+        # Origen de la búsqueda: zona objetivo configurada (galaxia:sistema) si está puesta;
+        # si no, se expande desde el planeta principal (lógica actual).
+        origin = planets[0].coords
+        tg = int(getattr(self.cfg, "colony_target_galaxy", 0) or 0)
+        ts = int(getattr(self.cfg, "colony_target_system", 0) or 0)
+        if 1 <= tg <= 9 and 1 <= ts <= 499:
+            origin = Coords(tg, ts, 1)
+            self.log.info("Colonización: buscando hueco cerca de %d:%d (zona objetivo).", tg, ts)
+        dest = moons.pick_colony(occupied, self.cfg, home_coords=origin)
         if dest and self._guard():
             self.log.info("Colonizando %s", dest)
             ok = self.client.send_fleet(planets[0].coords, dest,

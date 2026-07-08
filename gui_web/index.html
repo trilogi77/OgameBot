@@ -37,6 +37,7 @@
 
         <nav class="nav">
             <button type="button" class="nav-item tab-btn active" data-tab="tab-dashboard" data-screen="dashboard"><span class="nav-bullet"></span>Dashboard</button>
+            <button type="button" class="nav-item tab-btn" data-tab="tab-accounts" data-screen="accounts"><span class="nav-bullet"></span>Cuentas</button>
             <button type="button" class="nav-item tab-btn" data-tab="tab-live" data-screen="live"><span class="nav-bullet"></span>Bot en directo</button>
             <button type="button" class="nav-item tab-btn" data-tab="tab-planets" data-screen="planets"><span class="nav-bullet"></span>Planetas</button>
             <button type="button" class="nav-item tab-btn" data-tab="tab-tasks" data-screen="tasks"><span class="nav-bullet"></span>Cola de tareas</button>
@@ -403,6 +404,25 @@
         </section>
 
         <!-- ========================= CONFIGURACIÓN ========================= -->
+        <!-- ========================= CUENTAS ========================= -->
+        <section class="tab-pane screen" id="tab-accounts" data-screen="accounts">
+            <header class="topbar">
+                <h1>Cuentas</h1>
+            </header>
+            <div class="screen-body">
+                <div class="card cfg-card">
+                    <div class="cfg-head"><span>CUENTAS</span></div>
+                    <p class="text-muted sm">Cada cuenta corre su propio bot, con navegador y estado aislados. Selecciónala para ver/editar su configuración; arranca y detén cada una por separado.</p>
+                    <div id="accountsList" class="accounts-list"></div>
+                    <div class="account-add">
+                        <input type="text" id="newAccountId" placeholder="nombre-de-cuenta" maxlength="40">
+                        <button type="button" class="btn btn-secondary" onclick="createAccount()">+ Crear cuenta</button>
+                    </div>
+                    <p class="text-muted sm block-note">Pon el usuario y la contraseña de cada cuenta en su tarjeta <b>Cuenta · Servidor</b> (pestaña Configuración; config aislado). Cada cuenta recibe un puerto de navegador único.</p>
+                </div>
+            </div>
+        </section>
+
         <section class="tab-pane screen" id="tab-config" data-screen="config">
             <header class="topbar">
                 <h1>Configuración</h1>
@@ -966,6 +986,17 @@
                                 <input type="text" id="preferred_colony_positions" class="mono" placeholder="4, 5, 6, 7, 8, 9, 10, 11, 12">
                             </div>
                         </div>
+                        <div class="cfg-cols">
+                            <div class="form-group">
+                                <label for="colony_target_galaxy">Galaxia objetivo (opcional)</label>
+                                <input type="number" id="colony_target_galaxy" min="0" max="9" placeholder="0 = auto">
+                            </div>
+                            <div class="form-group">
+                                <label for="colony_target_system">Sistema objetivo (opcional)</label>
+                                <input type="number" id="colony_target_system" min="0" max="499" placeholder="0 = auto">
+                            </div>
+                        </div>
+                        <p class="text-muted sm">Si pones galaxia y sistema, el bot busca hueco cerca de ahí y se expande. Vacío (0) = elige cerca del planeta principal.</p>
                     </div>
 
                     <!-- INVESTIGACIÓN -->
@@ -1211,17 +1242,6 @@
                         </div>
                     </div>
 
-                    <!-- CUENTAS -->
-                    <div class="card cfg-card">
-                        <div class="cfg-head"><span>CUENTAS</span></div>
-                        <p class="text-muted sm">Cada cuenta corre su propio bot, con navegador y estado aislados. Selecciónala para ver/editar su configuración; arranca y detén cada una por separado.</p>
-                        <div id="accountsList" class="accounts-list"></div>
-                        <div class="account-add">
-                            <input type="text" id="newAccountId" placeholder="nombre-de-cuenta" maxlength="40">
-                            <button type="button" class="btn btn-secondary" onclick="createAccount()">+ Crear cuenta</button>
-                        </div>
-                        <p class="text-muted sm block-note">Pon el usuario y la contraseña de cada cuenta en su tarjeta <b>Cuenta · Servidor</b> (config aislado). Cada cuenta recibe un puerto de navegador único.</p>
-                    </div>
 
                 </div>
             </div>

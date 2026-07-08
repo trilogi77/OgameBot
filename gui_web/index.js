@@ -594,6 +594,8 @@ function mapConfigToUI(cfg) {
     setVal("target_nanite_factory", cfg.target_nanite_factory || "");
     setVal("max_colonies", cfg.max_colonies !== undefined ? cfg.max_colonies : 9);
     setVal("preferred_colony_positions", fmtList(cfg.preferred_colony_positions));
+    setVal("colony_target_galaxy", cfg.colony_target_galaxy || 0);
+    setVal("colony_target_system", cfg.colony_target_system || 0);
     setVal("max_saving_hours_research", cfg.max_saving_hours_research !== undefined ? cfg.max_saving_hours_research : 6);
     setVal("research_weights", fmtPairs(cfg.research_weights));
     setVal("max_target_distance_systems", cfg.max_target_distance_systems !== undefined ? cfg.max_target_distance_systems : 200);
@@ -811,6 +813,8 @@ function collectUIIntoConfig() {
     globalConfig.max_colonies = parseI(getVal("max_colonies"), 9);
     const colonyPos = parseIntList(getVal("preferred_colony_positions"));
     if (colonyPos.length) globalConfig.preferred_colony_positions = colonyPos;
+    globalConfig.colony_target_galaxy = parseI(getVal("colony_target_galaxy"), 0);
+    globalConfig.colony_target_system = parseI(getVal("colony_target_system"), 0);
     globalConfig.max_saving_hours_research = parseF(getVal("max_saving_hours_research"), 6);
     const rWeights = parsePairs(getVal("research_weights"));
     if (Object.keys(rWeights).length) globalConfig.research_weights = rWeights;

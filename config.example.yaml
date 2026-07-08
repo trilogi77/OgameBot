@@ -169,6 +169,10 @@ moon_sacrifice_ship: light_fighter
 enable_colonization: true
 preferred_colony_positions: [4, 5, 6, 7, 8, 9, 10, 11, 12]
 max_colonies: 9
+# Zona (aprox.) donde colonizar el siguiente planeta. Si ambos > 0, la búsqueda parte de
+# galaxia:sistema y se expande; si 0, se usa la lógica actual (expandir desde el planeta principal).
+colony_target_galaxy: 0
+colony_target_system: 0
 
 # --- Directivas / misiones ---
 # Reclama automáticamente las recompensas de misiones/directivas completadas.

@@ -188,6 +188,10 @@ class Config:
     enable_colonization: bool = True
     preferred_colony_positions: List[int] = field(default_factory=lambda: [4, 5, 6, 7, 8, 9, 10, 11, 12])
     max_colonies: int = 9
+    # Zona objetivo (aprox.) donde colonizar el siguiente planeta. Si ambos > 0, la búsqueda
+    # se expande desde galaxia:sistema; si no (0), se mantiene la lógica actual (desde casa).
+    colony_target_galaxy: int = 0
+    colony_target_system: int = 0
 
     # --- Directivas / misiones ---
     # Reclama automáticamente las recompensas de misiones/directivas completadas.

@@ -23,6 +23,9 @@ B, R = "building", "research"
 
 SERVER_START_ORDER: List[Tuple[str, str, int]] = [
     (B, "metal_mine", 2),
+    # metal_storage 1 temprano: sube la capacidad a 20k y corta el desperdicio por almacén
+    # lleno; adelanta Astrofísica ~2h en la simulación (verificado, universo x8).
+    (B, "metal_storage", 1),
     (B, "solar_plant", 1),
     (B, "metal_mine", 4),
     (B, "solar_plant", 2),

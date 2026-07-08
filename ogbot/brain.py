@@ -1393,6 +1393,8 @@ class Brain(StatsMixin):
         reserva se coma el último slot disponible: se limita a total-1. Así una cuenta
         con poca Computación (1-2 slots) puede seguir farmeando, mientras que en cuentas
         grandes la reserva se respeta igual (total-1 >= reserva)."""
+        if not getattr(self.cfg, "reserve_fleetsave_slot", True):
+            return 0  # early game: sin flota que salvar, no reservamos huecos
         reserve = max(0, int(getattr(self.cfg, "keep_free_fleet_slots", 1)))
         if getattr(self.cfg, "allow_last_slot_for_missions", True):
             reserve = min(reserve, max(0, total - 1))

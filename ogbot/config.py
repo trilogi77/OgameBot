@@ -227,6 +227,9 @@ class Config:
     fleetsave_recall_halfway: bool = False   # retornar despliegues a mitad del descanso
     fleetsave_prefer_moon: bool = True       # preferir destino LUNA (no escaneable por phalanx)
     fleetsave_warn_phalanx: bool = True      # avisar por Telegram si el fleetsave queda expuesto a phalanx
+    # Reservar hueco(s) de flota para emergencias (evasión/fleetsave). Desactivar en early
+    # game (sin flota que defender): libera esos slots para expediciones/farmeo/colonización.
+    reserve_fleetsave_slot: bool = True
     # Slots de flota reservados para emergencias (evasión/fleetsave). El farmeo,
     # las expediciones y la alimentación nunca consumen estos slots.
     keep_free_fleet_slots: int = 1

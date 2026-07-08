@@ -578,6 +578,7 @@ function mapConfigToUI(cfg) {
     setCheck("debris_includes_deut", cfg.debris_includes_deut);
     setVal("server_playstyle", cfg.server_playstyle || "defensive");
     setCheck("fleetsave_warn_phalanx", cfg.fleetsave_warn_phalanx !== false);
+    setCheck("reserve_fleetsave_slot", cfg.reserve_fleetsave_slot !== false);
     setVal("keep_free_fleet_slots", cfg.keep_free_fleet_slots !== undefined ? cfg.keep_free_fleet_slots : 1);
     setCheck("allow_last_slot_for_missions", cfg.allow_last_slot_for_missions !== false);
     setVal("max_mine_level", cfg.max_mine_level !== undefined ? cfg.max_mine_level : 40);
@@ -795,6 +796,7 @@ function collectUIIntoConfig() {
     globalConfig.debris_includes_deut = getCheck("debris_includes_deut");
     globalConfig.server_playstyle = getVal("server_playstyle") || "defensive";
     globalConfig.fleetsave_warn_phalanx = getCheck("fleetsave_warn_phalanx");
+    globalConfig.reserve_fleetsave_slot = getCheck("reserve_fleetsave_slot");
     globalConfig.keep_free_fleet_slots = parseI(getVal("keep_free_fleet_slots"), 1);
     globalConfig.allow_last_slot_for_missions = getCheck("allow_last_slot_for_missions");
     globalConfig.max_mine_level = parseI(getVal("max_mine_level"), 40);

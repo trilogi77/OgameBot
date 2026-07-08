@@ -636,10 +636,14 @@
                             <span class="toggle-text"><strong>Aviso de phalanx</strong><span>Telegram si el fleetsave queda expuesto a un phalanx enemigo.</span></span>
                             <span class="switch-container"><input type="checkbox" id="fleetsave_warn_phalanx"><span class="slider"></span></span>
                         </label>
+                        <label class="toggle-row">
+                            <span class="toggle-text"><strong>Reservar hueco para salvación de flota</strong><span>Guarda slots de flota para emergencias (evasión/fleetsave). <b>Desactívalo en early game</b>: si aún no tienes flota que defender, libera esos slots para expediciones/farmeo/colonización.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="reserve_fleetsave_slot"><span class="slider"></span></span>
+                        </label>
                         <div class="form-group">
                             <label for="keep_free_fleet_slots">Slots de flota reservados (emergencias)</label>
                             <input type="number" id="keep_free_fleet_slots" min="0" step="1" placeholder="1">
-                            <span class="field-help">Farmeo, expediciones y alimentación nunca consumen estos slots.</span>
+                            <span class="field-help">Farmeo, expediciones y alimentación nunca consumen estos slots. Ignorado si desactivas el reservado de arriba.</span>
                         </div>
                         <label class="toggle-row">
                             <span class="toggle-text"><strong>Reserva blanda (usar último slot)</strong><span>Nunca dejar que la reserva bloquee el último slot para misiones. Permite farmear en cuentas con poca Computación (1-2 slots). En cuentas grandes no cambia nada.</span></span>

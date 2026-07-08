@@ -20,7 +20,7 @@ from .config import Config
 # plasma) al final. Prerrequisitos verificados contra el árbol de OGame (gamedata).
 RESEARCH_UNLOCK_ORDER: List[Tuple[str, int]] = [
     ("energy_tech", 1),
-    ("computer_tech", 1),      # +1 slot de flota; barato
+    ("computer_tech", 5),      # slots de flota PRONTO: farmeo/expediciones necesitan flotas
     ("combustion_drive", 1),
     ("energy_tech", 2),
     ("laser_tech", 1),
@@ -81,7 +81,7 @@ def next_research(
     weights = getattr(cfg, "research_weights", {
         "astrophysics": 2.0,
         "plasma_tech": 1.8,
-        "computer_tech": 1.5,
+        "computer_tech": 2.5,   # prioridad alta: más slots de flota = más farmeo/expediciones
         "combustion_drive": 1.2,
         "impulse_drive": 1.1,
         "hyperspace_drive": 1.0,

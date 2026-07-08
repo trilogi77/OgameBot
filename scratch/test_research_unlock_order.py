@@ -43,6 +43,11 @@ assert levels["shielding_tech"] >= 5, levels["shielding_tech"]
 assert levels["hyperspace_tech"] >= 3, levels["hyperspace_tech"]
 assert levels["espionage_tech"] >= 4, levels["espionage_tech"]
 assert levels["impulse_drive"] >= 3, levels["impulse_drive"]
+assert levels["computer_tech"] >= 5, levels["computer_tech"]   # slots de flota pronto
+
+# Computación 5 debe alcanzarse PRONTO (antes de la mitad del plan), no al final.
+order_techs2 = [t for t, _ in R.RESEARCH_UNLOCK_ORDER]
+assert order_techs2.index("computer_tech") <= 2, order_techs2
 
 # El laboratorio máximo que exige el plan es 7 (hiperespacio); nunca pide más.
 assert lab == 7, lab

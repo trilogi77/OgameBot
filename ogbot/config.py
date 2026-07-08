@@ -70,7 +70,7 @@ class Config:
     research_weights: dict = field(default_factory=lambda: {
         "astrophysics": 2.0,
         "plasma_tech": 1.8,
-        "computer_tech": 1.5,
+        "computer_tech": 2.5,   # prioridad alta: más slots de flota = más farmeo/expediciones
         "combustion_drive": 1.2,
         "impulse_drive": 1.1,
         "hyperspace_drive": 1.0,

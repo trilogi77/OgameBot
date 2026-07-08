@@ -985,13 +985,16 @@ class GameClient:
         except Exception:
             pending = 0
         if pending <= 0:
-            return 0  # nada que recoger
+            self.log.info("Directivas: sin recompensas pendientes.")
+            return 0
+        self.log.info("Directivas: %d recompensa(s) pendiente(s); abriendo el panel...", pending)
         # Abrir el overlay via el propio handler del enlace (evita checks de visibilidad).
         try:
             opened = self.page.evaluate(
                 "() => { const a = document.querySelector('#ipiInnerMenuContentHolder');"
                 " if (!a) return false; a.click(); return true; }")
             if not opened:
+                self.log.warning("Directivas: no encontré el enlace del menú (#ipiInnerMenuContentHolder).")
                 return 0
             self.page.wait_for_selector("#ipiOverviewTasklist .ipiTaskItem", timeout=8000)
         except Exception as e:

@@ -6,10 +6,63 @@ próxima tecnología a investigar que sea asequible y cuyos prerequisitos estén
 cubiertos. La investigación es global a la cuenta.
 """
 from __future__ import annotations
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from . import gamedata as gd
 from .models import Resources, Planet
 from .config import Config
+
+
+# Orden para DESBLOQUEAR todo el árbol de investigación lo antes posible (sin graviton ni
+# la red intergaláctica, que exige hyperspace 8 / computer 8 y frenaría el crecimiento).
+# Objetivos por hito (acumulativos): al alcanzar el último, todas las tecnologías están a
+# nivel >=1 y todas las naves/defensas quedan disponibles. Prioriza crecimiento (energía,
+# computación, ASTROFÍSICA=colonias) y deja el grind caro (láser 10 / ion 5 / energía 8 ->
+# plasma) al final. Prerrequisitos verificados contra el árbol de OGame (gamedata).
+RESEARCH_UNLOCK_ORDER: List[Tuple[str, int]] = [
+    ("energy_tech", 1),
+    ("computer_tech", 1),      # +1 slot de flota; barato
+    ("combustion_drive", 1),
+    ("energy_tech", 2),
+    ("laser_tech", 1),
+    ("armor_tech", 1),
+    ("impulse_drive", 1),
+    ("espionage_tech", 4),     # para astrofísica
+    ("impulse_drive", 3),      # para astrofísica
+    ("astrophysics", 1),       # COLONIAS: crecimiento, desbloqueado pronto
+    ("energy_tech", 3),        # para escudos
+    ("weapons_tech", 1),       # lab 4
+    ("laser_tech", 5),         # para ion
+    ("energy_tech", 4),        # para ion
+    ("ion_tech", 1),           # lab 4
+    ("shielding_tech", 5),     # lab 6; para hiperespacio
+    ("energy_tech", 5),        # para hiperespacio
+    ("hyperspace_tech", 3),    # lab 7; para motor hiperespacial
+    ("hyperspace_drive", 1),   # lab 7
+    ("laser_tech", 10),        # para plasma
+    ("ion_tech", 5),           # para plasma
+    ("energy_tech", 8),        # para plasma
+    ("plasma_tech", 1),        # último desbloqueo
+]
+
+
+def next_unlock_research(research: Dict[str, int]) -> Optional[Tuple[str, int]]:
+    """Siguiente (tech, nivel_a_investigar) del plan de desbloqueo, o None si ya está todo.
+    Devuelve el nivel inmediato (actual+1) del primer hito no alcanzado."""
+    for tech, target in RESEARCH_UNLOCK_ORDER:
+        cur = research.get(tech, 0)
+        if cur < target:
+            return tech, cur + 1
+    return None
+
+
+def max_lab_needed(research: Dict[str, int]) -> int:
+    """Nivel de laboratorio máximo que exigen los hitos de desbloqueo AÚN pendientes.
+    Sirve para ir subiendo el laboratorio en los ratos sin recursos, sin pasarse."""
+    need = 0
+    for tech, target in RESEARCH_UNLOCK_ORDER:
+        if research.get(tech, 0) < target:
+            need = max(need, gd.RESEARCH_LAB_REQ.get(tech, 0))
+    return need
 
 
 def next_research(

@@ -57,6 +57,10 @@ class Config:
 
     # --- Investigación ---
     enable_research: bool = True
+    # Fase de desbloqueo: seguir RESEARCH_UNLOCK_ORDER hasta tener todo el árbol a nivel >=1
+    # (sin graviton), subiendo el laboratorio a necesidad. Al completarlo, investigación
+    # normal por prioridad/pesos. Se autolimita (al estar todo desbloqueado, no hace nada).
+    research_unlock_all: bool = True
     research_priority: List[str] = field(default_factory=lambda: [
         "astrophysics", "plasma_tech", "computer_tech", "combustion_drive",
         "impulse_drive", "hyperspace_drive", "espionage_tech", "weapons_tech",

@@ -1968,12 +1968,45 @@ class Brain(StatsMixin):
             self.log.info("Investigación '%s' bloqueada por laboratorio %d en %s: ahorrando (~%.1fh).",
                           blocked_tech, needed_lvl, planet.coords, t)
 
+    def _start_research(self, planet, name: str, cost):
+        """Lanza una investigación en 'planet' y actualiza la caché/ETA. Devuelve True si
+        se ordenó (o dry-run)."""
+        if not self._guard():
+            return False
+        ok = self.client.research(name, planet=planet)
+        if ok:
+            self.record_session_action("research", name, self.research_levels.get(name, 0) + 1)
+            try:
+                secs = gd.research_time(cost, planet.lvl("research_lab"), self.cfg.universe_speed)
+                r = self.state_cache.setdefault("research", {})
+                lv = r.setdefault("levels", {})
+                new_level = self.research_levels.get(name, 0) + 1
+                lv[name] = new_level
+                self.research_levels[name] = new_level
+                r["finish_epoch"] = time.time() + secs
+                r["tech"] = name
+                self._save_state_cache()
+                self.log.info("Investigación %s en curso, ~%.0f min restantes.", name, secs / 60.0)
+            except Exception as e:
+                self.log.debug("No se pudo estimar ETA de investigación: %s", e)
+        return ok
+
     def _research_step(self, planets: List):
         if not getattr(self.cfg, "enable_research", True):
             self.log.debug("Investigación desactivada globalmente.")
             return
         # Investigar desde el planeta con el laboratorio de mayor nivel
         best = max(planets, key=lambda p: p.lvl("research_lab"))
+
+        # Fase de desbloqueo: seguir el orden fijo hasta tener todo el árbol a nivel >=1,
+        # subiendo el laboratorio a necesidad (o en los ratos sin recursos). Al completarlo,
+        # se cae a la investigación normal por prioridad/pesos.
+        if getattr(self.cfg, "research_unlock_all", True):
+            step = research_mod.next_unlock_research(self.research_levels)
+            if step is not None:
+                self._follow_research_unlock(best, step)
+                return
+
         choice = research_mod.next_research(self.research_levels, best, self.cfg)
         if not choice:
             return
@@ -1982,24 +2015,34 @@ class Brain(StatsMixin):
             # Bloqueada por el laboratorio: súbelo en vez de intentar investigar y fallar.
             self._raise_research_lab(best, lab_lvl, name)
             return
-        if self._guard():
-            ok = self.client.research(name, planet=best)
-            if ok:
-                self.record_session_action("research", name, self.research_levels.get(name, 0) + 1)
-                # Estimar cuánto tardará (sin leer página) y subir el nivel en la caché
-                try:
-                    secs = gd.research_time(cost, best.lvl("research_lab"), self.cfg.universe_speed)
-                    r = self.state_cache.setdefault("research", {})
-                    lv = r.setdefault("levels", {})
-                    new_level = self.research_levels.get(name, 0) + 1
-                    lv[name] = new_level
-                    self.research_levels[name] = new_level
-                    r["finish_epoch"] = time.time() + secs
-                    r["tech"] = name
-                    self._save_state_cache()
-                    self.log.info("Investigación %s en curso, ~%.0f min restantes.", name, secs / 60.0)
-                except Exception as e:
-                    self.log.debug("No se pudo estimar ETA de investigación: %s", e)
+        self._start_research(best, name, cost)
+
+    def _follow_research_unlock(self, best, step):
+        """Ejecuta el siguiente paso del plan de desbloqueo (RESEARCH_UNLOCK_ORDER):
+        - si el laboratorio no llega al requisito de esa tecnología, lo sube (a necesidad);
+        - si hay recursos, investiga ese nivel;
+        - si faltan recursos, aprovecha para subir el laboratorio hacia lo que el plan aún
+          necesitará (hasta 7), y si no, ahorra."""
+        tech, lvl = step
+        lab_req = gd.RESEARCH_LAB_REQ.get(tech, 0)
+        if best.lvl("research_lab") < lab_req:
+            self._raise_research_lab(best, lab_req, tech)
+            return
+        cost = gd.research_cost(tech, lvl)
+        buf = 1 - self.cfg.keep_resources_buffer
+        avail = Resources(best.resources.metal * buf, best.resources.crystal * buf,
+                          best.resources.deut * buf)
+        if avail.can_afford(cost):
+            self._start_research(best, tech, cost)
+            return
+        # Faltan recursos: usar el tiempo muerto para adelantar el laboratorio hacia el
+        # máximo que el plan todavía necesitará (sin pasarse). Si ya está, ahorrar.
+        need_lab = research_mod.max_lab_needed(self.research_levels)
+        if best.lvl("research_lab") < need_lab:
+            self._raise_research_lab(best, need_lab, tech)
+        else:
+            self.log.info("Plan de investigación %s nivel %d en %s: ahorrando recursos.",
+                          tech, lvl, best.coords)
 
     def _fleet_step(self, planets, ships_in_motion=None):
         """Fabrica cargueros/naves según los objetivos definidos en la configuración."""

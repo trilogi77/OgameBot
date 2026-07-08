@@ -28,9 +28,10 @@ def make(choice, facilities=True):
         research_levels={}, state_cache={},
         cfg=types.SimpleNamespace(keep_resources_buffer=0.1, planets_config={},
                                   enable_facilities=facilities, enable_research=True,
-                                  universe_speed=8),
+                                  research_unlock_all=False, universe_speed=8),
     )
-    for n in ("_raise_research_lab", "_research_step", "_get_planet_setting"):
+    for n in ("_raise_research_lab", "_research_step", "_get_planet_setting",
+              "_start_research", "_follow_research_unlock"):
         setattr(fs, n, MethodType(getattr(brain.Brain, n), fs))
     fs._guard = lambda: True
     fs._active_queue_entry = lambda p: None
@@ -77,6 +78,24 @@ assert fs.client.built == []
 # 6) Ya cumple el nivel de lab pedido -> no reconstruye.
 fs = make(("weapons_tech", None, 4))
 fs._research_step([rich(lab=4)])
+assert fs.client.built == []
+
+# --- _follow_research_unlock (fase de desbloqueo) ---
+# 7) Paso pide más laboratorio del que hay -> sube el laboratorio (no investiga).
+fs = make(("x", None, None))
+fs._follow_research_unlock(rich(lab=3), ("weapons_tech", 1))   # weapons pide lab 4
+assert fs.client.built == [("facilities", "research_lab")] and fs.client.researched == []
+
+# 8) Paso con lab suficiente y recursos -> investiga ese nivel.
+fs = make(("x", None, None))
+fs._follow_research_unlock(rich(lab=3), ("computer_tech", 1))  # computer pide lab 1
+assert fs.client.researched == ["computer_tech"] and fs.client.built == []
+
+# 9) Lab suficiente pero SIN recursos -> aprovecha para subir el laboratorio (plan necesita 7).
+fs = make(("x", None, None))
+fs._follow_research_unlock(poor(lab=3), ("computer_tech", 1))
+assert fs.client.researched == []          # no investiga sin recursos
+# poor tampoco puede pagar el lab -> _raise_research_lab ahorra; no debe petar
 assert fs.client.built == []
 
 print("OK")

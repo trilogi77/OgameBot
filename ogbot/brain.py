@@ -1392,11 +1392,23 @@ class Brain(StatsMixin):
             reserve = min(reserve, max(0, total - 1))
         return reserve
 
-    def _has_free_slots_for_mission(self) -> bool:
+    def _has_free_slots_for_mission(self, extra_reserve: int = 0) -> bool:
         total = self.total_fleet_slots if self.total_fleet_slots else (
             self.research_levels.get("computer_tech", 0) + 1 if self.research_levels else 1)
         free = total - self.active_slots
-        return free >= 1 + self._effective_slot_reserve(total)
+        return free >= 1 + self._effective_slot_reserve(total) + max(0, int(extra_reserve))
+
+    def _colony_pending(self, planets) -> bool:
+        """True si esta vuelta la colonización querrá (y podrá) lanzar una nave:
+        está activada, hay nave de colonización y aún estás por debajo del máximo de
+        colonias. Se usa para reservarle un slot de flota frente a las expediciones,
+        de forma que 'si hay hueco para colonizar' la colonización tenga prioridad.
+        Se autorregula: al gastarse la nave de colonización deja de reservar."""
+        if not getattr(self.cfg, "enable_colonization", False):
+            return False
+        if not planets or len(planets) >= self.cfg.max_colonies:
+            return False
+        return self._has_ships(planets, "colony_ship")
 
     def _has_free_slots_for_espionage(self) -> bool:
         # El espionaje es un viaje corto de ida y vuelta que el bot ESPERA antes de
@@ -1611,7 +1623,11 @@ class Brain(StatsMixin):
 
         def round_expeditions():
             if run_expeditions and self.cfg.enable_expeditions:
-                self._run_expeditions_round(planets, all_locations)
+                # La colonización corre dentro de round_farming (después). Si ese round
+                # va a ejecutarse este ciclo, avisamos para que las expediciones reserven
+                # un slot de flota si hay una colonización pendiente.
+                colony_may_run = run_farming and self.cfg.enable_colonization
+                self._run_expeditions_round(planets, all_locations, colony_may_run=colony_may_run)
                 self.last_expeditions_run_time = time.time()
                 self._update_next_expedition_event()
                 self._save_state()
@@ -2594,14 +2610,21 @@ class Brain(StatsMixin):
                 return True
         return False
 
-    def _run_expeditions_round(self, planets, all_locations):
+    def _run_expeditions_round(self, planets, all_locations, colony_may_run: bool = False):
         """
         Lanza expediciones desde cada ubicación habilitada. Dos modos:
           - manual: usa cfg.expedition_ships tal cual.
           - auto: calcula los cargueros óptimos para el botín máximo del universo
             y los reparte entre todos los slots libres para maximizar el nº de
             expediciones (y la rentabilidad). Rota el sistema destino si procede.
+
+        Si 'colony_may_run' y hay una colonización pendiente (_colony_pending), se deja
+        un slot de flota extra libre para que la colonización, que corre después en la
+        ronda de farmeo, tenga hueco garantizado ("si hay dónde colonizar, prioriza").
         """
+        reserve_colony_slot = 1 if (colony_may_run and self._colony_pending(planets)) else 0
+        if reserve_colony_slot:
+            self.log.info("Expediciones: reservando 1 slot de flota para la colonización pendiente.")
         auto = bool(getattr(self.cfg, "expedition_auto_ships", False))
         cargo_ship = getattr(self.cfg, "expedition_cargo_ship", "large_cargo") or "large_cargo"
         use_pf = bool(getattr(self.cfg, "expedition_use_pathfinder", False))
@@ -2674,7 +2697,7 @@ class Brain(StatsMixin):
                 if not manual_ships:
                     manual_ships = {"large_cargo": 1}
 
-            while self._has_free_slots_for_mission() and self._has_free_expe_slots():
+            while self._has_free_slots_for_mission(extra_reserve=reserve_colony_slot) and self._has_free_expe_slots():
                 if auto:
                     ships = self._auto_exp_ships(cargo_ship, optimal_nopf, optimal_pf,
                                                  spread_cap, use_pf, loc.ships, min_cargo,

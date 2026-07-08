@@ -1845,6 +1845,25 @@ class Brain(StatsMixin):
                 return False  # investigación en curso: esperar
             nxt = self.research_levels.get(name, 0) + 1
             cost = gd.research_cost(name, nxt)
+            # Si el coste no cabe en el almacén, la producción se topa y NUNCA se acumula
+            # (deadlock: p.ej. impulse_drive 3 pide 16000 cristal y el tope base es 10000).
+            # Desviar a construir el almacén necesario, igual que la rama de edificio.
+            blocker = startorder.storage_blocker(cost, planet)
+            if blocker:
+                if self._active_queue_entry(planet) or planet.building_in_progress:
+                    return False
+                bnxt = planet.lvl(blocker) + 1
+                bcost = gd.building_cost(blocker, bnxt)
+                if not planet.resources.can_afford(bcost):
+                    self.log.info("%s: programa especial ahorrando para %s %d (necesario para investigar %s %d).",
+                                  planet.coords, blocker, bnxt, name, nxt)
+                    return False
+                if self._guard():
+                    ok = self.client.build(planet, "supplies", blocker)
+                    if ok:
+                        self.record_session_action("buildings", blocker, bnxt, str(planet.coords))
+                        self._mark_build_started(planet, blocker, bcost)
+                return False
             # Sin buffer: el programa gasta todo lo disponible ("sin parar").
             if not planet.resources.can_afford(cost):
                 self.log.info("%s: programa especial ahorrando para %s %d.", planet.coords, name, nxt)

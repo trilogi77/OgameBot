@@ -1992,6 +1992,12 @@ class Brain(StatsMixin):
     def _start_research(self, planet, name: str, cost):
         """Lanza una investigación en 'planet' y actualiza la caché/ETA. Devuelve True si
         se ordenó (o dry-run)."""
+        # No lanzar otra si ya hay una investigación en curso (evita spam de acciones en
+        # cuentas de 1 slot y lanzar investigación paralela no deseada en cuentas de 2+).
+        # El laboratorio se sube por otra vía (_raise_research_lab), así que no se bloquea.
+        rc = self.state_cache.get("research", {}) or {}
+        if (rc.get("finish_epoch") or 0) > time.time():
+            return False
         if not self._guard():
             return False
         ok = self.client.research(name, planet=planet)
@@ -2096,6 +2102,21 @@ class Brain(StatsMixin):
             fleet_targets = getattr(self.cfg, "fleet_targets", {}) or {}
         in_motion = ships_in_motion or {}
         auto_build = getattr(self.cfg, "fleet_auto_build", False)
+
+        # Reservar lo que 'home' está AHORRANDO para su próxima construcción de economía:
+        # la flota solo gasta el excedente por encima de esa reserva. Sin esto, la flota
+        # vacía cada ciclo los recursos que economía/instalaciones acumulan y el planeta
+        # nunca sube minas/lab (síntoma 'planeta idle'). Si home ya puede pagar su próxima
+        # construcción, _economy_step ya la lanzó este ciclo y no hay nada que reservar.
+        res_m = res_c = res_d = 0.0
+        try:
+            nb = economy.next_build(home, self.cfg, self.research_levels.get("plasma_tech", 0),
+                                    self.research_levels)
+            if nb and not home.resources.can_afford(nb[1]):
+                res_m, res_c, res_d = nb[1].metal, nb[1].crystal, nb[1].deut
+        except Exception as e:
+            self.log.debug("Fleet step: no se pudo calcular la reserva de economía: %s", e)
+
         if fleet_targets:
             for ship_name, target_qty in fleet_targets.items():
                 if target_qty <= 0:
@@ -2109,9 +2130,9 @@ class Brain(StatsMixin):
                     unit = gd.SHIPS.get(ship_name)
                     if unit:
                         buf = 1 - getattr(self.cfg, "keep_resources_buffer", 0.0)
-                        avail_m = home.resources.metal * buf
-                        avail_c = home.resources.crystal * buf
-                        avail_d = home.resources.deut * buf
+                        avail_m = max(0.0, home.resources.metal * buf - res_m)
+                        avail_c = max(0.0, home.resources.crystal * buf - res_c)
+                        avail_d = max(0.0, home.resources.deut * buf - res_d)
                         max_m = int(avail_m // unit.cost.metal) if unit.cost.metal > 0 else batch
                         max_c = int(avail_c // unit.cost.crystal) if unit.cost.crystal > 0 else batch
                         max_d = int(avail_d // unit.cost.deut) if unit.cost.deut > 0 else batch
@@ -3204,54 +3225,55 @@ class Brain(StatsMixin):
             # escalarlos con la economía si el imperio los deja atrás.
             target_robotics = max(target_robotics, 10)
             target_shipyard = max(target_shipyard, 8)
-            target_lab = max(target_lab, 12)
+            # El laboratorio solo acelera la investigación desde el planeta que investiga
+            # (la más alta); forzarlo en las colonias es gasto puro. Solo en el principal.
+            lp = getattr(self, "last_planets", None) or []
+            if lp and planet.id == lp[0].id:
+                target_lab = max(target_lab, 12)
 
-        # Buscar qué instalación subir de nivel
-        to_upgrade = None
+        buf = 1 - self.cfg.keep_resources_buffer
+        avail = Resources(planet.resources.metal * buf,
+                          planet.resources.crystal * buf,
+                          planet.resources.deut * buf)
+        from .prereqs import resolve_prerequisites
+        # Evaluar TODAS las instalaciones por debajo de objetivo; construir la PRIMERA (por
+        # prioridad) que sea asequible AHORA. Si ninguna lo es, ahorrar para la de mayor
+        # prioridad. Así una instalación cara no bloquea a otra más barata que sí se puede.
+        save_target = None
         for facility, target_val in [
             ("robotics_factory", target_robotics),
             ("shipyard", target_shipyard),
             ("research_lab", target_lab),
             ("nanite_factory", target_nanite),
         ]:
-            current_lvl = planet.lvl(facility)
-            if current_lvl < target_val:
-                from .prereqs import resolve_prerequisites
-                res = resolve_prerequisites("building", facility, current_lvl + 1, planet, self.research_levels)
-                if res and res[0] == "building":
-                    actual_name = res[1]
-                    actual_lvl = res[2]
-                    cost = gd.building_cost(actual_name, actual_lvl)
-                    to_upgrade = (actual_name, cost)
-                    break
-
-        if to_upgrade:
-            name, cost = to_upgrade
-            buf = 1 - self.cfg.keep_resources_buffer
-            avail = Resources(planet.resources.metal * buf,
-                              planet.resources.crystal * buf,
-                              planet.resources.deut * buf)
-
+            if planet.lvl(facility) >= target_val:
+                continue
+            res = resolve_prerequisites("building", facility, planet.lvl(facility) + 1, planet, self.research_levels)
+            if not (res and res[0] == "building"):
+                continue  # bloqueada por investigación: probar la siguiente
+            name, cost = res[1], gd.building_cost(res[1], res[2])
             if avail.can_afford(cost):
                 if self._guard():
                     self.log.info("Instalaciones %s: construyendo %s (nivel %d) para alcanzar objetivo.",
                                   planet.coords, name, planet.lvl(name) + 1)
                     comp = "facilities" if name in ("robotics_factory", "nanite_factory", "shipyard", "research_lab") else "supplies"
-                    ok = self.client.build(planet, comp, name)
-                    if ok:
+                    if self.client.build(planet, comp, name):
                         self.record_session_action("buildings", name, planet.lvl(name) + 1, str(planet.coords))
                         self._mark_build_started(planet, name, cost)
                     planet.building_in_progress = True
-            else:
-                plasma = self.research_levels.get("plasma_tech", 0)
-                t = economy.time_to_accumulate(cost, planet, self.cfg, plasma)
-                max_wait = getattr(self.cfg, "max_saving_hours_economy", 4.0)
-                if t <= max_wait:
-                    # No marcamos building_in_progress: nada se está construyendo aún. Si lo
-                    # marcáramos, _feed_step se saltaría este planeta-objetivo y nunca lo
-                    # alimentaría. El próximo ciclo reevalúa con el estado real del juego.
-                    self.log.info("%s: ahorrando para instalaciones: %s (tiempo estimado: %.1fh)",
-                                  planet.coords, name, t)
+                return
+            if save_target is None:
+                save_target = (name, cost)  # la de mayor prioridad no asequible
+
+        if save_target is not None:
+            name, cost = save_target
+            plasma = self.research_levels.get("plasma_tech", 0)
+            t = economy.time_to_accumulate(cost, planet, self.cfg, plasma)
+            max_wait = getattr(self.cfg, "max_saving_hours_economy", 4.0)
+            if t <= max_wait:
+                # No marcamos building_in_progress: nada se está construyendo aún.
+                self.log.info("%s: ahorrando para instalaciones: %s (tiempo estimado: %.1fh)",
+                              planet.coords, name, t)
 
     # ------------------------------------------------------------------ #
     # Cola de construcción manual por planeta (tipo Comandante)
@@ -3263,6 +3285,10 @@ class Brain(StatsMixin):
         (real_name, real_lvl, cost). Si la primera entrada pendiente está BLOQUEADA (necesita
         una investigación) o es inválida, se devuelve None: así la economía automática NO cede
         el paso y el planeta sigue progresando en vez de quedarse parado."""
+        # Si la cola manual está desactivada, no debe frenar a la economía/instalaciones:
+        # devolvemos None para que no cedan el paso (igual que hace _build_queue_step).
+        if not self._get_planet_setting(planet, "enable_build_queue", True):
+            return None
         queue = self._get_planet_setting(planet, "build_queue", []) or []
         from .prereqs import resolve_prerequisites
         for entry in queue:

@@ -1934,6 +1934,40 @@ class Brain(StatsMixin):
         if self._guard():
             self.client.build_lifeform(planet)
 
+    def _raise_research_lab(self, planet, needed_lvl: int, blocked_tech: str):
+        """Sube el laboratorio de 'planet' un nivel hacia needed_lvl para DESBLOQUEAR la
+        investigación 'blocked_tech'. Sin esto la investigación se quedaba en punto muerto:
+        elegía una tecnología que pide más laboratorio y nadie lo construía. Respeta
+        cola/recursos igual que las instalaciones."""
+        cur = planet.lvl("research_lab")
+        if cur >= needed_lvl:
+            return
+        if not self._get_planet_setting(planet, "enable_facilities", True):
+            self.log.info("Investigación '%s' necesita laboratorio %d en %s, pero las "
+                          "instalaciones están desactivadas ahí; no puedo subirlo.",
+                          blocked_tech, needed_lvl, planet.coords)
+            return
+        if planet.building_in_progress or self._active_queue_entry(planet):
+            self.log.debug("%s: ocupado; el laboratorio para investigación esperará.", planet.coords)
+            return
+        cost = gd.building_cost("research_lab", cur + 1)
+        buf = 1 - self.cfg.keep_resources_buffer
+        avail = Resources(planet.resources.metal * buf, planet.resources.crystal * buf,
+                          planet.resources.deut * buf)
+        if avail.can_afford(cost):
+            if self._guard():
+                self.log.info("Investigación '%s' bloqueada: subiendo laboratorio a nivel %d en %s.",
+                              blocked_tech, cur + 1, planet.coords)
+                if self.client.build(planet, "facilities", "research_lab"):
+                    self.record_session_action("buildings", "research_lab", cur + 1, str(planet.coords))
+                    self._mark_build_started(planet, "research_lab", cost)
+                    planet.building_in_progress = True
+        else:
+            plasma = self.research_levels.get("plasma_tech", 0)
+            t = economy.time_to_accumulate(cost, planet, self.cfg, plasma)
+            self.log.info("Investigación '%s' bloqueada por laboratorio %d en %s: ahorrando (~%.1fh).",
+                          blocked_tech, needed_lvl, planet.coords, t)
+
     def _research_step(self, planets: List):
         if not getattr(self.cfg, "enable_research", True):
             self.log.debug("Investigación desactivada globalmente.")
@@ -1941,22 +1975,29 @@ class Brain(StatsMixin):
         # Investigar desde el planeta con el laboratorio de mayor nivel
         best = max(planets, key=lambda p: p.lvl("research_lab"))
         choice = research_mod.next_research(self.research_levels, best, self.cfg)
-        if choice and self._guard():
-            ok = self.client.research(choice[0], planet=best)
+        if not choice:
+            return
+        name, cost, lab_lvl = choice
+        if lab_lvl is not None:
+            # Bloqueada por el laboratorio: súbelo en vez de intentar investigar y fallar.
+            self._raise_research_lab(best, lab_lvl, name)
+            return
+        if self._guard():
+            ok = self.client.research(name, planet=best)
             if ok:
-                self.record_session_action("research", choice[0], self.research_levels.get(choice[0], 0) + 1)
+                self.record_session_action("research", name, self.research_levels.get(name, 0) + 1)
                 # Estimar cuánto tardará (sin leer página) y subir el nivel en la caché
                 try:
-                    secs = gd.research_time(choice[1], best.lvl("research_lab"), self.cfg.universe_speed)
+                    secs = gd.research_time(cost, best.lvl("research_lab"), self.cfg.universe_speed)
                     r = self.state_cache.setdefault("research", {})
                     lv = r.setdefault("levels", {})
-                    new_level = self.research_levels.get(choice[0], 0) + 1
-                    lv[choice[0]] = new_level
-                    self.research_levels[choice[0]] = new_level
+                    new_level = self.research_levels.get(name, 0) + 1
+                    lv[name] = new_level
+                    self.research_levels[name] = new_level
                     r["finish_epoch"] = time.time() + secs
-                    r["tech"] = choice[0]
+                    r["tech"] = name
                     self._save_state_cache()
-                    self.log.info("Investigación %s en curso, ~%.0f min restantes.", choice[0], secs / 60.0)
+                    self.log.info("Investigación %s en curso, ~%.0f min restantes.", name, secs / 60.0)
                 except Exception as e:
                     self.log.debug("No se pudo estimar ETA de investigación: %s", e)
 

@@ -6,12 +6,15 @@
 //   null                    -> nada más que recoger
 //
 // Estados de tarea: data-state = 'completed' (lista) | 'collected' (hecha) | 'none'.
-// El colector es .ipiTaskItemTrack[data-target=taskid]; si faltara, la propia tarea.
+// El colector real es <a class="claimTaskRewards ipiOverviewCollectRewards" data-target=id>
+// dentro de .ipiTaskItemContentCollect (lleva 'disabled' si ya se recogió); verificado
+// contra el HTML vivo del panel (dump 2026-07-08).
 () => {
   const task = document.querySelector('#ipiOverviewTasklist .ipiTaskItem[data-state="completed"]');
   if (task) {
     const id = task.getAttribute('data-taskid') || '';
-    (task.querySelector('.ipiTaskItemTrack') || task).click();
+    const btn = task.querySelector('a.claimTaskRewards:not(.disabled), .ipiOverviewCollectRewards:not(.disabled)');
+    (btn || task).click();
     return { action: 'collect', id: id };
   }
   for (const a of document.querySelectorAll('#ipiOverviewChapters .ipiOverviewSelectChapter')) {

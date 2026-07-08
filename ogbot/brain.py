@@ -1700,7 +1700,7 @@ class Brain(StatsMixin):
             try:
                 self.client.claim_directive_rewards()
             except Exception as e:
-                self.log.debug("No se pudieron reclamar recompensas de directivas: %s", e)
+                self.log.warning("No se pudieron recoger recompensas de directivas: %s", e)
 
         # Mantener armado el despertar por vuelta de expedición aunque la ronda no se haya
         # ejecutado este ciclo (p.ej. bloqueada por su intervalo), para no perder reenvíos.

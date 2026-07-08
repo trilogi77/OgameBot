@@ -1404,15 +1404,28 @@ class Brain(StatsMixin):
         free = total - self.active_slots
         return free >= 1 + self._effective_slot_reserve(total) + max(0, int(extra_reserve))
 
+    def _colonizers_in_flight(self) -> int:
+        """Nº de colonizadores propios en vuelo (misión colonize = código 7). Se lee de
+        inflight_dests (destinos con misión propia en curso este ciclo)."""
+        n = 0
+        for missions in (getattr(self, "inflight_dests", None) or {}).values():
+            if "7" in missions or "colonize" in missions:
+                n += 1
+        return n
+
     def _colony_pending(self, planets) -> bool:
         """True si esta vuelta la colonización querrá (y podrá) lanzar una nave:
-        está activada, hay nave de colonización y aún estás por debajo del máximo de
-        colonias. Se usa para reservarle un slot de flota frente a las expediciones,
-        de forma que 'si hay hueco para colonizar' la colonización tenga prioridad.
-        Se autorregula: al gastarse la nave de colonización deja de reservar."""
+        está activada, hay nave de colonización, no hay ya un colonizador en camino y
+        aún estás por debajo del tope real de colonias (astrofísica, no solo max_colonies).
+        Se usa para reservarle un slot de flota frente a las expediciones.
+        Se autorregula: al gastarse la nave o alcanzar el tope deja de reservar."""
         if not getattr(self.cfg, "enable_colonization", False):
             return False
-        if not planets or len(planets) >= self.cfg.max_colonies:
+        if not planets:
+            return False
+        astro = int((self.research_levels or {}).get("astrophysics", 0) or 0)
+        planet_cap = min(int(self.cfg.max_colonies), 1 + gd.colony_slots(astro))
+        if len(planets) >= planet_cap or self._colonizers_in_flight() >= 1:
             return False
         return self._has_ships(planets, "colony_ship")
 
@@ -2930,6 +2943,28 @@ class Brain(StatsMixin):
             self.log.debug("No se pudo guardar expedition_status.json: %s", e)
 
     def _colonize(self, planets):
+        if not planets:
+            return
+        if not self._has_ships(planets, "colony_ship"):
+            self.log.debug("Colonización omitida: sin nave de colonización.")
+            return
+        # El nº de colonias lo LIMITA la astrofísica (colony_slots), no solo max_colonies.
+        # Comprobarlo ANTES de intentar el envío evita el rechazo del juego ("se necesita
+        # un nivel adecuado de Astrofísica"). El principal no cuenta como colonia: +1.
+        astro = int((self.research_levels or {}).get("astrophysics", 0) or 0)
+        planet_cap = min(int(self.cfg.max_colonies), 1 + gd.colony_slots(astro))
+        in_flight = self._colonizers_in_flight()
+        if in_flight >= 1:
+            self.log.info("Colonización omitida: ya hay %d colonizador(es) en camino.", in_flight)
+            return
+        if len(planets) >= planet_cap:
+            self.log.info("Colonización omitida: tope de colonias (planetas=%d; astrofísica %d "
+                          "permite %d colonias; max_colonies=%d).",
+                          len(planets), astro, gd.colony_slots(astro), self.cfg.max_colonies)
+            return
+        if not self._has_free_slots_for_mission():
+            self.log.info("Colonización: deteniendo envío por falta de slots libres.")
+            return
         occupied = {p.coords.tuple() for p in planets}
         # Añadir las posiciones ocupadas de TODO el universo (API): sin esto solo se
         # evitaban nuestras propias coordenadas y se intentaba colonizar sitios llenos.
@@ -2938,14 +2973,6 @@ class Brain(StatsMixin):
                 occupied |= self.api.occupied_positions()
             except Exception as e:
                 self.log.debug("No se pudieron leer posiciones ocupadas del universo: %s", e)
-        if len(planets) >= self.cfg.max_colonies:
-            return
-        if not self._has_ships(planets, "colony_ship"):
-            self.log.debug("Colonización omitida: sin nave de colonización.")
-            return
-        if not self._has_free_slots_for_mission():
-            self.log.info("Colonización: deteniendo envío por falta de slots libres.")
-            return
         # Origen de la búsqueda: zona objetivo configurada (galaxia:sistema) si está puesta;
         # si no, se expande desde el planeta principal (lógica actual).
         origin = planets[0].coords

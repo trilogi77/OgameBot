@@ -135,15 +135,25 @@ def next_research(
     # Ordenar candidatos por coste ponderado (de menor a mayor)
     sorted_candidates = sorted(candidates.items(), key=lambda x: x[1][1])
 
+    # 1ª pasada: preferir investigación DISPONIBLE (no bloqueada por laboratorio). Así el
+    # bot hace lo que ya puede (astrofísica, computación, motores…) en vez de fijarse en
+    # una tecnología barata pero bloqueada (p.ej. armas 1 pidiendo laboratorio 4) y no
+    # investigar nada. La bloqueada más barata que sí nos podríamos permitir se recuerda
+    # como plan B: subir el laboratorio para desbloquearla.
+    blocked_fallback = None
     for (r_name, r_lvl), (cost, w_cost, lab_lvl) in sorted_candidates:
+        if lab_lvl is not None:
+            if blocked_fallback is None and avail.can_afford(cost):
+                blocked_fallback = (r_name, cost, lab_lvl)
+            continue
         if avail.can_afford(cost):
-            return r_name, cost, lab_lvl
-
-        # Si no nos lo podemos permitir, comprobar cuánto tardamos en acumularlo
+            return r_name, cost, None
+        # Disponible pero sin recursos: ahorrar si llega pronto (no adelantamos el lab).
         t = time_to_accumulate(cost, planet, cfg, plasma)
         if t <= max_wait:
-            # Ahorrar para esta investigación
             return None
 
-    return None
+    # 2ª pasada: no hay investigación disponible que hacer ahora -> desbloquear el
+    # laboratorio para la bloqueada más barata (el brain subirá el laboratorio).
+    return blocked_fallback
 

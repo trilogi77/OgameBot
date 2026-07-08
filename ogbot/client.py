@@ -964,6 +964,70 @@ class GameClient:
         self.log.info("[ACCION] %s", description)
         return False
 
+    def claim_directive_rewards(self) -> int:
+        """Recoge las recompensas de misiones/directivas completadas. Devuelve cuántas.
+
+        Las directivas viven en un overlay (component=ipioverview) que se abre desde el
+        menú; hay que operarlo dentro del juego para que sus handlers AJAX estén ligados.
+        Gate barato: el menú solo muestra .ipiHintCollect cuando hay algo que recoger.
+
+        ponytail: el elemento que recoge es .ipiTaskItemTrack (data-target=taskid); si el
+        click no cambia el estado a 'collected' abortamos en vez de contar en falso. Techo:
+        ese selector es la única incógnita; upgrade path = ajustarlo si el juego lo cambia.
+        """
+        if self._act("Recoger recompensas de directivas"):
+            return 0
+        self._goto("overview")
+        try:
+            pending = int(self.page.evaluate(
+                "() => { const s = document.querySelector('#ipimenucomponent .ipiHintCollect');"
+                " return s ? (parseInt(s.textContent, 10) || 0) : 0; }") or 0)
+        except Exception:
+            pending = 0
+        if pending <= 0:
+            return 0  # nada que recoger
+        # Abrir el overlay via el propio handler del enlace (evita checks de visibilidad).
+        try:
+            opened = self.page.evaluate(
+                "() => { const a = document.querySelector('#ipiInnerMenuContentHolder');"
+                " if (!a) return false; a.click(); return true; }")
+            if not opened:
+                return 0
+            self.page.wait_for_selector("#ipiOverviewTasklist .ipiTaskItem", timeout=8000)
+        except Exception as e:
+            self.log.warning("Directivas: no se pudo abrir el panel (%s); se reintentará.", e)
+            return 0
+
+        claimed = 0
+        for _ in range(30):  # tope duro (tareas * capítulos); evita bucles si algo no "seca"
+            try:
+                res = self.page.evaluate(_load_js("claim_directive_reward"))
+            except Exception as e:
+                self.log.debug("Directivas: error en el panel: %s", e)
+                break
+            if not res:
+                break
+            time.sleep(1.5)  # esperar el re-render AJAX del panel
+            if res.get("action") == "chapter":
+                continue
+            tid = res.get("id") or ""
+            # Verificar que se recogió de verdad (el estado deja de ser 'completed').
+            try:
+                state = self.page.evaluate(
+                    "(id) => { const t = document.querySelector(`.ipiTaskItem[data-taskid='${id}']`);"
+                    " return t ? t.getAttribute('data-state') : 'gone'; }", tid)
+            except Exception:
+                state = "gone"
+            if state == "completed":
+                self.log.warning("Directivas: la tarea %s no se recogió (revisar selector de "
+                                 "recogida); abortando para no contar en falso.", tid)
+                break
+            claimed += 1
+            self.log.info("Recompensa de directiva recogida (tarea %s).", tid)
+        if claimed:
+            self.log.info("Directivas: %d recompensa(s) recogida(s).", claimed)
+        return claimed
+
     def _find_upgrade_locator(self, tech_id: int):
         """Devuelve el primer locator visible del botón de upgrade, o None."""
         for sel in [

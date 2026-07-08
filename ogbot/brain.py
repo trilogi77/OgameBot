@@ -421,6 +421,8 @@ class Brain(StatsMixin):
         self.attack_history: Dict[str, float] = {}
         self.telegram_notified_attacks: Dict[str, float] = {}
         self._spy_seen: Dict[str, float] = {}   # cooldown de avisos de espionaje por origen->destino
+        self.renamed_planets: set = set()       # ids de planetas ya renombrados (una vez)
+        self.used_planet_names: List[str] = []   # nombres ya usados en esta cuenta (sin repetir)
         self.last_economy_run_time = 0.0
         self.last_farming_run_time = 0.0
         self.last_expeditions_run_time = 0.0
@@ -483,6 +485,8 @@ class Brain(StatsMixin):
                     self._last_hourly = data.get("last_hourly", "") or ""
                     self.player_id = str(data.get("player_id", "") or "")
                     self.player_name = str(data.get("player_name", "") or "")
+                    self.renamed_planets = set(data.get("renamed_planets", []) or [])
+                    self.used_planet_names = list(data.get("used_planet_names", []) or [])
                     # started_at NO se carga: cada proceso nuevo escribe el suyo.
                     # Coords no es JSON-serializable: se guarda como dict plano y se reconstruye.
                     self.escaped_fleets = []
@@ -523,6 +527,8 @@ class Brain(StatsMixin):
                 "attack_history": self.attack_history,
                 "telegram_notified_attacks": self.telegram_notified_attacks,
                 "spy_seen": self._spy_seen,
+                "renamed_planets": sorted(self.renamed_planets),
+                "used_planet_names": self.used_planet_names,
                 "last_economy_run_time": self.last_economy_run_time,
                 "last_farming_run_time": self.last_farming_run_time,
                 "last_expeditions_run_time": self.last_expeditions_run_time,
@@ -1439,6 +1445,39 @@ class Brain(StatsMixin):
         except Exception as e:
             self.log.warning("No se pudo recargar la configuración desde el disco: %s", e)
 
+    # Nombres por defecto de OGame: solo renombramos si el planeta aún los tiene, para no
+    # pisar un nombre que el usuario haya puesto a mano (esas misiones ya estarían hechas).
+    _DEFAULT_PLANET_NAMES = {"planeta principal", "colonia", "luna", "moon", "homeworld",
+                             "haupt planet", "hauptplanet", "kolonie", "planète mère", "colonie"}
+
+    def _rename_step(self, planets):
+        """Renombra una vez cada planeta/colonia con un nombre aleatorio no usado (misiones
+        5022/5039). Marca el id en renamed_planets para no repetir. ponytail: sin cola ni
+        reintentos sofisticados; si falla, se reintenta el próximo ciclo."""
+        if not getattr(self.cfg, "enable_planet_rename", True):
+            return
+        from .planet_names import PLANET_NAMES
+        for p in planets:
+            key = p.id or f"{p.coords.galaxy}:{p.coords.system}:{p.coords.position}"
+            if key in self.renamed_planets:
+                continue
+            if (p.name or "").strip().lower() not in self._DEFAULT_PLANET_NAMES:
+                # Ya tiene un nombre personalizado: no lo tocamos, solo lo marcamos.
+                self.renamed_planets.add(key)
+                continue
+            available = [n for n in PLANET_NAMES if n not in self.used_planet_names]
+            if not available:
+                self.log.info("Renombrado: se agotaron los nombres disponibles.")
+                return
+            name = random.choice(available)
+            if self.client.rename_planet(p, name):
+                self.renamed_planets.add(key)
+                self.used_planet_names.append(name)
+                self.log.info("Planeta %s renombrado a '%s'.", p.coords, name)
+                self._save_state()
+            else:
+                self.log.warning("Renombrado de %s fallido; se reintentará el próximo ciclo.", p.coords)
+
     def cycle(self):
         self.log.info("--- Nuevo ciclo ---")
         self._reload_config()
@@ -1502,6 +1541,13 @@ class Brain(StatsMixin):
             all_locations.append(p)
             if p.has_moon and p.moon:
                 all_locations.append(p.moon)
+
+        # Renombrar planetas/colonias nuevos (una vez). Barato: solo navega si hay alguno
+        # sin renombrar; la recompensa de directiva la recoge la ronda de economía.
+        try:
+            self._rename_step(planets)
+        except Exception as e:
+            self.log.warning("No se pudo renombrar planetas: %s", e)
 
         # Guardar planetas en caché para la GUI (incluyendo naves e información de luna)
         try:

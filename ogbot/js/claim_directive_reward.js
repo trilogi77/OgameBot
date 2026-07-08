@@ -1,33 +1,26 @@
-// Reclama UNA recompensa de directiva/misión completada y devuelve su etiqueta,
-// o null si no queda ninguna reclamable. El Python llama en bucle (el panel se
-// re-renderiza por AJAX tras cada reclamo).
+// Corre DENTRO del overlay de directivas ya abierto (component=ipioverview).
+// Hace UNA acción y devuelve qué hizo; el Python llama en bucle porque el panel
+// se re-renderiza por AJAX tras cada recogida / cambio de capítulo:
+//   {action:'collect', id}  -> recogió (intentó recoger) la tarea `id`
+//   {action:'chapter'}      -> cambió a otro capítulo con recompensas pendientes
+//   null                    -> nada más que recoger
 //
-// ponytail: seleccionamos por texto exacto (ES/EN) porque no tenemos el DOM real
-// de la página de directivas. Techo: matcheo frágil ante otros idiomas / cambios
-// de copy. Upgrade path: fijar el selector exacto (data-attr o clase del botón)
-// cuando veamos la página en vivo y sustituir CLAIM/DONE por ese selector.
+// Estados de tarea: data-state = 'completed' (lista) | 'collected' (hecha) | 'none'.
+// El colector es .ipiTaskItemTrack[data-target=taskid]; si faltara, la propia tarea.
 () => {
-  const CLAIM = [
-    'recibir recompensa', 'recibir todas las recompensas', 'recoger recompensa',
-    'reclamar recompensa', 'obtener recompensa',
-    'receive reward', 'receive all rewards', 'collect reward', 'claim reward'
-  ];
-  const DONE = ['recogida', 'recibida', 'reclamada', 'collected', 'claimed', 'received'];
-  const norm = s => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
-
-  for (const el of document.querySelectorAll('button, a, span, div')) {
-    const t = norm(el.textContent);
-    if (!t) continue;
-    if (DONE.some(d => t.includes(d))) continue;   // ya reclamada
-    if (!CLAIM.some(c => t === c)) continue;        // no es un botón de reclamo
-
-    const r = el.getBoundingClientRect();
-    if (r.width === 0 || r.height === 0) continue;  // invisible
-    const cls = (el.className || '').toString().toLowerCase();
-    if (el.hasAttribute('disabled') || cls.includes('disabled') || cls.includes('off')) continue;
-
-    el.click();
-    return t;
+  const task = document.querySelector('#ipiOverviewTasklist .ipiTaskItem[data-state="completed"]');
+  if (task) {
+    const id = task.getAttribute('data-taskid') || '';
+    (task.querySelector('.ipiTaskItemTrack') || task).click();
+    return { action: 'collect', id: id };
+  }
+  for (const a of document.querySelectorAll('#ipiOverviewChapters .ipiOverviewSelectChapter')) {
+    const li = a.closest('.ipiChapterItem') || a;
+    const active = (li.className || '').toString().indexOf('active') !== -1;
+    if (!active && li.querySelector('.ipiHintCollect')) {
+      a.click();
+      return { action: 'chapter', id: '' };
+    }
   }
   return null;
 }

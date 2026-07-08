@@ -101,15 +101,17 @@ farming_blacklist_days: 7
 deuterium_reserve: 0
 
 # --- Configuraciones especiales (programas de desarrollo fijos) ---
-# Inicio de servidor: un solo planeta siguiendo SIN PARAR el orden óptimo de
-# arranque de universo (minas/energía/robótica/laboratorio y tecnologías hasta
-# Astrofísica 1); al completarlo vuelve la economía normal.
-special_server_start: false
-# Planeta nuevo: coordenadas "g:s:p" del planeta que seguirá el orden óptimo de
-# colonia (solo edificios). Vacío = ninguno.
+# Autoidentificación (recomendado ON): el bot decide solo. El planeta PRINCIPAL sigue el
+# orden de inicio de servidor (minas/energía/robótica/laboratorio y tecnologías hasta
+# Astrofísica 1) mientras le falten pasos; cada COLONIA sigue el orden óptimo de colonia
+# (solo edificios) hasta completarlo. Al terminar, economía normal. 1 planeta = inicio de
+# servidor; colonias nuevas identificadas por no ser el principal.
+special_auto_program: true
+# Override manual opcional: coordenadas "g:s:p" de un planeta que forzará el orden de
+# colonia. Vacío = ninguno.
 special_new_planet: ""
-# Aplicar el orden de colonia automáticamente a los planetas que aún no lo hayan
-# completado (colonias recién fundadas, p.ej. con autocolonizar).
+# Flags antiguos (compatibilidad): fuerzan su orden aunque special_auto_program sea false.
+special_server_start: false
 special_new_planet_auto: false
 
 # Multiplicadores de flota (escalados por el nivel de mina de metal del bot en el modo ofensivo)

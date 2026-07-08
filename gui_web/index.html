@@ -759,18 +759,14 @@
                     <div class="card cfg-card">
                         <div class="cfg-head"><span>CONFIGURACIONES ESPECIALES</span></div>
                         <label class="toggle-row">
-                            <span class="toggle-text"><strong>Inicio de servidor</strong><span>Universo nuevo: un solo planeta siguiendo sin parar el orden óptimo (minas, energía, robótica, laboratorio y tecnologías hasta Astrofísica).</span></span>
-                            <span class="switch-container"><input type="checkbox" id="special_server_start"><span class="slider"></span></span>
+                            <span class="toggle-text"><strong>Programa de desarrollo automático</strong><span>El bot lo detecta solo: el planeta <b>principal</b> sigue el orden de <b>inicio de servidor</b> (minas, energía, robótica, laboratorio y tecnologías hasta Astrofísica) mientras le falten pasos; cada <b>colonia</b> que fundes sigue el <b>orden óptimo de colonia</b> hasta completarlo. Cuando un planeta ya está desarrollado, pasa a economía normal. No hace falta tocar nada al crecer.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="special_auto_program"><span class="slider"></span></span>
                         </label>
                         <div class="form-group">
-                            <label for="special_new_planet">Planeta nuevo (coordenadas g:s:p)</label>
+                            <label for="special_new_planet">Forzar orden de colonia en (coordenadas g:s:p)</label>
                             <input type="text" id="special_new_planet" placeholder="p.ej. 3:202:8 (vacío = ninguno)">
-                            <span class="field-help">Ese planeta sigue el orden óptimo de colonia en vez de la economía normal.</span>
+                            <span class="field-help">Override manual opcional: fuerza el orden de colonia en ese planeta concreto.</span>
                         </div>
-                        <label class="toggle-row">
-                            <span class="toggle-text"><strong>Colonias nuevas automáticamente</strong><span>Aplica el orden de colonia a todo planeta que aún no lo haya completado (ideal con autocolonizar).</span></span>
-                            <span class="switch-container"><input type="checkbox" id="special_new_planet_auto"><span class="slider"></span></span>
-                        </label>
                     </div>
 
                     <!-- EXPEDICIONES -->

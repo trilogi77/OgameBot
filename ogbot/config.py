@@ -157,15 +157,18 @@ class Config:
     expedition_smart_schedule: bool = True
 
     # --- Configuraciones especiales (programas de desarrollo fijos) ---
-    # Inicio de servidor: se asume UN solo planeta (el principal) y se sigue sin
-    # parar el orden óptimo de arranque de universo (ver startorder.SERVER_START_ORDER),
-    # incluida la investigación, hasta completarlo; luego vuelve la economía normal.
-    special_server_start: bool = False
-    # Planeta nuevo: coordenadas "g:s:p" de un planeta que seguirá el orden óptimo
-    # de colonia (solo edificios). Vacío = ninguno elegido a mano.
+    # Autoidentificación (por defecto ON): el bot decide solo qué orden fijo sigue cada
+    # planeta. El PRINCIPAL (el primero de la lista) sigue el orden de inicio de servidor
+    # mientras le queden pasos; cualquier COLONIA sigue el orden óptimo de colonia mientras
+    # le queden pasos. Un planeta ya desarrollado no tiene pasos pendientes y vuelve a la
+    # economía normal. Sin tocar nada: 1 planeta -> inicio de servidor; colonias nuevas ->
+    # orden de colonia, identificadas por no ser el principal.
+    special_auto_program: bool = True
+    # Override manual opcional: coordenadas "g:s:p" de un planeta que forzará el orden de
+    # colonia. Vacío = ninguno.
     special_new_planet: str = ""
-    # Aplicar el orden de colonia automáticamente a los planetas que aún no lo hayan
-    # completado (colonias recién fundadas, p.ej. con autocolonizar).
+    # Flags antiguos (compatibilidad): fuerzan su orden aunque special_auto_program esté OFF.
+    special_server_start: bool = False
     special_new_planet_auto: bool = False
 
     # --- Memoria de estado (caché de niveles de edificios/investigación/defensas) ---

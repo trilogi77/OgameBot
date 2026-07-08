@@ -1709,11 +1709,10 @@ class Brain(StatsMixin):
                     self._defense_step(p)
                     self._lifeforms_step(p)
                     self._facilities_step(p)
-                # Inicio de servidor: la investigación la marca el propio programa.
-                server_start_active = (
-                    bool(getattr(self.cfg, "special_server_start", False)) and planets
-                    and startorder.next_step(planets[0], self.research_levels,
-                                             startorder.SERVER_START_ORDER) is not None)
+                # Inicio de servidor: la investigación la marca el propio programa. Se
+                # detecta solo: activo mientras el planeta principal siga ese orden.
+                server_start_active = bool(planets) and \
+                    self._special_program_for(planets[0], planets) is startorder.SERVER_START_ORDER
                 if not server_start_active:
                     self._research_step(planets)
                 self._fleet_step(planets, ships_in_motion)
@@ -1784,15 +1783,34 @@ class Brain(StatsMixin):
     # ------------------------------------------------------------------ #
     # --- Configuraciones especiales: programas de desarrollo fijos --------- #
     def _special_program_for(self, planet, planets):
-        """Orden de desarrollo especial aplicable a este planeta, o None."""
-        if getattr(self.cfg, "special_server_start", False) and planet is planets[0]:
-            return startorder.SERVER_START_ORDER
+        """Orden de desarrollo especial para este planeta, o None (economía normal).
+
+        El bot se autoidentifica (special_auto_program, por defecto ON): el planeta
+        PRINCIPAL (planets[0]) sigue el orden de inicio de servidor mientras le queden
+        pasos; cualquier otro planeta (COLONIA) sigue el orden de colonia mientras le
+        queden pasos. Un planeta ya desarrollado no tiene pasos pendientes -> None ->
+        economía normal (por eso no hace falta activar/desactivar nada al crecer).
+        Overrides: special_new_planet (coords) fuerza colonia en ese planeta; los flags
+        antiguos special_server_start / special_new_planet_auto siguen forzando su orden.
+        """
+        auto = bool(getattr(self.cfg, "special_auto_program", True))
+
+        # Override manual por coordenadas: ese planeta sigue el orden de colonia.
         cstr = f"{planet.coords.galaxy}:{planet.coords.system}:{planet.coords.position}"
         sel = (getattr(self.cfg, "special_new_planet", "") or "").strip()
         if sel and cstr == sel:
             return startorder.NEW_PLANET_ORDER
-        # Colonias nuevas (p.ej. de autocolonizar): mientras no completen el programa.
-        if getattr(self.cfg, "special_new_planet_auto", False) and \
+
+        is_main = bool(planets) and planet is planets[0]
+        if is_main:
+            # Planeta principal joven -> inicio de servidor hasta completarlo.
+            if (auto or getattr(self.cfg, "special_server_start", False)) and \
+                    startorder.next_step(planet, self.research_levels, startorder.SERVER_START_ORDER):
+                return startorder.SERVER_START_ORDER
+            return None
+
+        # Colonia (cualquier planeta que no sea el principal) -> orden de colonia.
+        if (auto or getattr(self.cfg, "special_new_planet_auto", False)) and \
                 startorder.next_step(planet, self.research_levels, startorder.NEW_PLANET_ORDER):
             return startorder.NEW_PLANET_ORDER
         return None
@@ -2026,7 +2044,7 @@ class Brain(StatsMixin):
         c.enable_expeditions = True
         c.expedition_auto_ships = True
         c.enable_colonization = True
-        c.special_new_planet_auto = True   # colonias nuevas siguen el orden óptimo
+        c.special_auto_program = True   # principal->inicio servidor, colonias->orden colonia (auto)
         self.log.info("Autogestión del imperio ACTIVA: economía, instalaciones, "
                       "investigación, flota, expediciones, colonización y reparto "
                       "de recursos en automático (prioridad: %s).",

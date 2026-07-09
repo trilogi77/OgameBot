@@ -2091,13 +2091,20 @@ class Brain(StatsMixin):
 
         # Objetivos: auto-gestión (escalan con la economía) o los fijados a mano
         if getattr(self.cfg, "fleet_auto_build", False):
+            # Fase de arranque: el árbol de investigación/flotas aún no está desbloqueado.
+            # Durante ella la auto-flota se limita a cargueros de expedición + sondas para
+            # no drenar el metal que la investigación cara del final necesita ahorrar.
+            startup = bool(getattr(self.cfg, "research_unlock_all", True)) and \
+                research_mod.next_unlock_research(self.research_levels) is not None
             expe_total = 0
-            if (getattr(self.cfg, "fleet_priority", "economy") or "").lower() == "expeditions":
+            prio = (getattr(self.cfg, "fleet_priority", "economy") or "").lower()
+            if prio == "expeditions" or startup:
                 expe_total = self._expedition_optimal_cargo_total()
             fleet_targets = fleet_mod.auto_fleet_targets(
-                home, planets, self.research_levels, self.cfg, expe_total)
-            self.log.debug("Auto-flota (%s): objetivos calculados %s",
-                           getattr(self.cfg, "fleet_priority", "economy"), fleet_targets)
+                home, planets, self.research_levels, self.cfg, expe_total, startup)
+            self.log.debug("Auto-flota (%s%s): objetivos calculados %s",
+                           getattr(self.cfg, "fleet_priority", "economy"),
+                           ", arranque" if startup else "", fleet_targets)
         else:
             fleet_targets = getattr(self.cfg, "fleet_targets", {}) or {}
         in_motion = ships_in_motion or {}

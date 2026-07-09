@@ -411,6 +411,7 @@ class Brain(StatsMixin):
         self.research_levels: Dict[str, int] = {}
         self.running = True
         self.last_planets: List = []
+        self._empty_read_streak = 0   # watchdog: ciclos seguidos sin leer planetas
         self.active_slots = 0
         self.active_expe_slots = 0
         self.total_fleet_slots = 0
@@ -1197,6 +1198,7 @@ class Brain(StatsMixin):
                         
                         start_sleep = time.time()
                         while self.running and (time.time() - start_sleep) < half_sleep_seconds:
+                            self._service_night_tick()   # GUI/Telegram vivos también aquí
                             time.sleep(10)
                             
                         if self.running:
@@ -1222,22 +1224,24 @@ class Brain(StatsMixin):
                     night_sweep = getattr(self.cfg, "enable_night_sweep", False)
                     sweep_interval_s = max(0.25, float(getattr(self.cfg, "night_sweep_interval_hours", 2.0) or 2.0)) * 3600
                     last_sweep = time.time()
+                    # Vigilancia nocturna de ataques: micro-despertares aleatorios (patrón
+                    # humano "miro el móvil") que solo comprueban el eventbox y escapan/panic-
+                    # buildean si hay hostiles. Reutiliza la sesión (el _goto interno re-loguea
+                    # si nos echó). Cierra el mayor hueco del bot: hoy de noche pasan HORAS sin
+                    # detección de ataques salvo que night_sweep esté activo (off por defecto).
+                    night_watch = (getattr(self.cfg, "enable_night_attack_watch", True)
+                                   and getattr(self.cfg, "enable_attack_escape", True))
+                    next_watch = time.time() + random.uniform(25, 45) * 60
                     while self.running and not utils.within_active_hours(self.cfg.active_hours):
-                        # Atender regresos de flota pedidos desde la GUI también de noche.
-                        try:
-                            self._process_recall_requests()
-                        except Exception as e:
-                            self.log.debug("Error procesando regresos de flota (noche): %s", e)
-                        # Comandos remotos de la GUI también durante el descanso.
-                        try:
-                            self._process_control_requests()
-                        except Exception as e:
-                            self.log.debug("Error procesando comandos de la GUI (noche): %s", e)
-                        # Comandos remotos de Telegram también durante el descanso.
-                        try:
-                            self._poll_telegram_commands()
-                        except Exception as e:
-                            self.log.debug("Error atendiendo comandos de Telegram (noche): %s", e)
+                        # GUI (regresos + control) y Telegram, vivos durante todo el descanso.
+                        self._service_night_tick()
+                        if night_watch and time.time() >= next_watch:
+                            next_watch = time.time() + random.uniform(25, 45) * 60
+                            self.log.info("Vigilancia nocturna: comprobando ataques hostiles...")
+                            try:
+                                self._check_and_escape_attacks()
+                            except Exception as ae:
+                                self.log.debug("Vigilancia nocturna: error comprobando ataques: %s", ae)
                         if night_sweep and (time.time() - last_sweep) >= sweep_interval_s:
                             last_sweep = time.time()
                             self.log.info("Barrido nocturno: despertando para vaciar planetas...")
@@ -1502,6 +1506,60 @@ class Brain(StatsMixin):
             else:
                 self.log.warning("Renombrado de %s fallido; se reintentará el próximo ciclo.", p.coords)
 
+    def _tg_alert(self, msg: str):
+        """Aviso por Telegram con guarda; nunca lanza."""
+        try:
+            if getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""):
+                utils.send_telegram_message(self.cfg.telegram_token, self.cfg.telegram_chat_id,
+                                            utils.tg_escape(msg), logger=self.log)
+        except Exception:
+            pass
+
+    def _watchdog_empty_read(self):
+        """read_planets vacío = sesión caducada o selector roto. Antes el bot 'corría' en
+        vacío indefinidamente hasta que el usuario reiniciaba a mano (causa nº1 de 'lleva
+        horas parado'). Recuperación escalonada: a las 2/4 lecturas vacías reinicia la
+        sesión; a las 6 pausa con alerta crítica en vez de martillear el lobby (eso
+        empeora el anti-bot de GameForge)."""
+        self._empty_read_streak += 1
+        n = self._empty_read_streak
+        if n in (2, 4):
+            self.log.warning("Watchdog: %d lecturas vacías; reiniciando la sesión...", n)
+            try:
+                self.client.stop()
+                self.client.start()
+                if self.client.login():
+                    self.log.info("Watchdog: sesión reiniciada correctamente.")
+                    self._apply_server_params()
+                else:
+                    self.log.error("Watchdog: login fallido tras reiniciar la sesión.")
+            except Exception as e:
+                self.log.error("Watchdog: error reiniciando la sesión: %s", e)
+            self._tg_alert(f"⚠️ OGBot: {n} lecturas vacías; reinicié la sesión del navegador.")
+        elif n >= 6:
+            pause_s = 1800
+            self.paused_until = time.time() + pause_s
+            self.log.error("Watchdog: %d ciclos sin leer planetas; pausa %d min con alerta.",
+                           n, pause_s // 60)
+            self._tg_alert(f"🚨 OGBot: {n} ciclos sin leer planetas (¿CAPTCHA o selector "
+                           f"roto?). Pausado {pause_s // 60} min; abre el visor 'Bot en Directo'.")
+            try:
+                self._save_state()
+            except Exception:
+                pass
+
+    def _service_night_tick(self):
+        """Atiende regresos de la GUI, comandos de control y Telegram durante los bucles de
+        espera nocturnos. Sin esto, el bucle de la primera mitad (fleetsave_recall_halfway)
+        congelaba la GUI y los comandos remotos durante horas."""
+        for fn, label in ((self._process_recall_requests, "regresos"),
+                          (self._process_control_requests, "control GUI"),
+                          (self._poll_telegram_commands, "Telegram")):
+            try:
+                fn()
+            except Exception as e:
+                self.log.debug("Noche: error atendiendo %s: %s", label, e)
+
     def cycle(self):
         self.log.info("--- Nuevo ciclo ---")
         self._reload_config()
@@ -1512,7 +1570,9 @@ class Brain(StatsMixin):
         planets = self.client.read_planets()
         if not planets:
             self.log.warning("Sin planetas legibles; revisa selectores.")
+            self._watchdog_empty_read()
             return
+        self._empty_read_streak = 0   # lectura buena: el watchdog se resetea
         # En cuanto se leen, para que todo lo que corre después en este ciclo (p.ej. la
         # detección de espionaje en update_imperial_stats) vea las coords propias actuales.
         self.last_planets = planets

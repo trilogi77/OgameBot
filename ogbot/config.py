@@ -266,6 +266,11 @@ class Config:
     # activados para recoger la flota fabricada de noche. Activable por planeta.
     enable_night_sweep: bool = False
     night_sweep_interval_hours: float = 2.0
+    # Vigilancia nocturna de ataques: micro-despertares aleatorios (cada 25-45 min) que
+    # comprueban el eventbox y escapan/panic-buildean si hay hostiles, aunque night_sweep
+    # esté off. Sin esto, de noche pasan HORAS sin detección de ataques (mayor riesgo de
+    # perder la flota). Reutiliza la sesión; login solo si el juego nos echó.
+    enable_night_attack_watch: bool = True
     min_action_delay_s: float = 3.0          # delays aleatorios entre acciones
     max_action_delay_s: float = 11.0
     cycle_interval_min_s: float = 600         # cada cuánto corre el ciclo principal

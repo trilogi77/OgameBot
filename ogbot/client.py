@@ -579,6 +579,12 @@ class GameClient:
         if ok:
             self._read_player_identity()
             self._run_selector_canary_once()
+            # Persistir la sesión YA (no solo en stop()): un OOM/kill del contenedor perdía
+            # las cookies y forzaba login completo con riesgo de CAPTCHA.
+            try:
+                self.context.storage_state(path="ogame_session.json")
+            except Exception:
+                pass
         return ok
 
     def _do_login(self) -> bool:

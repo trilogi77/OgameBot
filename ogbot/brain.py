@@ -461,8 +461,8 @@ class Brain(StatsMixin):
         import os
         if os.path.exists(self.cfg.state_file):
             try:
-                with open(self.cfg.state_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                data = utils.load_json_or_backup(self.cfg.state_file, self.log)
+                if data is not None:
                     self.attack_history = data.get("attack_history", {})
                     self.telegram_notified_attacks = data.get("telegram_notified_attacks", {})
                     self._spy_seen = data.get("spy_seen", {})
@@ -560,7 +560,7 @@ class Brain(StatsMixin):
                                     "escaped_at": e.get("escaped_at", 0.0),
                                     "is_sibling": bool(e.get("is_sibling", False))}
                                    for e in self.escaped_fleets],
-            })
+            }, backup=True)
         except Exception as e:
             self.log.debug("No se pudo guardar state.json: %s", e)
 
@@ -587,8 +587,7 @@ class Brain(StatsMixin):
         self.state_cache = {"research": {}, "planets": {}}
         if os.path.exists(self.STATE_CACHE_FILE):
             try:
-                with open(self.STATE_CACHE_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                data = utils.load_json_or_backup(self.STATE_CACHE_FILE, self.log) or {}
                 self.state_cache["research"] = data.get("research", {}) or {}
                 self.state_cache["planets"] = data.get("planets", {}) or {}
                 self.log.info("Caché de estado cargada: %d ubicaciones.", len(self.state_cache["planets"]))
@@ -597,7 +596,7 @@ class Brain(StatsMixin):
 
     def _save_state_cache(self):
         try:
-            utils.atomic_write_json(self.STATE_CACHE_FILE, self.state_cache)
+            utils.atomic_write_json(self.STATE_CACHE_FILE, self.state_cache, backup=True)
         except Exception as e:
             self.log.debug("No se pudo guardar game_state_cache.json: %s", e)
 
@@ -1066,6 +1065,7 @@ class Brain(StatsMixin):
             self.log.error("Login fallido. Abortando.")
             self.client.stop()
             return
+        self._apply_server_params()
         self.initialize_session_stats()
         try:
             while self.running:
@@ -2247,6 +2247,66 @@ class Brain(StatsMixin):
         except Exception as e:
             self.log.debug("Sin óptimo de expediciones para la auto-flota: %s", e)
             return 0
+
+    def _apply_server_params(self):
+        """Auto-configura los parámetros FÍSICOS del universo desde serverData.xml (API
+        pública). Son constantes del servidor; un valor distinto en el YAML SIEMPRE es un
+        error que envenena payback, tiempos de vuelo, combustible, dimensionado de
+        recicladores y score de objetivos. Con auto_server_params=False se respeta el YAML.
+        """
+        if not getattr(self.cfg, "auto_server_params", True) or not self.api:
+            return
+        try:
+            data = self.api.server_data() or {}
+        except Exception as e:
+            self.log.debug("No se pudo leer serverData.xml: %s", e)
+            return
+        if not data:
+            return
+
+        def num(key):
+            try:
+                return float(data[key])
+            except (KeyError, TypeError, ValueError):
+                return None
+
+        changes = []
+
+        def apply(attr, val):
+            if val is None:
+                return
+            old = getattr(self.cfg, attr, None)
+            if old != val:
+                changes.append(f"{attr}: {old} → {val}")
+                setattr(self.cfg, attr, val)
+
+        apply("universe_speed", num("speed"))
+        # Velocidad de flota "pacífica" (expediciones/transporte/deploy); la de guerra puede
+        # diferir, pero la mayoría de misiones del bot son pacíficas.
+        apply("fleet_speed", num("speedFleetPeaceful") if num("speedFleetPeaceful") is not None
+              else num("speedFleet"))
+        apply("debris_factor", num("debrisFactor"))
+        did = num("deuteriumInDebris")
+        if did is not None:
+            apply("debris_includes_deut", bool(int(did)))
+        if getattr(self.cfg, "farm_with_probes", False):
+            pc = num("probeCargo")
+            if pc is not None and int(pc) > 0:
+                apply("espionage_probe_cargo", int(pc))
+                self._apply_probe_cargo()   # re-aplica a gamedata la bodega real
+
+        if changes:
+            msg = ("Parámetros del universo auto-corregidos desde serverData.xml: "
+                   + "; ".join(changes))
+            self.log.warning(msg)
+            try:
+                if getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""):
+                    utils.send_telegram_message(self.cfg.telegram_token, self.cfg.telegram_chat_id,
+                                                "⚙️ OGBot: " + utils.tg_escape(msg), logger=self.log)
+            except Exception:
+                pass
+        else:
+            self.log.info("Parámetros del universo ya coinciden con serverData.xml.")
 
     def _apply_probe_cargo(self, warn: bool = False):
         """Servidores con bodega en sondas (raid con sondas): fija la capacidad real en el

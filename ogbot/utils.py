@@ -136,6 +136,9 @@ def send_telegram_message(token: str, chat_id: str, text: str, logger=None, bloc
     import urllib.parse
     import json
 
+    import urllib.error
+    import time as _time
+
     def _send() -> bool:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = json.dumps({
@@ -143,19 +146,38 @@ def send_telegram_message(token: str, chat_id: str, text: str, logger=None, bloc
             "text": text,
             "parse_mode": "HTML"
         }).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json"}
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                response.read()
-            return True
-        except Exception as e:
-            if logger:
-                logger.debug("Error al enviar mensaje de Telegram: %s", e)
-            return False
+        # Reintentos: una alerta de ataque no puede perderse por un blip de red, y Telegram
+        # devuelve 429 (rate-limit) con 'retry_after' que hay que respetar.
+        for attempt in range(3):
+            req = urllib.request.Request(
+                url, data=data, headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    response.read()
+                return True
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    try:
+                        body = json.loads(e.read().decode("utf-8"))
+                        wait = float(body.get("parameters", {}).get("retry_after", 1))
+                    except Exception:
+                        wait = 1.0
+                    _time.sleep(min(wait, 30))
+                    continue
+                if 500 <= e.code < 600 and attempt < 2:
+                    _time.sleep(2 ** attempt)
+                    continue
+                if logger:
+                    logger.debug("Telegram HTTP %s: %s", e.code, e)
+                return False
+            except Exception as e:
+                if attempt < 2:
+                    _time.sleep(2 ** attempt)
+                    continue
+                if logger:
+                    logger.debug("Error al enviar mensaje de Telegram: %s", e)
+                return False
+        return False
 
     if block:
         return _send()
@@ -163,13 +185,49 @@ def send_telegram_message(token: str, chat_id: str, text: str, logger=None, bloc
     return None
 
 
-def atomic_write_json(path: str, obj, indent: int = 2) -> None:
+def atomic_write_json(path: str, obj, indent: int = 2, backup: bool = False) -> None:
     """Escritura atómica (tmp + os.replace): la GUI sondea estos JSON y no debe
-    ver nunca un fichero a medio escribir."""
+    ver nunca un fichero a medio escribir.
+
+    backup=True conserva la última versión buena en path+'.bak' antes de reemplazar
+    (para state.json / caché: si una corrupción -corte de luz, disco lleno- rompe el
+    fichero, load_json_or_backup lo recupera en vez de resetear timers/aprendizaje)."""
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=indent, ensure_ascii=False)
+    if backup:
+        try:
+            if os.path.exists(path):
+                import shutil
+                shutil.copy2(path, path + ".bak")
+        except Exception:
+            pass
     os.replace(tmp, path)
+
+
+def load_json_or_backup(path: str, logger=None):
+    """Carga un JSON; si está corrupto, restaura de path+'.bak' (última versión buena)
+    en vez de degradar en silencio a estado vacío. Devuelve el objeto o None si no hay
+    ni fichero ni backup válidos. Renombra el corrupto a .corrupt para conservar evidencia."""
+    import json as _json
+    for candidate, is_bak in ((path, False), (path + ".bak", True)):
+        if not os.path.exists(candidate):
+            continue
+        try:
+            with open(candidate, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            if is_bak and logger:
+                logger.warning("¡%s corrupto! Restaurado desde %s.bak.", path, path)
+                try:
+                    os.replace(path, path + ".corrupt")
+                except Exception:
+                    pass
+            return data
+        except Exception as e:
+            if not is_bak and logger:
+                logger.warning("No se pudo leer %s (%s); intentando .bak...", path, e)
+            continue
+    return None
 
 
 def parse_localized_number(text) -> float:

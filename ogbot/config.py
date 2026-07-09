@@ -31,6 +31,11 @@ class Config:
     debris_includes_deut: bool = False
     loot_percent: float = 0.50       # % de recursos saqueables
     trade_ratio: Tuple[float, float, float] = (2.5, 1.5, 1.0)
+    # Auto-configurar velocidad/flota/escombros/bodega-de-sonda desde serverData.xml (API
+    # pública) al arrancar. Son constantes FÍSICAS del servidor: tecleadas a mano son la
+    # mayor fuente de error silencioso (payback, vuelos, combustible, reciclaje). Con False
+    # se respetan los valores del YAML tal cual.
+    auto_server_params: bool = True
 
     # --- Estrategia económica ---
     enable_economy: bool = True

@@ -9,11 +9,17 @@ universe: "Quasi'Stellar"          # nombre del universo
 country: "es"
 server_url: "https://s272-es.ogame.gameforge.com/"   # AJUSTA a tu servidor real
 
-# --- Parámetros del universo (míralos en /api/serverData.xml) ---
-universe_speed: 4.0          # velocidad de economía
-fleet_speed: 2.0             # velocidad de flotas
-debris_factor: 0.30          # % de naves destruidas que va a escombros
-debris_includes_deut: false
+# --- Parámetros del universo ---
+# Con auto_server_params: true (recomendado) el bot los lee solo de serverData.xml al
+# arrancar (velocidad, flota, factor de escombros, deut en escombros, bodega de sonda) y
+# corrige los de abajo si difieren. Son constantes del servidor: tecleadas a mano mal
+# envenenan payback, vuelos, combustible y reciclaje en silencio. Pon false para forzar
+# los valores de abajo.
+auto_server_params: true
+universe_speed: 4.0          # velocidad de economía (auto si auto_server_params)
+fleet_speed: 2.0             # velocidad de flotas (auto si auto_server_params)
+debris_factor: 0.30          # % de naves destruidas que va a escombros (auto)
+debris_includes_deut: false  # (auto: deuteriumInDebris del servidor)
 loot_percent: 0.50           # % de recursos saqueables
 trade_ratio: [2.5, 1.5, 1.0] # metal:cristal:deuterio
 

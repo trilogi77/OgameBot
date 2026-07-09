@@ -19,9 +19,13 @@ except ImportError:
 
 # ---------------------------------------------------------------------------
 SEL = {
-    "lobby_login_tab": "li:has-text('Log in'), li:has-text('Iniciar sesión'), li:has-text('Login'), li:has-text('Anmelden'), li:has-text('Se connecter'), li:has-text('Zaloguj'), li.tabs-navigation__item:nth-child(2)",
-    "lobby_email":     "input[name='email']",
-    "lobby_pass":      "input[name='password']",
+    # OJO: sin fallback nth-child — en la portada actual el login es la 1ª pestaña y
+    # nth-child(2) era "Registrarse" (clicarla rellenaba el formulario de registro).
+    "lobby_login_tab": "li:has-text('Log in'), li:has-text('Iniciar sesión'), li:has-text('Login'), li:has-text('Anmelden'), li:has-text('Se connecter'), li:has-text('Zaloguj')",
+    # Scoped a #loginForm: la portada tiene TAMBIÉN un form de registro con
+    # input[name=email]/password; sin el scope, fill() podía rellenar el de registro.
+    "lobby_email":     "#loginForm input[name='email']",
+    "lobby_pass":      "#loginForm input[name='password']",
     "lobby_login_btn": "#loginForm button[type=submit]",
     "play_button":     "button.btn-primary, button.btn-success, button.button-default, button",
     "accounts_url":    "https://lobby.ogame.gameforge.com/en_GB/accounts",
@@ -268,6 +272,21 @@ class GameClient:
             except Exception:
                 pages = []
         return pages
+
+    def _accept_cookies(self):
+        """Acepta el banner de cookies de GameForge si está presente. Sin sesión guardada
+        el banner aparece siempre y puede interceptar los clics del login."""
+        for sel in ("button:has-text('Aceptar cookies')", "button:has-text('Accept cookies')",
+                    "button:has-text('ACEPTAR')", ".cookiebanner__button--accept"):
+            try:
+                b = self.page.locator(sel).first
+                if b.count() > 0 and b.is_visible():
+                    b.click()
+                    self.log.info("Banner de cookies aceptado.")
+                    self._delay()
+                    return
+            except Exception:
+                continue
 
     def _dismiss_login_error(self) -> bool:
         """
@@ -592,24 +611,36 @@ class GameClient:
             self.log.info("Sesión restaurada vía lobby.")
             return True
 
-        # 3) Si hay token Gameforge activo, Play/Jugar aparece → abre nueva pestaña
-        play = self._find_play_button()
-        if play:
-            self.log.info("Sesión activa. Entrando al universo...")
-            if self._enter_game_via_play(play):
-                return True
-            self.log.warning("Play no llevó al juego; intentando login completo.")
+        self._accept_cookies()
+
+        # 3) Play/Jugar SOLO si seguimos en la página de cuentas (= hay sesión Gameforge).
+        #    Sin sesión, /accounts redirige a la portada de login y el fallback genérico de
+        #    _find_play_button acababa clicando el "Registrarse" verde: 3 intentos x 45 s
+        #    perdidos y errores de validación en pantalla antes de llegar al login real.
+        if "/accounts" in self.page.url:
+            play = self._find_play_button()
+            if play:
+                self.log.info("Sesión activa. Entrando al universo...")
+                if self._enter_game_via_play(play):
+                    return True
+                self.log.warning("Play no llevó al juego; intentando login completo.")
 
         # 4) Login completo con credenciales
         if self._has_captcha():
             self._wait_for_human_check("antes del login")
 
         try:
-            self.page.goto(self.lobby_url, wait_until="domcontentloaded", timeout=30000)
+            # Portada LOCALIZADA (no lobby_url a secas): sin locale, GameForge elige idioma
+            # por Accept-Language del navegador (inglés en headless) y la página "cambiaba
+            # de idioma" a mitad de login. Así siempre aterrizamos en el idioma configurado.
+            self.page.goto(f"https://lobby.ogame.gameforge.com/{locale}/",
+                           wait_until="domcontentloaded", timeout=30000)
+            self._accept_cookies()
             self.page.wait_for_selector(SEL["lobby_login_tab"], state="visible", timeout=15000)
             self.page.click(SEL["lobby_login_tab"])
             self.page.wait_for_selector("#loginForm", state="visible", timeout=10000)
-            self.page.fill(SEL["lobby_email"], self.cfg.username)
+            # strip(): un espacio colado en el YAML/env hace fallar el login con error genérico
+            self.page.fill(SEL["lobby_email"], (self.cfg.username or "").strip())
             self.page.fill(SEL["lobby_pass"], self.cfg.password)
             self._delay()
             self.page.click(SEL["lobby_login_btn"])
@@ -619,11 +650,16 @@ class GameClient:
             if self._has_captcha():
                 self._wait_for_human_check("tras introducir credenciales")
 
-            play2 = self._find_play_button()
-            if play2:
-                if self._enter_game_via_play(play2):
+            # Ir explícitamente a cuentas: si el login falló seguimos en la portada,
+            # y buscar ahí el botón Jugar repetiría el falso positivo de "Registrarse".
+            self.page.goto(accounts_url, wait_until="domcontentloaded", timeout=30000)
+            self._delay()
+            if "/accounts" in self.page.url:
+                play2 = self._find_play_button()
+                if play2 and self._enter_game_via_play(play2):
                     return True
-            self.log.error("Login completo: no se alcanzó la URL del juego.")
+            self.log.error("Login completo: no se alcanzó la URL del juego (URL: %s). "
+                           "¿Credenciales incorrectas o CAPTCHA pendiente?", self.page.url)
             return False
         except PWTimeout:
             self.log.error("Timeout en login (URL: %s).", self.page.url)

@@ -19,9 +19,12 @@ except ImportError:
 
 # ---------------------------------------------------------------------------
 SEL = {
-    # OJO: sin fallback nth-child — en la portada actual el login es la 1ª pestaña y
-    # nth-child(2) era "Registrarse" (clicarla rellenaba el formulario de registro).
-    "lobby_login_tab": "li:has-text('Log in'), li:has-text('Iniciar sesión'), li:has-text('Login'), li:has-text('Anmelden'), li:has-text('Se connecter'), li:has-text('Zaloguj')",
+    # :text-is (texto EXACTO), NO :has-text: el lobby actual de GameForge tiene un <li>
+    # CONTENEDOR con el texto combinado "Iniciar sesiónRegistrarse"; :has-text lo casa
+    # PRIMERO y clicar ese contenedor NO activa el login (el <li> real de la pestaña no
+    # tiene clase distintiva). Resultado del bug: #loginForm nunca aparecía y el bot
+    # terminaba en el formulario de REGISTRO. El texto exacto casa el <li> real por idioma.
+    "lobby_login_tab": "li:text-is('Log in'), li:text-is('Iniciar sesión'), li:text-is('Login'), li:text-is('Anmelden'), li:text-is('Se connecter'), li:text-is('Zaloguj')",
     # Scoped a #loginForm: la portada tiene TAMBIÉN un form de registro con
     # input[name=email]/password; sin el scope, fill() podía rellenar el de registro.
     "lobby_email":     "#loginForm input[name='email']",

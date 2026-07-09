@@ -605,6 +605,61 @@ class GameClient:
                 pass
         return ok
 
+    def _await_human_login(self, accounts_url: str) -> bool:
+        """El login automático no llegó al juego (típicamente un CAPTCHA de GameForge tras
+        enviar credenciales, que este headless no resuelve). En vez de abortar y cerrar el
+        navegador, MANTENERLO ABIERTO y esperar a que el usuario complete el login en el visor
+        'Bot en Directo' de la GUI. Sondea la sesión (NO navega, para no tapar el captcha);
+        avisa una vez por Telegram. Devuelve True en cuanto detecta sesión válida."""
+        timeout_s = float(getattr(self.cfg, "login_human_check_timeout_s", 300) or 300)
+        self.log.warning("Login requiere intervención humana (¿CAPTCHA?). Abre el panel web -> "
+                         "pestaña 'Bot en Directo' y completa el login. Espero hasta %.0f min...",
+                         timeout_s / 60.0)
+        # Aviso por Telegram con captura (throttle 10 min), reutilizando el visor CDP.
+        try:
+            if (getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", "")
+                    and time.time() - self._last_captcha_alert > 600):
+                self._last_captcha_alert = time.time()
+                shot = ""
+                try:
+                    os.makedirs("errors", exist_ok=True)
+                    shot = f"errors/login_captcha_{int(time.time())}.png"
+                    self.page.screenshot(path=shot)
+                except Exception:
+                    shot = ""
+                cap = ("🔐 OGBot: el login necesita que resuelvas un CAPTCHA. Abre el panel web "
+                       "-> 'Bot en Directo' y complétalo (tienes ~5 min).")
+                if shot:
+                    utils.send_telegram_photo(self.cfg.telegram_token, self.cfg.telegram_chat_id,
+                                              shot, caption="🤖 OGBot: " + utils.tg_escape(cap),
+                                              logger=self.log)
+                else:
+                    utils.send_telegram_message(self.cfg.telegram_token, self.cfg.telegram_chat_id,
+                                                utils.tg_escape(cap), logger=self.log)
+        except Exception:
+            pass
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            try:
+                if self.page.is_closed():
+                    return False
+                url = self.page.url
+                if self._is_game_url(url):
+                    self.log.info("Login completado (usuario). ¡Dentro del juego!")
+                    return True
+                # ¿ya en /accounts con tarjetas de cuenta? -> sesión válida; entrar al universo
+                if "/accounts" in url and self.page.locator(
+                        ".accountCard, .account-list-item, [class*='account-row'], "
+                        "[class*='accountItem']").count() > 0:
+                    play = self._find_play_button()
+                    if play and self._enter_game_via_play(play):
+                        return True
+            except Exception:
+                pass
+            time.sleep(3)
+        self.log.error("Login: se agotó la espera de intervención humana sin completar el login.")
+        return False
+
     def _do_login(self) -> bool:
         # Determinar URL de cuentas localizada según país
         country = (self.cfg.country or "en").lower()
@@ -682,12 +737,14 @@ class GameClient:
                 play2 = self._find_play_button()
                 if play2 and self._enter_game_via_play(play2):
                     return True
-            self.log.error("Login completo: no se alcanzó la URL del juego (URL: %s). "
-                           "¿Credenciales incorrectas o CAPTCHA pendiente?", self.page.url)
-            return False
+            # No llegamos al juego: casi siempre un CAPTCHA de GameForge tras las credenciales.
+            # No abortar: mantener el navegador abierto y esperar a que el usuario lo resuelva
+            # en el visor de la GUI.
+            return self._await_human_login(accounts_url)
         except PWTimeout:
-            self.log.error("Timeout en login (URL: %s).", self.page.url)
-            return False
+            self.log.warning("Login: timeout (URL: %s); puede ser un CAPTCHA. Esperando "
+                             "intervención humana en el visor...", self.page.url)
+            return self._await_human_login(accounts_url)
 
     # ------------------------------------------------------------------
     #  Navegación interna

@@ -25,6 +25,7 @@ fusion_reactor_solar_offset: 25        # Diferencia de niveles mínima que debe 
 max_mine_level: 40
 storage_fill_trigger_percent: 0.90     # % de llenado que dispara la subida del almacén
 storage_min_capacity_target: 1000000   # capacidad mínima (por recurso) garantizada con prioridad MÁXIMA: mientras el almacén no pueda guardar esto, subirlo manda sobre minas/energía/lab. 0 = desactivar
+storage_min_capacity_target_startup: 250000  # objetivo reducido durante el desbloqueo del árbol (evita invertir en almacenes de 1M en el arranque; al terminar vuelve al pleno). 0 = usar siempre el pleno
 
 # --- Investigación ---
 # Fase de desbloqueo: seguir el orden óptimo hasta tener TODO el árbol a nivel >=1 (sin

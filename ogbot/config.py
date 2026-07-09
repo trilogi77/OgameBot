@@ -49,6 +49,10 @@ class Config:
     # prioridad de construcción en cuanto el recurso se acerca a llenarlo. 0 = desactivar
     # el objetivo (solo se aplica el disparador de llenado normal).
     storage_min_capacity_target: int = 1_000_000
+    # Objetivo reducido durante la fase de desbloqueo del árbol (arranque): perseguir 1M de
+    # capacidad ahí es inversión prematura que ralentiza el arranque. Al completar el
+    # desbloqueo se vuelve al objetivo pleno. 0 = usar siempre el objetivo pleno.
+    storage_min_capacity_target_startup: int = 250_000
     enable_facilities: bool = True
     target_robotics_factory: int = 0
     target_shipyard: int = 0

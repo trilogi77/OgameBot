@@ -13,7 +13,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ogbot.brain import Brain
+from ogbot.brain import Brain, build_flights, _retain_unlanded
 
 
 def _loc(g, s, p, moon=None):
@@ -44,6 +44,33 @@ def test_expedition_cargos_counted():
     assert totals.get("large_cargo") == 3 * 2018, totals
 
 
+def test_inventory_retains_when_current_read_lacks_ships():
+    """Bug reportado: la tabla de vuelos mostraba las naves pero el inventario decía
+    "Actual: 1". Causa: el inventario se sumaba del mvs crudo del ciclo (sin retención); si
+    esa lectura no traía el desglose por nave, daba 0 aunque el vuelo siguiera en curso.
+    El fix suma del vuelo YA construido (composición retenida). Aquí: ciclo 1 lee la
+    composición, ciclo 2 la pierde -> el inventario debe SEGUIR contándola."""
+    stub = types.SimpleNamespace(log=logging.getLogger("test"))
+    planets = [_loc(2, 113, 10)]
+
+    # Ciclo 1: la página de movimientos SÍ trae el desglose por nave.
+    full = [{"origin": "2:113:10", "destination": "2:117:16", "mission": "15",
+             "arrival_text": "01:00:00", "arrival_epoch": 1000, "is_return": False,
+             "ships": {"Nave pequeña de carga": 124, "Sonda de espionaje": 1}}]
+    f1 = _retain_unlanded(build_flights(full, now=0.0, prev=[]), [], 0.0)
+
+    # Ciclo 2: MISMA flota en vuelo pero la lectura NO trae naves (tooltip vacío).
+    empty = [{"origin": "2:113:10", "destination": "2:117:16", "mission": "15",
+              "arrival_text": "00:59:00", "arrival_epoch": 1000, "is_return": False,
+              "ships": {}}]
+    f2 = _retain_unlanded(build_flights(empty, now=60.0, prev=f1), f1, 60.0)
+
+    totals = Brain._aggregate_ships_in_motion(stub, f2, planets)
+    assert totals.get("small_cargo") == 124, totals   # antes del fix: 0
+    assert totals.get("espionage_probe") == 1, totals
+
+
 if __name__ == "__main__":
     test_expedition_cargos_counted()
+    test_inventory_retains_when_current_read_lacks_ships()
     print("OK")

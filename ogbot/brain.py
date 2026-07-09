@@ -1322,9 +1322,15 @@ class Brain(StatsMixin):
     def _aggregate_ships_in_motion(self, movements: List[dict], planets: List) -> Dict[str, int]:
         """Suma las naves de nuestras flotas en vuelo (salientes y de regreso).
 
+        Recibe la lista de vuelos ya construida (build_flights): así usa la MISMA composición
+        por nave que muestra la tabla de "Vuelos", incluida la retenida del ciclo anterior
+        cuando la lectura actual no trae el desglose. Sumarlo del mvs crudo daba 0 en esos
+        ciclos (inventario "Actual: 1" con cientos en vuelo). Acepta también movimientos crudos
+        (misma forma de campos) — lo usa el self-check.
+
         Las naves en tránsito no están en ningún planeta, así que sin esto el inventario
         imperial las da por desaparecidas. Excluye ataques enemigos entrantes y deduplica
-        filas repetidas del DOM (mismo origen/destino/misión/llegada = una sola flota).
+        filas repetidas (mismo origen/destino/misión/llegada = una sola flota).
         """
         from .client import _ship_name_to_key
 
@@ -1541,7 +1547,12 @@ class Brain(StatsMixin):
             if d:
                 self.inflight_dests.setdefault(d, set()).add(str(m.get("mission", "")))
 
-        ships_in_motion = self._aggregate_ships_in_motion(mvs, planets)
+        # El inventario "en vuelo" se calcula MÁS ABAJO desde los vuelos ya construidos
+        # (build_flights, con composición retenida del ciclo previo), no del mvs crudo: si la
+        # lectura de este ciclo no trae el desglose por nave, sumarlo del mvs daría 0 mientras
+        # la tabla de vuelos sigue mostrando las naves. Placeholder por si el bloque de
+        # escritura falla antes de calcularlo (lo usa _fleet_step al final del ciclo).
+        ships_in_motion: Dict[str, int] = {}
 
         # Leer estado de cada planeta y luna usando la memoria/caché (escaneo completo
         # solo al inicio o en el resync; el resto de ciclos, lectura ligera).
@@ -1564,14 +1575,41 @@ class Brain(StatsMixin):
         except Exception as e:
             self.log.warning("No se pudo renombrar planetas: %s", e)
 
-        # Guardar planetas en caché para la GUI (incluyendo naves e información de luna)
+        # Vuelos e inventario "en vuelo" para la GUI. En su PROPIO try (antes de serializar
+        # planetas) para que un fallo de esa serialización no deje ships_in_motion en {}: lo
+        # usa _fleet_step al final del ciclo y con {} sobreconstruiría naves ya en vuelo.
         try:
             import json
+            # Lista de vuelos para la pestaña "Vuelos" (datos completos: naves y carga). Si la
+            # lectura vino vacía (fallo transitorio), NO vaciamos el panel: conservamos los
+            # vuelos previos aún en curso (_retain_unlanded).
+            prev_flights = []
+            try:
+                with open("fleet_flights.json", "r", encoding="utf-8") as pf:
+                    prev_flights = json.load(pf).get("flights", [])
+            except Exception:
+                prev_flights = []
+            now_ts = time.time()
+            new_flights = build_flights(mvs, now_ts, prev=prev_flights)
+            flights_out = _retain_unlanded(new_flights, prev_flights, now_ts)
+            # Inventario "en vuelo" = proyección EXACTA de los vuelos mostrados (misma
+            # composición, ya retenida y deduplicada). Antes se sumaba del mvs crudo del ciclo:
+            # si esa lectura no traía el desglose por nave, el inventario caía a 0 mientras la
+            # tabla de vuelos seguía mostrando cientos de naves (el usuario veía "Actual: 1").
+            ships_in_motion = self._aggregate_ships_in_motion(flights_out, planets)
+            utils.atomic_write_json("fleet_flights.json",
+                                    {"flights": flights_out, "updated": now_ts})
+            utils.atomic_write_json("fleet_in_motion.json", ships_in_motion)
+        except Exception as e:
+            self.log.debug("No se pudieron guardar vuelos/inventario en vuelo: %s", e)
+
+        # Guardar planetas en caché para la GUI (incluyendo naves e información de luna)
+        try:
             planets_data = []
             for p in planets:
                 p_data = {
-                    "name": p.name, 
-                    "coords": f"{p.coords.galaxy}:{p.coords.system}:{p.coords.position}", 
+                    "name": p.name,
+                    "coords": f"{p.coords.galaxy}:{p.coords.system}:{p.coords.position}",
                     "id": p.id,
                     "ships": p.ships,
                     "defenses": p.defenses,
@@ -1589,21 +1627,6 @@ class Brain(StatsMixin):
                     }
                 planets_data.append(p_data)
             utils.atomic_write_json("planets_cache.json", planets_data)
-            utils.atomic_write_json("fleet_in_motion.json", ships_in_motion)
-            # Lista de vuelos para la pestaña "Vuelos" (datos completos: naves y carga). Si la
-            # lectura vino vacía (fallo transitorio), NO vaciamos el panel: conservamos los
-            # vuelos previos aún en curso (_retain_unlanded).
-            prev_flights = []
-            try:
-                with open("fleet_flights.json", "r", encoding="utf-8") as pf:
-                    prev_flights = json.load(pf).get("flights", [])
-            except Exception:
-                prev_flights = []
-            now_ts = time.time()
-            new_flights = build_flights(mvs, now_ts, prev=prev_flights)
-            utils.atomic_write_json("fleet_flights.json",
-                                    {"flights": _retain_unlanded(new_flights, prev_flights, now_ts),
-                                     "updated": now_ts})
         except Exception as e:
             self.log.debug("No se pudo guardar planets_cache.json: %s", e)
 

@@ -342,11 +342,18 @@ class Config:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
+            unknown = []
             for k, v in data.items():
                 if hasattr(cfg, k):
-                    if k in ("trade_ratio", "active_hours", "night_hours") and isinstance(v, list):
+                    if k in ("trade_ratio", "active_hours") and isinstance(v, list):
                         v = tuple(v)
                     setattr(cfg, k, v)
+                else:
+                    unknown.append(k)   # typo hoy silencioso: la opción nunca se aplicaba
+            if unknown:
+                import sys as _sys
+                print(f"[config] AVISO: claves desconocidas en {path} (ignoradas, "
+                      f"¿typo?): {', '.join(sorted(unknown))}", file=_sys.stderr)
         # La contraseña SIEMPRE preferimos leerla del entorno
         cfg.password = os.environ.get("OGBOT_PASS", cfg.password)
         cfg.username = os.environ.get("OGBOT_USER", cfg.username)

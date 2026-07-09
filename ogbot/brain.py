@@ -3326,8 +3326,6 @@ class Brain(StatsMixin):
         target_nanite = self._get_planet_setting(planet, "target_nanite_factory", 0)
         if getattr(self.cfg, "empire_auto", False):
             # Autogestión: objetivos de instalaciones si el usuario no fijó otros mayores.
-            # ponytail: niveles fijos de medio juego (astillero 8 = naves de batalla);
-            # escalarlos con la economía si el imperio los deja atrás.
             target_robotics = max(target_robotics, 10)
             target_shipyard = max(target_shipyard, 8)
             # El laboratorio solo acelera la investigación desde el planeta que investiga
@@ -3335,6 +3333,15 @@ class Brain(StatsMixin):
             lp = getattr(self, "last_planets", None) or []
             if lp and planet.id == lp[0].id:
                 target_lab = max(target_lab, 12)
+            # Fábrica de nanites: el mayor acelerador de colas del juego, hoy JAMÁS se
+            # construía sola (target_nanite quedaba a 0). Se habilita al cumplir sus
+            # prerrequisitos (robótica 10 + computación 10); el nivel escala con la economía
+            # (suma de minas del imperio) y el gasto lo autolimita la regla de ahorro de abajo
+            # (nanite es carísima -> solo se paga cuando el planeta produce de sobra).
+            comp_tech = int((self.research_levels or {}).get("computer_tech", 0))
+            if planet.lvl("robotics_factory") >= 10 and comp_tech >= 10:
+                eco = sum(p.lvl("metal_mine") + p.lvl("crystal_mine") for p in (lp or [planet]))
+                target_nanite = max(target_nanite, min(5, 1 + eco // 120))
 
         buf = 1 - self.cfg.keep_resources_buffer
         avail = Resources(planet.resources.metal * buf,

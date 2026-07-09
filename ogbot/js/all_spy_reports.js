@@ -46,7 +46,10 @@
                 205:'heavy_fighter', 206:'cruiser', 207:'battleship',
                 208:'colony_ship', 209:'recycler', 210:'espionage_probe',
                 211:'bomber', 212:'solar_satellite', 213:'destroyer',
-                214:'deathstar', 215:'battlecruiser'
+                214:'deathstar', 215:'battlecruiser',
+                // Naves modernas: sin ellas, un defensor con reapers/pathfinders parecia
+                // INDEFENSO y el bot atacaba con cargueros desnudos -> perdida de flota.
+                217:'crawler', 218:'reaper', 219:'pathfinder'
             };
             const DEF_MAP = {
                 401:'rocket_launcher', 402:'light_laser', 403:'heavy_laser',

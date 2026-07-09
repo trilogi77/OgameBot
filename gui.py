@@ -134,6 +134,21 @@ def ensure_accounts_dir():
 
 # ------------------------------------------------------------------ pids ---
 def is_pid_running(pid: int) -> bool:
+    if not pid:
+        return False
+    # POSIX (Docker/Linux): señal 0 no mata, solo comprueba existencia. Antes se usaba
+    # tasklist (solo Windows), así que en el despliegue Docker el panel marcaba PARADO
+    # con el bot corriendo y no se podían parar procesos huérfanos.
+    if os.name == "posix":
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True   # existe, pero de otro dueño
+        except Exception:
+            return False
     try:
         out = subprocess.check_output(f'tasklist /FI "PID eq {pid}"', shell=True, text=True, stderr=subprocess.DEVNULL)
         return str(pid) in out
@@ -141,6 +156,15 @@ def is_pid_running(pid: int) -> bool:
         return False
 
 def kill_pid(pid: int):
+    if not pid:
+        return
+    if os.name == "posix":
+        import signal
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+        return
     try:
         subprocess.run(f'taskkill /F /PID {pid}', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:

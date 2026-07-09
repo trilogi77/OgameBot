@@ -99,7 +99,8 @@ def evaluate(report: EspionageReport, origin: Coords, fleet: Dict[str, int],
 
     target = Target(coords=report.coords, player_name=report.player_name,
                     report=report, expected_loot=loot, fuel_cost=fuel,
-                    flight_time=ftime, score=score, needs_clearing=needs_clearing)
+                    flight_time=ftime, score=score, needs_clearing=needs_clearing,
+                    expected_debris=expected_debris)
     return (target, "Apto para ataque") if return_reason else target
 
 def select_targets(candidates: List[dict], origins: List[Coords],

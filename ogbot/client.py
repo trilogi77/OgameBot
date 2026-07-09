@@ -1758,45 +1758,6 @@ class GameClient:
         time.sleep(1.0)  # Espera corta para que OGame cargue la duración inicial tras seleccionar misión
 
         # Velocidad
-        try:
-            debug_dom = self.page.evaluate("""() => {
-                const results = [];
-                document.querySelectorAll('*').forEach(el => {
-                    const text = el.textContent ? el.textContent.trim() : '';
-                    if (text === '10%' || text === '40%') {
-                        results.push({
-                            tagName: el.tagName,
-                            id: el.id,
-                            className: el.className,
-                            text: text,
-                            html: el.outerHTML.substring(0, 150)
-                        });
-                    }
-                });
-                return results;
-            }""")
-            self.log.info("DEBUG DOM speed elements: %s", debug_dom)
-            
-            debug_dur = self.page.evaluate("""() => {
-                const results = [];
-                document.querySelectorAll('*').forEach(el => {
-                    const id = el.id ? String(el.id).toLowerCase() : '';
-                    const cls = el.className ? String(el.className).toLowerCase() : '';
-                    if (id.includes('dur') || cls.includes('dur') || id.includes('time') || cls.includes('time')) {
-                        results.push({
-                            tagName: el.tagName,
-                            id: el.id,
-                            className: el.className,
-                            text: el.textContent ? el.textContent.trim() : ''
-                        });
-                    }
-                });
-                return results;
-            }""")
-            self.log.info("DEBUG DOM duration/time elements: %s", debug_dur)
-        except Exception as e:
-            self.log.warning("DEBUG DOM failed: %s", e)
-
         if target_duration_s is not None and target_duration_s > 0:
             best_sp = 1  # 10% por defecto
             durations = {}

@@ -327,15 +327,17 @@ def optimal_expedition_cargo(max_find_units: int, cargo_ship: str = "large_cargo
     return max(1, math.ceil(target / cap))
 
 
-def recycler_count(debris: Dict[str, float]) -> int:
+def recycler_count(debris: Dict[str, float], hyperspace_level: int = 0) -> int:
     total = debris.get("metal", 0) + debris.get("crystal", 0) + debris.get("deut", 0)
-    cap = gd.SHIPS["recycler"].cargo
+    # Bodega REAL con Hiperespacio (+5%/nivel). Con la base se enviaban hasta ~43% más
+    # recicladores de los necesarios (Hiperespacio 15), bloqueando naves para el siguiente campo.
+    cap = gd.effective_cargo("recycler", hyperspace_level)
     return max(1, math.ceil(total / cap))
 
 
 def harvest_plan(origin: Coords, debris_coords: Coords,
-                 debris: Dict[str, float]) -> dict:
-    n = recycler_count(debris)
+                 debris: Dict[str, float], hyperspace_level: int = 0) -> dict:
+    n = recycler_count(debris, hyperspace_level)
     dest = Coords(debris_coords.galaxy, debris_coords.system, debris_coords.position, type="debris")
     return {"mission": "harvest", "origin": origin, "destination": dest,
             "ships": {"recycler": n}}
@@ -380,7 +382,7 @@ def auto_fleet_targets(home: Planet, planets: List[Planet],
                 targets["small_cargo"] = 15  # puente hasta desbloquear el carguero grande
             if getattr(cfg, "expedition_use_pathfinder", False):
                 astro = research_levels.get("astrophysics", 0)
-                targets["pathfinder"] = max(1, astro // 2 + 1)
+                targets["pathfinder"] = max(1, gd.expedition_slots(astro))
         if getattr(cfg, "enable_farming", True) or getattr(cfg, "enable_spy_watch", False):
             targets["espionage_probe"] = 12
         if getattr(cfg, "enable_colonization", False) and len(planets) < getattr(cfg, "max_colonies", 1):
@@ -416,7 +418,7 @@ def auto_fleet_targets(home: Planet, planets: List[Planet],
     # Pathfinder: 1 por slot de expedición cuando se usa para explorar (duplica hallazgos)
     if getattr(cfg, "expedition_use_pathfinder", False):
         astro = research_levels.get("astrophysics", 0)
-        expe_slots = max(1, astro // 2 + 1)
+        expe_slots = max(1, gd.expedition_slots(astro))
         targets["pathfinder"] = expe_slots
     # Escolta militar (la usa farm_auto_fleet) y disuasión; crece con la economía
     targets["light_fighter"] = lf

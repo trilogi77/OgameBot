@@ -647,7 +647,8 @@ class StatsMixin:
             if origin != "?":
                 parts.append(f"• <b>Origen:</b> [{origin}]")
             if spy_name:
-                parts.append(f"• <b>Espía:</b> {spy_name}")
+                # Escapar: un nombre con < > & rompía el parse_mode=HTML y el ledger reintentaba en bucle.
+                parts.append(f"• <b>Espía:</b> {utils.tg_escape(spy_name)}")
             parts.append(f"• <b>Prob. contraespionaje:</b> {ce_txt}")
             loc_summary = self._own_location_summary(mine)
             if loc_summary:

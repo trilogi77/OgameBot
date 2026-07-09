@@ -524,7 +524,10 @@ class Brain(StatsMixin):
             self.player_id = str(getattr(self.client, "player_id", "") or self.player_id or "")
             self.player_name = str(getattr(self.client, "player_name", "") or self.player_name or "")
             utils.atomic_write_json(self.cfg.state_file, {
-                "attack_history": self.attack_history,
+                # Poda a 90 días: es solo un cooldown por objetivo de farmeo; sin esto
+                # attack_history crecía sin límite (target_stats ya se podaba igual).
+                "attack_history": {k: v for k, v in self.attack_history.items()
+                                   if float(v or 0.0) > now - 90 * 86400},
                 "telegram_notified_attacks": self.telegram_notified_attacks,
                 "spy_seen": self._spy_seen,
                 "renamed_planets": sorted(self.renamed_planets),
@@ -1939,7 +1942,8 @@ class Brain(StatsMixin):
             self.log.debug("%s: construcción en progreso, saltando economía.", planet.coords)
             return
         plasma = self.research_levels.get("plasma_tech", 0)
-        choice = economy.affordable_build(planet, self.cfg, plasma=plasma)
+        choice = economy.affordable_build(planet, self.cfg, plasma=plasma,
+                                          research_levels=self.research_levels)
         if choice:
             name, cost = choice
             comp = "facilities" if name in ("robotics_factory", "nanite_factory",
@@ -1956,7 +1960,8 @@ class Brain(StatsMixin):
         if not self._get_planet_setting(planet, "enable_defense", True):
             self.log.debug("%s: defensa desactivada para este planeta.", planet.coords)
             return
-        choice = economy.affordable_defense(planet, self.cfg)
+        choice = economy.affordable_defense(planet, self.cfg,
+                                             research_levels=self.research_levels)
         if choice:
             name, count, cost = choice
             if self._guard():
@@ -2643,7 +2648,7 @@ class Brain(StatsMixin):
         rec_candidates = [p for p in locations if p.ships.get("recycler", 0) >= 1]
         rec_origin = min(rec_candidates, key=lambda p: gd.distance(p.coords.tuple(), coords.tuple()))
         rec_ftime = gd.flight_time(gd.distance(rec_origin.coords.tuple(), coords.tuple()),
-                                   gd.SHIPS["recycler"].speed, 1.0, self.cfg.fleet_speed)
+                                   gd.effective_speed("recycler", self.research_levels), 1.0, self.cfg.fleet_speed)
         ready_at = max(probe_eta + 15, now + attack_eta_s + 60 - rec_ftime)
         self.log.info("Farmeo: sonda suicida %s -> %s para crear el campo de escombros (recicladores en ~%.1f min).",
                       probe_origin.coords, coords, max(0.0, ready_at - now) / 60)
@@ -2676,7 +2681,8 @@ class Brain(StatsMixin):
                 self.log.info("Farmeo: sin recicladores disponibles para los escombros de %s.", coords)
                 break
             origin = min(candidates, key=lambda p: gd.distance(p.coords.tuple(), coords.tuple()))
-            n = min(fleet_mod.recycler_count(job["debris"]), origin.ships.get("recycler", 0))
+            n = min(fleet_mod.recycler_count(job["debris"], self.research_levels.get("hyperspace_tech", 0)),
+                    origin.ships.get("recycler", 0))
             if n <= 0:
                 continue
             if not self._has_free_slots_for_mission():
@@ -2684,7 +2690,8 @@ class Brain(StatsMixin):
                 break
             if not self._guard():
                 break
-            plan = fleet_mod.harvest_plan(origin.coords, coords, job["debris"])
+            plan = fleet_mod.harvest_plan(origin.coords, coords, job["debris"],
+                                          self.research_levels.get("hyperspace_tech", 0))
             plan["ships"] = {"recycler": n}
             ok = self.client.send_fleet(plan["origin"], plan["destination"],
                                         plan["ships"], mission="harvest")
@@ -2737,7 +2744,7 @@ class Brain(StatsMixin):
                 break
 
             avail = origin_loc.ships.get("recycler", 0)
-            needed = fleet_mod.recycler_count(f["debris"])
+            needed = fleet_mod.recycler_count(f["debris"], self.research_levels.get("hyperspace_tech", 0))
             n = min(needed, avail)
             
             self.log.info("Reciclaje: evaluando campo en %s (escombros=%s). Necesita %d reciclador(es).",
@@ -2754,7 +2761,7 @@ class Brain(StatsMixin):
 
             # Calcular duración estimada del viaje de reciclaje (ida y vuelta)
             dist = gd.distance(origin_loc.coords.tuple(), target_coords.tuple())
-            slowest_speed = gd.SHIPS["recycler"].speed
+            slowest_speed = gd.effective_speed("recycler", self.research_levels)
             ftime = gd.flight_time(dist, slowest_speed, 1.0, self.cfg.fleet_speed)
             total_duration = 2 * ftime
             
@@ -2769,7 +2776,8 @@ class Brain(StatsMixin):
             if not self._guard():
                 break
 
-            plan = fleet_mod.harvest_plan(origin_loc.coords, target_coords, f["debris"])
+            plan = fleet_mod.harvest_plan(origin_loc.coords, target_coords, f["debris"],
+                                          self.research_levels.get("hyperspace_tech", 0))
             plan["ships"] = {"recycler": n}
 
             ok = self.client.send_fleet(plan["origin"], plan["destination"],
@@ -3139,12 +3147,20 @@ class Brain(StatsMixin):
             self.log.info("Colonización: buscando hueco cerca de %d:%d (zona objetivo).", tg, ts)
         dest = moons.pick_colony(occupied, self.cfg, home_coords=origin)
         if dest and self._guard():
-            self.log.info("Colonizando %s", dest)
-            ok = self.client.send_fleet(planets[0].coords, dest,
+            # Enviar desde la ubicación que TIENE el colonizador, no siempre planets[0]:
+            # _fleet_step lo fabrica en el astillero más alto (a menudo una colonia), así que
+            # rara vez está en el principal. Preferir la más cercana al destino.
+            carriers = [p for p in planets if p.ships.get("colony_ship", 0) > 0]
+            src = (min(carriers, key=lambda p: gd.distance(p.coords.tuple(), dest.tuple()))
+                   if carriers else planets[0])
+            self.log.info("Colonizando %s desde %s", dest, src.coords)
+            ok = self.client.send_fleet(src.coords, dest,
                                    {"colony_ship": 1}, mission="colonize")
             if ok:
-                self._deduct_ships(planets[0], {"colony_ship": 1})
+                self._deduct_ships(src, {"colony_ship": 1})
                 self.active_slots += 1
+            else:
+                self.log.warning("Colonización: el envío a %s desde %s falló.", dest, src.coords)
 
     def _moonshot(self, planets):
         plan = moons.plan_moonshot(planets[0].coords, self.cfg)
@@ -3232,7 +3248,6 @@ class Brain(StatsMixin):
                 if not p.lifeform_in_progress:
                     self._lifeforms_step(p)
                 self._defense_step(p)
-                self._facilities_step(p)
 
     def _facilities_step(self, planet):
         if not self._get_planet_setting(planet, "enable_facilities", True):

@@ -433,6 +433,21 @@ class GameClient:
         Primero intenta buscarlo específicamente para el universo configurado.
         Si no, busca por palabras clave comunes o cualquier botón de acción visible.
         """
+        # 0. En la PORTADA de login/registro NO hay botón Jugar. Sin este guard, el fallback
+        #    genérico de abajo cogía "Registrarse"/"Registro con Facebook/Google" (o el submit
+        #    de login), abría pestañas de facebook.com, gastaba los 3 intentos de Play y dejaba
+        #    self.page roto -> el login completo fallaba en 0 s. Si vemos el form de login o el
+        #    botón de Facebook y NO hay tarjetas de cuenta, estamos en la portada: abortar.
+        try:
+            on_auth = self.page.locator(
+                "#loginForm, button:has-text('Facebook'), button:has-text('Google')").count() > 0
+            has_accounts = self.page.locator(
+                ".accountCard, .account-list-item, [class*='account-row'], [class*='accountItem']").count() > 0
+            if on_auth and not has_accounts:
+                return None
+        except Exception:
+            pass
+
         # 1. Por universo específico
         if self.cfg.universe:
             # Buscar en contenedores del lobby (cards, rows, celdas)

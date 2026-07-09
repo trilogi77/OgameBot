@@ -12,32 +12,39 @@ from .models import Resources, Planet
 from .config import Config
 
 
-# Orden para DESBLOQUEAR todo el árbol de investigación lo antes posible (sin graviton ni
-# la red intergaláctica, que exige hyperspace 8 / computer 8 y frenaría el crecimiento).
+# Orden para DESBLOQUEAR todo el árbol de investigación (sin graviton ni la red
+# intergaláctica, que exige hyperspace 8 / computer 8 y frenaría el crecimiento).
 # Objetivos por hito (acumulativos): al alcanzar el último, todas las tecnologías están a
-# nivel >=1 y todas las naves/defensas quedan disponibles. Prioriza crecimiento (energía,
-# computación, ASTROFÍSICA=colonias) y deja el grind caro (láser 10 / ion 5 / energía 8 ->
-# plasma) al final. Prerrequisitos verificados contra el árbol de OGame (gamedata).
+# nivel >=1 y todas las naves quedan disponibles.
+#
+# ORDEN FUNCIONAL-PRIMERO: se desbloquea antes lo que hace ÚTIL a la flota y la economía
+# (slots de flota, carga pequeña/GRANDE, reciclador, colonias, crucero, pathfinder) y se
+# deja la "cola cara" (láser 10 / ion 5 / energía 8 -> plasma) —que es el ~77% del coste y
+# no desbloquea ninguna nave— para el final. Así el bot dispone de carguero grande,
+# reciclador y pathfinder a mitad del desbloqueo (antes solo tenía carga pequeña hasta
+# terminarlo), lo que dispara expediciones/reciclaje y el ingreso acelera el resto.
+# El coste extra frente al orden anterior (sobre todo combustión 2->6) se recupera de sobra
+# con ese ingreso. Prerrequisitos verificados contra el árbol de OGame (gamedata).
 RESEARCH_UNLOCK_ORDER: List[Tuple[str, int]] = [
-    ("energy_tech", 1),
+    # --- FASE FUNCIONAL: desbloquea flota/economía útil cuanto antes ---
+    ("energy_tech", 1),        # prereq de motores/láser/escudo
     ("computer_tech", 5),      # slots de flota PRONTO: farmeo/expediciones necesitan flotas
-    ("combustion_drive", 1),
-    ("energy_tech", 2),
-    ("laser_tech", 1),
-    ("armor_tech", 1),
-    ("impulse_drive", 1),
-    ("espionage_tech", 4),     # para astrofísica
-    ("impulse_drive", 3),      # para astrofísica
+    ("combustion_drive", 2),   # carga pequeña + cazador ligero operativos
+    ("espionage_tech", 4),     # sondas + prereq de astrofísica
+    ("impulse_drive", 3),      # cazador pesado + prereq de astrofísica
     ("astrophysics", 1),       # COLONIAS: crecimiento, desbloqueado pronto
-    ("energy_tech", 3),        # para escudos
+    ("combustion_drive", 6),   # CARGA GRANDE: expediciones/farmeo con bodega real
+    ("armor_tech", 2),         # + RECICLADOR (con combustión 6)
+    ("impulse_drive", 4),      # motor para el crucero
+    ("energy_tech", 4),        # prereq de láser 5 / ion
+    ("laser_tech", 5),         # prereq de ion
+    ("ion_tech", 2),           # CRUCERO desbloqueado (con astillero 5)
     ("weapons_tech", 1),       # lab 4
-    ("laser_tech", 5),         # para ion
-    ("energy_tech", 4),        # para ion
-    ("ion_tech", 1),           # lab 4
-    ("shielding_tech", 5),     # lab 6; para hiperespacio
-    ("energy_tech", 5),        # para hiperespacio
-    ("hyperspace_tech", 3),    # lab 7; para motor hiperespacial
-    ("hyperspace_drive", 1),   # lab 7
+    ("energy_tech", 5),        # prereq de escudo 5 / hiperespacio
+    ("shielding_tech", 5),     # lab 6; prereq de hiperespacio
+    ("hyperspace_tech", 3),    # lab 7; prereq del motor hiperespacial
+    ("hyperspace_drive", 2),   # PATHFINDER (expediciones x2 hallazgos)
+    # --- COLA CARA: completa el árbol a >=1 (no desbloquea naves; va al final) ---
     ("laser_tech", 10),        # para plasma
     ("ion_tech", 5),           # para plasma
     ("energy_tech", 8),        # para plasma

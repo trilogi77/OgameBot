@@ -343,7 +343,8 @@ def harvest_plan(origin: Coords, debris_coords: Coords,
 
 def auto_fleet_targets(home: Planet, planets: List[Planet],
                        research_levels: Dict[str, int], cfg: Config,
-                       expe_cargo_total: int = 0) -> Dict[str, int]:
+                       expe_cargo_total: int = 0,
+                       startup_phase: bool = False) -> Dict[str, int]:
     """Auto-gestión de flota: objetivos calculados según el tamaño de la economía.
 
     La escala es la suma de niveles de minas (metal+cristal) del imperio: más
@@ -354,11 +355,37 @@ def auto_fleet_targets(home: Planet, planets: List[Planet],
     para mover recursos). Solo incluye naves cuyos prerrequisitos ya se cumplen
     en `home`. El orden del dict es la prioridad de fabricación: el bot fabrica
     un lote por ciclo del primer déficit, igual que con los objetivos manuales.
+
+    `startup_phase` (fase de arranque: el árbol de investigación/flotas aún no
+    está desbloqueado): la flota MILITAR (cazadores/cruceros/acorazados) es gasto
+    puro que roba el metal que la investigación cara del final del desbloqueo
+    necesita ahorrar (`_fleet_step` solo reserva la próxima construcción de
+    economía, no los ahorros de investigación), y alarga el arranque. Durante esta
+    fase solo fabricamos lo justo para seguir haciendo EXPEDICIONES (cargueros +
+    sondas), que sí rentan; el farmeo militar y la disuasión esperan a completar
+    el desbloqueo.
     """
     def buildable(name: str) -> bool:
         return all(
             (home.lvl(req) if req in gd.BUILDING_COST else research_levels.get(req, 0)) >= lvl
             for req, lvl in gd.SHIP_PREREQS.get(name, {}).items())
+
+    if startup_phase:
+        targets: Dict[str, int] = {}
+        if getattr(cfg, "enable_expeditions", True):
+            cargo_ship = getattr(cfg, "expedition_cargo_ship", "large_cargo") or "large_cargo"
+            if buildable(cargo_ship):
+                targets[cargo_ship] = max(20, expe_cargo_total or 20)
+            else:
+                targets["small_cargo"] = 15  # puente hasta desbloquear el carguero grande
+            if getattr(cfg, "expedition_use_pathfinder", False):
+                astro = research_levels.get("astrophysics", 0)
+                targets["pathfinder"] = max(1, astro // 2 + 1)
+        if getattr(cfg, "enable_farming", True) or getattr(cfg, "enable_spy_watch", False):
+            targets["espionage_probe"] = 12
+        if getattr(cfg, "enable_colonization", False) and len(planets) < getattr(cfg, "max_colonies", 1):
+            targets["colony_ship"] = 1
+        return {s: q for s, q in targets.items() if q > 0 and buildable(s)}
 
     # ponytail: heurística lineal con las minas; afinar ratios si el crecimiento cojea
     eco = sum(p.lvl("metal_mine") + p.lvl("crystal_mine") for p in planets)

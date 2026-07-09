@@ -559,7 +559,7 @@ function mapConfigToUI(cfg) {
     setVal("target_metal_mine", cfg.target_metal_mine !== undefined ? cfg.target_metal_mine : 99);
     setVal("target_crystal_mine", cfg.target_crystal_mine !== undefined ? cfg.target_crystal_mine : 99);
     setVal("target_deut_synth", cfg.target_deut_synth !== undefined ? cfg.target_deut_synth : 99);
-    setVal("target_mine_ratio_payback_hours", cfg.target_mine_ratio_payback_hours !== undefined ? cfg.target_mine_ratio_payback_hours : 30);
+    setVal("target_mine_ratio_payback_hours", cfg.target_mine_ratio_payback_hours !== undefined ? cfg.target_mine_ratio_payback_hours : 24);
 
     // Objetivos de defensa
     setVal("defense_batch_size", cfg.defense_batch_size !== undefined ? cfg.defense_batch_size : 25);
@@ -777,7 +777,7 @@ function collectUIIntoConfig() {
     globalConfig.target_metal_mine = parseI(getVal("target_metal_mine"), 99);
     globalConfig.target_crystal_mine = parseI(getVal("target_crystal_mine"), 99);
     globalConfig.target_deut_synth = parseI(getVal("target_deut_synth"), 99);
-    globalConfig.target_mine_ratio_payback_hours = parseI(getVal("target_mine_ratio_payback_hours"), 30);
+    globalConfig.target_mine_ratio_payback_hours = parseI(getVal("target_mine_ratio_payback_hours"), 24);
 
     // Guardar objetivos de defensas
     globalConfig.defense_batch_size = parseI(getVal("defense_batch_size"), 25);

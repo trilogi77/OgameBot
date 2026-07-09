@@ -137,18 +137,43 @@ def time_to_accumulate(cost: gd.Cost, planet: Planet, cfg: Config, plasma: int) 
     return max(t_m, t_c, t_d)
 
 
-def _next_storage_build(planet: Planet, cfg: Config, get_resolved_building):
+def _effective_storage_min_cap(cfg: Config, research_levels: Optional[dict]) -> int:
+    """Objetivo de capacidad mínima de almacén EFECTIVO para este momento.
+
+    Fuera del arranque es ``storage_min_capacity_target`` (1M por defecto). Pero durante
+    la FASE DE DESBLOQUEO (árbol de investigación sin completar) perseguir 1M de capacidad
+    es inversión prematura: cada almacén a 1M cuesta ~255k de metal y en un arranque de
+    pocos días nunca se retiene tanto, así que roba recursos a minas/investigación. Ahí se
+    usa un objetivo reducido (``storage_min_capacity_target_startup``, 250k por defecto),
+    suficiente para guardar el ahorro más grande del desbloqueo. Al terminarlo se recupera
+    el objetivo pleno automáticamente.
+    """
+    base = int(getattr(cfg, "storage_min_capacity_target", 1_000_000) or 0)
+    if base <= 0:
+        return base
+    if getattr(cfg, "research_unlock_all", True) and research_levels:
+        from .research import next_unlock_research
+        if next_unlock_research(research_levels) is not None:
+            startup = int(getattr(cfg, "storage_min_capacity_target_startup", 250_000) or 0)
+            if startup > 0:
+                return min(base, startup)
+    return base
+
+
+def _next_storage_build(planet: Planet, cfg: Config, get_resolved_building,
+                        min_cap_target: Optional[int] = None):
     """Devuelve (nombre_almacén, coste) del almacén a subir con PRIORIDAD MÁXIMA, o None.
 
     Regla: cuando un recurso se acerca a llenar su almacén, subir ese almacén es la
     máxima prioridad de construcción. Además, mientras el almacén no pueda guardar el
-    mínimo objetivo (``storage_min_capacity_target``, 1M por defecto) el disparador es
-    más agresivo (se subirá aunque solo esté a medio llenar) para llegar cuanto antes
-    a un nivel capaz de almacenar 1M de recursos.
+    mínimo objetivo (``min_cap_target``, 1M por defecto fuera del arranque) el disparador
+    es más agresivo (se subirá aunque solo esté a medio llenar) para llegar cuanto antes
+    a un nivel capaz de almacenar ese mínimo.
     """
     from . import startorder
     trigger = getattr(cfg, "storage_fill_trigger_percent", 0.90)
-    min_cap_target = getattr(cfg, "storage_min_capacity_target", 1_000_000)
+    if min_cap_target is None:
+        min_cap_target = getattr(cfg, "storage_min_capacity_target", 1_000_000)
     for res_name, b_name in (("metal", "metal_storage"),
                              ("crystal", "crystal_storage"),
                              ("deut", "deut_tank")):
@@ -202,9 +227,12 @@ def next_build(
         return None
 
     # 0) PRIORIDAD MÁXIMA: almacenes. Si algún recurso se acerca a llenar su almacén
-    #    (o el almacén aún no puede guardar el mínimo objetivo de 1M), subir el almacén
-    #    manda por encima de laboratorio, astillero, energía y minas.
-    storage_choice = _next_storage_build(planet, cfg, get_resolved_building)
+    #    (o el almacén aún no puede guardar el mínimo objetivo), subir el almacén manda
+    #    por encima de laboratorio, astillero, energía y minas. Durante el desbloqueo el
+    #    objetivo se reduce para no invertir en almacenes de 1M de forma prematura.
+    storage_choice = _next_storage_build(
+        planet, cfg, get_resolved_building,
+        _effective_storage_min_cap(cfg, research_levels))
     if storage_choice:
         return storage_choice
 
@@ -273,8 +301,11 @@ def next_resources_build(
             return res[1], gd.building_cost(res[1], res[2])
         return None
 
-    # 0) PRIORIDAD MÁXIMA: almacenes (antes que energía y minas).
-    storage_choice = _next_storage_build(planet, cfg, get_resolved_building)
+    # 0) PRIORIDAD MÁXIMA: almacenes (antes que energía y minas). Objetivo reducido
+    #    durante el desbloqueo (ver _effective_storage_min_cap).
+    storage_choice = _next_storage_build(
+        planet, cfg, get_resolved_building,
+        _effective_storage_min_cap(cfg, research_levels))
     if storage_choice:
         return storage_choice
 

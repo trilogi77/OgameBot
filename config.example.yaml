@@ -18,13 +18,14 @@ loot_percent: 0.50           # % de recursos saqueables
 trade_ratio: [2.5, 1.5, 1.0] # metal:cristal:deuterio
 
 # --- Economía ---
-target_mine_ratio_payback_hours: 16   # sube mina si se amortiza en <= X horas
+target_mine_ratio_payback_hours: 24   # sube mina si se amortiza en <= X horas (óptimo para desbloquear antes; súbelo tras el desbloqueo para crecer más)
 keep_resources_buffer: 0.10
 enable_fusion_reactor: true
 fusion_reactor_solar_offset: 25        # Diferencia de niveles mínima que debe haber entre la planta solar y la de fusión (solar - fusión >= offset) antes de subir la de fusión
 max_mine_level: 40
 storage_fill_trigger_percent: 0.90     # % de llenado que dispara la subida del almacén
 storage_min_capacity_target: 1000000   # capacidad mínima (por recurso) garantizada con prioridad MÁXIMA: mientras el almacén no pueda guardar esto, subirlo manda sobre minas/energía/lab. 0 = desactivar
+storage_min_capacity_target_startup: 250000  # objetivo reducido durante el desbloqueo del árbol (evita invertir en almacenes de 1M en el arranque; al terminar vuelve al pleno). 0 = usar siempre el pleno
 
 # --- Investigación ---
 # Fase de desbloqueo: seguir el orden óptimo hasta tener TODO el árbol a nivel >=1 (sin

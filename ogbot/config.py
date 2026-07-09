@@ -35,7 +35,7 @@ class Config:
     # --- Estrategia económica ---
     enable_economy: bool = True
     enable_build_queue: bool = True   # cola de construcción manual por planeta (tipo Comandante)
-    target_mine_ratio_payback_hours: float = 16.0  # umbral payback para subir mina
+    target_mine_ratio_payback_hours: float = 24.0  # umbral payback para subir mina (óptimo de arranque)
     keep_resources_buffer: float = 0.10            # % de recursos a no gastar
     enable_fusion_reactor: bool = True
     fusion_reactor_solar_offset: int = 25            # Niveles que debe tener la planta solar por encima del reactor de fusión

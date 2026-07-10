@@ -1011,11 +1011,15 @@ class Brain(StatsMixin):
                 eligible = [p for p in planets if p.lvl("shipyard") >= 1]
                 if eligible:
                     home = max(eligible, key=lambda x: x.lvl("shipyard"))
+                    # Mismo criterio de arranque que _fleet_step: si no se pasa, el plan
+                    # publicado muestra cazadores/cruceros que el constructor no va a fabricar.
+                    startup = bool(getattr(self.cfg, "research_unlock_all", True)) and \
+                        research_mod.next_unlock_research(self.research_levels) is not None
                     expe_total = 0
-                    if (getattr(self.cfg, "fleet_priority", "economy") or "").lower() == "expeditions":
+                    if startup or (getattr(self.cfg, "fleet_priority", "economy") or "").lower() == "expeditions":
                         expe_total = self._expedition_optimal_cargo_total()
                     targets = fleet_mod.auto_fleet_targets(
-                        home, planets, self.research_levels, self.cfg, expe_total)
+                        home, planets, self.research_levels, self.cfg, expe_total, startup)
                     for ship, target in targets.items():
                         have = sum(pl.ships.get(ship, 0) for pl in planets)
                         if have < target:

@@ -48,6 +48,7 @@ BUILDING_COST = {
     "metal_storage":     (Cost(1000, 0), 2.0),
     "crystal_storage":   (Cost(1000, 500), 2.0),
     "deut_tank":         (Cost(1000, 1000), 2.0),
+    "missile_silo":      (Cost(20000, 20000, 1000), 2.0),   # requiere astillero 1
 }
 
 RESEARCH_COST = {
@@ -94,6 +95,7 @@ BUILDING_PREREQS = {
     "shipyard": {"robotics_factory": 2},
     "research_lab": {},
     "nanite_factory": {"robotics_factory": 10, "computer_tech": 10},
+    "missile_silo": {"shipyard": 1},
 }
 
 RESEARCH_PREREQS = {
@@ -259,6 +261,85 @@ DEFENSES: Dict[str, Unit] = {
     "small_shield_dome": Unit("small_shield_dome", 2000, 2000, 0, 0, 0, 0, Cost(10000, 10000)),
     "large_shield_dome": Unit("large_shield_dome", 10000, 10000, 0, 0, 0, 0, Cost(50000, 50000)),
 }
+
+# ---------------------------------------------------------------------------
+# MISILES (silo). Se fabrican en la página de DEFENSAS pero NO participan en el
+# combate de flotas, así que viven fuera de DEFENSES para no ensuciar el simulador.
+#   - interceptor_missile (ABM, id 502): requiere silo >= 2. Cada uno intercepta 1 IPM.
+#   - interplanetary_missile (IPM, id 503): requiere silo >= 4 e impulso >= 1.
+#     Destruye DEFENSAS del objetivo (no naves). Solo dentro de tu misma galaxia.
+# ---------------------------------------------------------------------------
+MISSILES: Dict[str, Unit] = {
+    "interceptor_missile":    Unit("interceptor_missile", 8000, 1, 1, 0, 0, 0, Cost(8000, 0, 2000)),
+    "interplanetary_missile": Unit("interplanetary_missile", 15000, 1, 12000, 0, 0, 0,
+                                   Cost(12500, 2500, 10000)),
+}
+
+# Slots del silo: nivel * 10. El IPM ocupa 2 slots; el interceptor, 1.
+MISSILE_SLOTS = {"interceptor_missile": 1, "interplanetary_missile": 2}
+MISSILE_SILO_REQ = {"interceptor_missile": 2, "interplanetary_missile": 4}
+
+
+def missile_cost(name: str, count: int = 1) -> Cost:
+    c = MISSILES[name].cost
+    return Cost(c.metal * count, c.crystal * count, c.deut * count)
+
+
+def missile_silo_capacity(level: int) -> int:
+    """Slots totales del silo (nivel * 10)."""
+    return max(0, int(level)) * 10
+
+
+def ipm_range(impulse_drive: int) -> int:
+    """Alcance del misil interplanetario en SISTEMAS, dentro de la misma galaxia:
+    (impulso * 5) - 1. Con impulso 0 no alcanza nada."""
+    return max(0, int(impulse_drive) * 5 - 1)
+
+
+def ipm_damage(weapons_tech: int = 0) -> float:
+    """Daño de UN misil interplanetario, escalado por tecnología de armas (+10%/nivel)."""
+    return MISSILES["interplanetary_missile"].weapon * (1.0 + 0.1 * max(0, int(weapons_tech)))
+
+
+def ipm_in_range(origin: tuple, target: tuple, impulse_drive: int) -> bool:
+    """Los IPM solo vuelan dentro de la MISMA galaxia y hasta ipm_range sistemas."""
+    if origin[0] != target[0]:
+        return False
+    return abs(origin[1] - target[1]) <= ipm_range(impulse_drive)
+
+
+def missiles_needed(defense: Dict[str, int], weapons_tech: int = 0, armor_tech: int = 0,
+                    shielding_tech: int = 0, enemy_interceptors: int = 0,
+                    margin: float = 1.25) -> int:
+    """Estimación de IPMs para arrasar la defensa del objetivo.
+
+    OJO: usa Unit.structure (puntos de estructura REALES de OGame), NO la property
+    Unit.hull (= structure/10), que es una abstracción interna del simulador por rondas
+    de combat.py. Usar hull aquí subestimaría los misiles necesarios en un factor 10.
+
+    Suma estructura (escalada por el blindaje del defensor) + escudo (escalado por su
+    tecnología de escudo; las cúpulas aportan muchísimo), divide por el daño de un IPM y
+    aplica un margen. Cada interceptor enemigo se come 1 IPM, así que se suman aparte.
+
+    ponytail: ESTIMACIÓN conservadora (redondea hacia arriba; ignora el reparto de daño
+    exacto de OGame). El bot re-espía tras el impacto y repite si queda defensa en pie,
+    así que un error de cálculo se autocorrige en la siguiente ronda en vez de fallar
+    en silencio. Techo conocido: puede gastar algún misil de más.
+    """
+    dmg = ipm_damage(weapons_tech)
+    if dmg <= 0:
+        return 0
+    armor = 1.0 + 0.1 * max(0, int(armor_tech))
+    shield = 1.0 + 0.1 * max(0, int(shielding_tech))
+    hp = 0.0
+    for name, count in (defense or {}).items():
+        unit = DEFENSES.get(name)
+        if unit is None or count <= 0:
+            continue        # misiles del defensor u objetos desconocidos: no son casco
+        hp += (unit.structure * armor + unit.shield * shield) * int(count)
+    if hp <= 0:
+        return 0
+    return int(math.ceil(hp * max(1.0, margin) / dmg)) + max(0, int(enemy_interceptors))
 
 
 # ---------------------------------------------------------------------------

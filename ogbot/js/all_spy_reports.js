@@ -31,6 +31,10 @@
                 },
                 fleet: {},
                 defense: {},
+                // Misiles del defensor (ABM/IPM). Van APARTE de 'defense' porque no
+                // participan en el combate de flotas, pero cada interceptor se come un
+                // IPM nuestro: sin este dato el ataque con misiles malgasta munición.
+                missiles: {},
                 player_name: el.getAttribute('data-raw-playername') || '',
                 is_inactive: rawStatusStr.includes('inactive'),
                 // Actividad del informe (minutos): 15 = '*' (<15 min), 15-59 = minutos.
@@ -56,6 +60,8 @@
                 404:'gauss_cannon', 405:'ion_cannon', 406:'plasma_turret',
                 407:'small_shield_dome', 408:'large_shield_dome'
             };
+            // OGame mete los misiles en el mismo payload data-raw-defense.
+            const MISSILE_MAP = { 502:'interceptor_missile', 503:'interplanetary_missile' };
             
             try {
                 const fleetObj = JSON.parse(rawFleetStr);
@@ -76,6 +82,10 @@
                         const tid = parseInt(tidStr);
                         if (DEF_MAP[tid]) {
                             r.defense[DEF_MAP[tid]] = parseInt(count);
+                        } else if (MISSILE_MAP[tid]) {
+                            // Fuera de 'defense': no combaten, pero los interceptores
+                            // se comen IPMs nuestros (y no deben marcar 'defendido').
+                            r.missiles[MISSILE_MAP[tid]] = parseInt(count);
                         }
                     }
                 }

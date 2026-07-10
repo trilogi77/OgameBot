@@ -650,6 +650,10 @@
                             <span class="switch-container"><input type="checkbox" id="allow_last_slot_for_missions"><span class="slider"></span></span>
                         </label>
                         <label class="toggle-row">
+                            <span class="toggle-text"><strong>Guardia nocturna de ataques</strong><span>Durante el descanso despierta cada 25-45 min (aleatorio) solo para mirar si te atacan; si detecta un ataque, escapa la flota y hace panic-build. Desactívalo si prefieres cero actividad nocturna (menos huella, más riesgo de perder la flota).</span></span>
+                            <span class="switch-container"><input type="checkbox" id="enable_night_attack_watch"><span class="slider"></span></span>
+                        </label>
+                        <label class="toggle-row">
                             <span class="toggle-text"><strong>Barrido nocturno</strong><span>Durante el descanso vacía (fleetsave) los planetas marcados en Planetas.</span></span>
                             <span class="switch-container"><input type="checkbox" id="enable_night_sweep"><span class="slider"></span></span>
                         </label>
@@ -717,6 +721,24 @@
                             <span class="toggle-text"><strong>Auto-flota de ataque</strong><span>El bot elige la escolta militar por simulación según el hangar y la defensa del objetivo; ignora la plantilla.</span></span>
                             <span class="switch-container"><input type="checkbox" id="farm_auto_fleet"><span class="slider"></span></span>
                         </label>
+                        <label class="toggle-row">
+                            <span class="toggle-text"><strong>Misiles interplanetarios</strong><span>Abre granjas de inactivos demasiado defendidas para tu flota: los misiles destruyen su defensa sin arriesgar naves y, como no reconstruyen, quedan abiertas para siempre. Construye el silo y los misiles solo. Requiere motor de impulso (alcance = impulso×5−1 sistemas, misma galaxia).</span></span>
+                            <span class="switch-container"><input type="checkbox" id="enable_missile_attacks"><span class="slider"></span></span>
+                        </label>
+                        <div class="form-group">
+                            <label for="missile_min_loot_value">Botín mínimo para usar misiles</label>
+                            <input type="number" id="missile_min_loot_value" min="0" step="10000" placeholder="150000">
+                            <span class="field-help">Solo se "abren" granjas que renten lo suficiente como para amortizar los misiles.</span>
+                        </div>
+                        <div class="form-group">
+                            <label for="missile_max_per_target">Máximo de misiles por objetivo</label>
+                            <input type="number" id="missile_max_per_target" min="1" step="1" placeholder="60">
+                        </div>
+                        <div class="form-group">
+                            <label for="missile_silo_target">Nivel de silo de misiles</label>
+                            <input type="number" id="missile_silo_target" min="4" step="1" placeholder="4">
+                            <span class="field-help">El misil interplanetario requiere silo 4. Cada nivel da 10 slots (cada misil ocupa 2).</span>
+                        </div>
                         <label class="toggle-row">
                             <span class="toggle-text"><strong>Relanzar al volver la flota</strong><span>Despierta al bot cuando vuelve una flota de farmeo para lanzar la siguiente ronda.</span></span>
                             <span class="switch-container"><input type="checkbox" id="farming_smart_schedule"><span class="slider"></span></span>

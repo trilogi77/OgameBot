@@ -420,6 +420,7 @@ class Brain(StatsMixin):
         self.sent_fleetsaves: List[dict] = []   # fleetsaves nocturnos enviados (para el recall)
         self.inflight_dests: Dict[str, set] = {}  # destino "g:s:p" -> misiones propias en vuelo
         self.attack_history: Dict[str, float] = {}
+        self.missile_opened: List[str] = []   # granjas ya "abiertas" con misiles (no repetir)
         self.telegram_notified_attacks: Dict[str, float] = {}
         self._spy_seen: Dict[str, float] = {}   # cooldown de avisos de espionaje por origen->destino
         self.renamed_planets: set = set()       # ids de planetas ya renombrados (una vez)
@@ -465,6 +466,7 @@ class Brain(StatsMixin):
                 data = utils.load_json_or_backup(self.cfg.state_file, self.log)
                 if data is not None:
                     self.attack_history = data.get("attack_history", {})
+                    self.missile_opened = list(data.get("missile_opened", []) or [])
                     self.telegram_notified_attacks = data.get("telegram_notified_attacks", {})
                     self._spy_seen = data.get("spy_seen", {})
                     self.last_economy_run_time = data.get("last_economy_run_time", 0.0)
@@ -529,6 +531,8 @@ class Brain(StatsMixin):
                 # attack_history crecía sin límite (target_stats ya se podaba igual).
                 "attack_history": {k: v for k, v in self.attack_history.items()
                                    if float(v or 0.0) > now - 90 * 86400},
+                # Granjas abiertas con misiles: no volver a gastar IPMs en ellas.
+                "missile_opened": list(self.missile_opened),
                 "telegram_notified_attacks": self.telegram_notified_attacks,
                 "spy_seen": self._spy_seen,
                 "renamed_planets": sorted(self.renamed_planets),
@@ -1792,6 +1796,12 @@ class Brain(StatsMixin):
                     self._colonize(planets)
                 if self.cfg.enable_moon_creation:
                     self._moonshot(planets)
+                # Misiles (opcional): abre granjas demasiado defendidas para la flota.
+                if getattr(self.cfg, "enable_missile_attacks", False):
+                    try:
+                        self._missile_step(planets)
+                    except Exception as e:
+                        self.log.warning("Ronda de misiles falló: %s", e)
                 self.last_farming_run_time = time.time()
                 self._update_next_farming_event()
                 self._save_state()
@@ -2307,6 +2317,131 @@ class Brain(StatsMixin):
         except Exception as e:
             self.log.debug("Sin óptimo de expediciones para la auto-flota: %s", e)
             return 0
+
+    # ------------------------------------------------------------------ #
+    #  Misiles interplanetarios (OPCIONAL: enable_missile_attacks)
+    # ------------------------------------------------------------------ #
+    def _missile_origin(self, planets, target, impulse: int):
+        """Planeta propio con silo >= 4, EN RANGO del objetivo (misma galaxia,
+        (impulso*5)-1 sistemas) y con más IPMs en el hangar. None si ninguno vale."""
+        best = None
+        for p in planets:
+            if p.lvl("missile_silo") < gd.MISSILE_SILO_REQ["interplanetary_missile"]:
+                continue
+            if not gd.ipm_in_range(p.coords.tuple(), target.tuple(), impulse):
+                continue
+            stock = int(p.defenses.get("interplanetary_missile", 0))
+            if best is None or stock > int(best.defenses.get("interplanetary_missile", 0)):
+                best = p
+        return best
+
+    def _missile_step(self, planets):
+        """Abre granjas de inactivos DEMASIADO defendidas para la flota (win_rate<95%)
+        destruyendo su defensa con misiles interplanetarios: no arriesga naves y, como los
+        inactivos no reconstruyen, la granja queda abierta para el farmeo normal.
+
+        Descubre candidatos leyendo los informes de espionaje que YA hay en la bandeja (no
+        gasta sondas nuevas) y no toca el flujo de farmeo. Un objetivo por ronda.
+        """
+        impulse = int((self.research_levels or {}).get("impulse_drive", 0))
+        if impulse <= 0:
+            self.log.debug("Misiles: sin motor de impulso, los IPM no tienen alcance.")
+            return
+        try:
+            reports = self.client.read_all_spy_reports() or {}
+        except Exception as e:
+            self.log.debug("Misiles: no pude leer informes de espionaje: %s", e)
+            return
+
+        min_loot = float(getattr(self.cfg, "missile_min_loot_value", 150_000) or 0)
+        max_ipm = int(getattr(self.cfg, "missile_max_per_target", 60) or 60)
+        opened = set(self.missile_opened or [])
+        # OJO: la clave del informe es "G:S:P"; str(Coords) da "[G:S:P]P". Usamos SIEMPRE
+        # la clave, o el registro de granjas ya abiertas nunca casaría y repetiríamos el
+        # gasto de misiles contra el mismo objetivo.
+        best = None   # (ratio, clave, origen, informe, misiles, botin)
+        for key, rep in reports.items():
+            if key in opened or not rep.is_inactive or not rep.defense:
+                continue
+            loot = rep.resources.value(self.cfg.trade_ratio) * float(self.cfg.loot_percent)
+            if loot < min_loot:
+                continue
+            need = gd.missiles_needed(
+                rep.defense,
+                weapons_tech=self.my_tech.weapons,
+                armor_tech=rep.research.get("armor_tech", 0),
+                shielding_tech=rep.research.get("shielding_tech", 0),
+                enemy_interceptors=rep.missiles.get("interceptor_missile", 0))
+            if need <= 0 or need > max_ipm:
+                continue
+            src = self._missile_origin(planets, rep.coords, impulse)
+            if src is None:
+                continue
+            ratio = loot / need     # botín por misil: abrimos primero la más rentable
+            if best is None or ratio > best[0]:
+                best = (ratio, key, src, rep, need, loot)
+
+        if best is None:
+            self.log.debug("Misiles: sin candidatos (inactivo defendido, rico y en rango).")
+            return
+        _, key, src, rep, need, loot = best
+        have = int(src.defenses.get("interplanetary_missile", 0))
+        self.log.info("Misiles: candidato %s (botín≈%s, defensa=%s) -> %d IPM desde %s (stock %d).",
+                      rep.coords, f"{int(loot):,}", rep.defense, need, src.coords, have)
+
+        if have < need:
+            self._missile_build(src, need - have)
+            return    # sin stock suficiente: se lanza en una ronda posterior
+
+        if not self._guard():
+            return
+        if self.client.launch_missiles(src, rep.coords, need):
+            self.missile_opened.append(key)      # clave "G:S:P" del informe, no str(Coords)
+            self.record_session_action("missiles", key, need, str(src.coords))
+            self._tg_alert(f"🚀 OGBot: {need} misiles lanzados contra {key} "
+                           f"(botín≈{int(loot):,}). La granja quedará abierta.")
+            self._save_state()
+
+    def _missile_build(self, planet, missing: int):
+        """Construye lo que falta para el ataque: primero el silo (necesita nivel 4 para
+        IPM), luego los misiles. Un lote por ronda; respeta el buffer de recursos."""
+        target_silo = int(getattr(self.cfg, "missile_silo_target", 4) or 4)
+        lvl = planet.lvl("missile_silo")
+        if lvl < target_silo:
+            if planet.building_in_progress or self._active_queue_entry(planet):
+                return
+            cost = gd.building_cost("missile_silo", lvl + 1)
+            if not planet.resources.can_afford(cost):
+                self.log.info("Misiles: ahorrando para silo nivel %d en %s.", lvl + 1, planet.coords)
+                return
+            if self._guard() and self.client.build(planet, "facilities", "missile_silo"):
+                self.record_session_action("buildings", "missile_silo", lvl + 1, str(planet.coords))
+                self._mark_build_started(planet, "missile_silo", cost)
+            return
+
+        # Silo listo: fabricar misiles (cabe lo que permita el silo: nivel*10 slots, IPM=2).
+        cap = gd.missile_silo_capacity(lvl)
+        used = (int(planet.defenses.get("interplanetary_missile", 0)) * gd.MISSILE_SLOTS["interplanetary_missile"]
+                + int(planet.defenses.get("interceptor_missile", 0)) * gd.MISSILE_SLOTS["interceptor_missile"])
+        free_slots = max(0, cap - used)
+        batch = min(missing, free_slots // gd.MISSILE_SLOTS["interplanetary_missile"], 10)
+        if batch <= 0:
+            self.log.info("Misiles: silo lleno en %s (cap %d slots); sube missile_silo_target.",
+                          planet.coords, cap)
+            return
+        buf = 1 - self.cfg.keep_resources_buffer
+        avail = Resources(planet.resources.metal * buf, planet.resources.crystal * buf,
+                          planet.resources.deut * buf)
+        while batch > 0 and not avail.can_afford(gd.missile_cost("interplanetary_missile", batch)):
+            batch -= 1
+        if batch <= 0:
+            self.log.info("Misiles: ahorrando recursos para IPMs en %s.", planet.coords)
+            return
+        if self._guard() and self.client.build_defense(planet, "interplanetary_missile", batch):
+            self.record_session_action("missiles", "interplanetary_missile", batch, str(planet.coords))
+            planet.defenses["interplanetary_missile"] = (
+                int(planet.defenses.get("interplanetary_missile", 0)) + batch)
+            self.log.info("Misiles: fabricando %d IPM en %s.", batch, planet.coords)
 
     def _apply_server_params(self):
         """Auto-configura los parámetros FÍSICOS del universo desde serverData.xml (API

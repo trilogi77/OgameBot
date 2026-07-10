@@ -83,6 +83,9 @@ TECH_IDS: Dict[str, int] = {
     "rocket_launcher": 401, "light_laser": 402,   "heavy_laser": 403,
     "gauss_cannon": 404,    "ion_cannon": 405,    "plasma_turret": 406,
     "small_shield_dome": 407, "large_shield_dome": 408,
+    # Silo y misiles (los misiles se fabrican en la MISMA página de defensas)
+    "missile_silo": 44,
+    "interceptor_missile": 502, "interplanetary_missile": 503,
 }
 # Inverso: tech_id str → name
 _ID_TO_NAME = {str(v): k for k, v in TECH_IDS.items()}
@@ -1490,6 +1493,7 @@ class GameClient:
                     ),
                     fleet={k: int(v) for k, v in raw.get("fleet", {}).items()},
                     defense={k: int(v) for k, v in raw.get("defense", {}).items()},
+                    missiles={k: int(v) for k, v in (raw.get("missiles") or {}).items()},
                     timestamp=time.time(),
                     activity_mins=raw.get("activity"),
                 )
@@ -2342,6 +2346,89 @@ class GameClient:
         if debris_list:
             self.log.info("Escombros encontrados: %d campos.", len(debris_list))
         return debris_list
+
+    def launch_missiles(self, origin: Planet, target: Coords, amount: int) -> bool:
+        """Lanza `amount` misiles interplanetarios desde `origin` contra `target`.
+
+        Los IPM NO son una misión de flota (send_fleet no sirve): OGame los dispara desde
+        la capa 'missileattacklayer' de la vista de galaxia.
+
+        FAIL-CLOSED: si no encuentra el formulario de lanzamiento, NO clica nada, vuelca un
+        diagnóstico del DOM y devuelve False. Verificación POSITIVA: solo devuelve True si
+        el stock de IPM del planeta origen ha BAJADO tras el envío.
+        """
+        if self._act(f"Lanzar {amount} IPM desde {origin.coords} contra {target}"):
+            return True
+        if amount <= 0:
+            return False
+        before = int(origin.defenses.get("interplanetary_missile", 0))
+        if before < amount:
+            self.log.warning("Misiles: %s solo tiene %d IPM (pedidos %d).",
+                             origin.coords, before, amount)
+            return False
+
+        pid = str(origin.id).replace("planet-", "").replace("moon-", "")
+        url = (f"{self.cfg.server_url.rstrip('/')}/game/index.php?page=ajax"
+               f"&component=missileattacklayer&galaxy={target.galaxy}"
+               f"&system={target.system}&position={target.position}&cp={pid}")
+        try:
+            self.page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            self._delay()
+        except Exception as e:
+            self.log.warning("Misiles: no se pudo abrir la capa de ataque: %s", e)
+            return False
+
+        def _first(selectors):
+            for sel in selectors:
+                try:
+                    loc = self.page.locator(sel).first
+                    if loc.count() > 0 and loc.is_visible():
+                        return loc
+                except Exception:
+                    continue
+            return None
+
+        qty = _first(["input#missileCount", "input[name='missileCount']",
+                      "input[name='anz']", "input#anz",
+                      "#detailsWrapper input[type='text']", "form input[type='text']"])
+        btn = _first(["#sendMissiles", "button#sendMissiles", "a#sendMissiles",
+                      "button:has-text('Atacar')", "a:has-text('Atacar')",
+                      "button:has-text('Attack')", "button[type='submit']", ".send_missile"])
+        if qty is None or btn is None:
+            try:
+                diag = self.page.evaluate(_load_js("missile_diag"))
+            except Exception:
+                diag = None
+            self.log.error("Misiles: no encuentro el formulario de lanzamiento; NO disparo "
+                           "(fail-closed). Ajusta los selectores con este diagnóstico: %s", diag)
+            return False
+
+        try:
+            qty.fill(str(amount))
+            self._delay()
+            btn.click()
+            self.page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except Exception as e:
+            self.log.warning("Misiles: fallo al enviar el formulario: %s", e)
+            return False
+        if self._is_error_page():
+            self.log.warning("Misiles: OGame devolvió página de error.")
+            return False
+
+        # Verificación positiva: el hangar de misiles debe haber bajado.
+        try:
+            after = int(self._read_tech_page("defenses", origin)
+                        .get("interplanetary_missile", before))
+        except Exception as e:
+            self.log.warning("Misiles: no pude verificar el lanzamiento: %s", e)
+            return False
+        if after < before:
+            origin.defenses["interplanetary_missile"] = after
+            self.log.info("Misiles: %d IPM lanzados desde %s contra %s (stock %d -> %d).",
+                          before - after, origin.coords, target, before, after)
+            return True
+        self.log.error("Misiles: el stock de IPM no bajó (%d); asumo que NO se lanzaron.", after)
+        return False
 
     def _confirm_recall_dialog(self) -> bool:
         """Tras clicar el enlace de regreso, OGame abre un diálogo de confirmación

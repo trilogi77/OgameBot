@@ -472,6 +472,7 @@ function mapConfigToUI(cfg) {
     setCheck("fleetsave_carry_resources", cfg.fleetsave_carry_resources !== false);
     setCheck("fleetsave_recall_halfway", !!cfg.fleetsave_recall_halfway);
     setCheck("fleetsave_prefer_moon", cfg.fleetsave_prefer_moon !== false);
+    setCheck("enable_night_attack_watch", cfg.enable_night_attack_watch !== false);  // default ON
     setCheck("enable_night_sweep", cfg.enable_night_sweep);
     setVal("night_sweep_interval_hours", cfg.night_sweep_interval_hours !== undefined ? cfg.night_sweep_interval_hours : 2.0);
     setVal("telegram_token", cfg.telegram_token || "");
@@ -519,6 +520,10 @@ function mapConfigToUI(cfg) {
     setCheck("farm_with_probes", cfg.farm_with_probes);
     setCheck("farm_recycle_debris", cfg.farm_recycle_debris !== undefined ? cfg.farm_recycle_debris : true);
     setCheck("farm_auto_fleet", cfg.farm_auto_fleet);
+    setCheck("enable_missile_attacks", !!cfg.enable_missile_attacks);   // opt-in
+    setVal("missile_min_loot_value", cfg.missile_min_loot_value !== undefined ? cfg.missile_min_loot_value : 150000);
+    setVal("missile_max_per_target", cfg.missile_max_per_target !== undefined ? cfg.missile_max_per_target : 60);
+    setVal("missile_silo_target", cfg.missile_silo_target !== undefined ? cfg.missile_silo_target : 4);
     setCheck("farming_smart_schedule", cfg.farming_smart_schedule !== undefined ? cfg.farming_smart_schedule : true);
     setCheck("farming_skip_active_targets", cfg.farming_skip_active_targets !== undefined ? cfg.farming_skip_active_targets : true);
     setVal("farming_blacklist_days", cfg.farming_blacklist_days !== undefined ? cfg.farming_blacklist_days : 7);
@@ -673,6 +678,7 @@ function collectUIIntoConfig() {
     globalConfig.fleetsave_carry_resources = getCheck("fleetsave_carry_resources");
     globalConfig.fleetsave_recall_halfway = getCheck("fleetsave_recall_halfway");
     globalConfig.fleetsave_prefer_moon = getCheck("fleetsave_prefer_moon");
+    globalConfig.enable_night_attack_watch = getCheck("enable_night_attack_watch");
     globalConfig.enable_night_sweep = getCheck("enable_night_sweep");
     const _nsi = parseF(getVal("night_sweep_interval_hours"), 2.0);
     globalConfig.night_sweep_interval_hours = _nsi <= 0 ? 2.0 : _nsi;
@@ -719,6 +725,10 @@ function collectUIIntoConfig() {
     globalConfig.farm_with_probes = getCheck("farm_with_probes");
     globalConfig.farm_recycle_debris = getCheck("farm_recycle_debris");
     globalConfig.farm_auto_fleet = getCheck("farm_auto_fleet");
+    globalConfig.enable_missile_attacks = getCheck("enable_missile_attacks");
+    globalConfig.missile_min_loot_value = parseF(getVal("missile_min_loot_value"), 150000);
+    globalConfig.missile_max_per_target = parseI(getVal("missile_max_per_target"), 60);
+    globalConfig.missile_silo_target = parseI(getVal("missile_silo_target"), 4);
     globalConfig.farming_smart_schedule = getCheck("farming_smart_schedule");
     globalConfig.farming_skip_active_targets = getCheck("farming_skip_active_targets");
     globalConfig.farming_blacklist_days = parseF(getVal("farming_blacklist_days"), 7);

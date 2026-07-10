@@ -97,6 +97,10 @@ class EspionageReport:
     timestamp: float = 0.0
     counterespionage_risk: float = 0.0  # probabilidad de detección
     activity_mins: Optional[int] = None  # actividad del informe (<60 = reciente); None = sin dato
+    # Misiles del defensor (interceptor_missile / interplanetary_missile). Van aparte de
+    # `defense` porque NO combaten (no deben marcar el planeta como "defendido"), pero cada
+    # interceptor enemigo destruye un IPM nuestro al lanzarlo.
+    missiles: Dict[str, int] = field(default_factory=dict)
 
     @property
     def is_undefended(self) -> bool:

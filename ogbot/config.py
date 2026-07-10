@@ -123,6 +123,15 @@ class Config:
     # militar por simulación (mínimo que gana >=95% con margen) según el hangar del
     # origen y la defensa del informe; los cargueros se dimensionan al botín.
     farm_auto_fleet: bool = False
+    # --- Misiles interplanetarios (IPM) — OPCIONAL, apagado por defecto ---
+    # Abre granjas de inactivos DEMASIADO defendidas para la flota (win_rate < 95%)
+    # destruyendo su defensa con misiles: no arriesga naves y, como los inactivos no
+    # reconstruyen, la granja queda abierta para siempre. Construye silo + IPMs solo si
+    # hay un objetivo rentable en rango (misma galaxia, (impulso*5)-1 sistemas).
+    enable_missile_attacks: bool = False
+    missile_min_loot_value: float = 150_000   # botín mínimo para que compense abrirla
+    missile_max_per_target: int = 60          # tope de IPMs por objetivo (seguridad)
+    missile_silo_target: int = 4              # nivel de silo a construir (IPM requiere 4)
     # Despertar al volver la flota de farmeo para relanzar la ronda (como las expediciones)
     farming_smart_schedule: bool = True
     # Descartar el ataque si el informe de espionaje muestra actividad reciente (<60 min):

@@ -98,7 +98,20 @@ farm_recycle_debris: true
 # Auto-flota de ataque: ignora attacker_fleet_template y el bot elige la escolta
 # militar por simulación (mínimo que gana >=95% con margen) según el hangar y la
 # defensa del objetivo; los cargueros se dimensionan al botín.
+# OJO: con farm_with_probes=true se atacan SOLO con sondas y esta opción se ignora,
+# así que ningún inactivo defendido pasará el filtro de victoria >=95%.
 farm_auto_fleet: false
+
+# --- Misiles interplanetarios (IPM) — OPCIONAL, apagado por defecto ---
+# Abre granjas de INACTIVOS demasiado defendidas para tu flota (las que el farmeo
+# descarta por "Combate arriesgado", victoria <95%). Los misiles destruyen su defensa
+# sin arriesgar naves y, como los inactivos no reconstruyen, la granja queda abierta
+# para siempre. El bot construye el silo y los misiles por sí mismo, y solo actúa si
+# hay un objetivo rentable EN RANGO: misma galaxia y (motor_de_impulso * 5) - 1 sistemas.
+enable_missile_attacks: false
+missile_min_loot_value: 150000   # botín mínimo para que compense abrirla
+missile_max_per_target: 60       # tope de misiles por objetivo (seguridad)
+missile_silo_target: 4           # nivel del silo (el IPM requiere 4; cada nivel = 10 slots, IPM = 2)
 # Despertar al volver la flota de farmeo para relanzar la ronda (como expediciones)
 farming_smart_schedule: true
 # Descartar el ataque si el informe muestra actividad reciente (<60 min) en el
@@ -218,6 +231,11 @@ fleetsave_only_if_hostile: false  # fleetsave nocturno solo si hubo actividad ho
 # planeta en la pestaña "Por Planeta" (así no haces actividad en todos).
 enable_night_sweep: false
 night_sweep_interval_hours: 2.0
+# Guardia nocturna de ataques (OPCIONAL). Durante el descanso despierta cada 25-45 min
+# (aleatorio) SOLO para mirar el eventbox: si detecta un ataque, escapa la flota y hace
+# panic-build. Sin esto pasan horas ciegas de noche (el mayor riesgo de perder la flota).
+# Ponlo en false si prefieres CERO actividad nocturna (menos huella, más riesgo).
+enable_night_attack_watch: true
 min_action_delay_s: 3
 max_action_delay_s: 11
 cycle_interval_min_s: 600

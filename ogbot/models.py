@@ -76,6 +76,10 @@ class Planet:
     building_queue: List[str] = field(default_factory=list)
     lifeform_in_progress: bool = False
     lifeform_available: bool = True   # False si el universo/planeta no tiene Formas de vida
+    # Lo que el planeta está AHORRANDO para un objetivo concreto (p.ej. el paso pendiente
+    # del programa especial). Los demás subsistemas solo gastan el excedente por encima
+    # de esta reserva, POR RECURSO (ver economy.spendable_resources).
+    savings_reserve: Optional[Resources] = None
 
     def lvl(self, b: str) -> int:
         val = self.buildings.get(b, 0)

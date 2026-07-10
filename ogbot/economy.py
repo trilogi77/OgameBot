@@ -174,6 +174,35 @@ def time_to_accumulate(cost: gd.Cost, planet: Planet, cfg: Config, plasma: int) 
     return max(t_m, t_c, t_d)
 
 
+def spendable_resources(planet: Planet, cfg: Config, buf: Optional[float] = None) -> Resources:
+    """Recursos que este planeta puede GASTAR ahora mismo.
+
+    Aplica el buffer configurado y descuenta la reserva de ahorro del planeta
+    (``planet.savings_reserve``, la fija el brain cuando el planeta está ahorrando para un
+    objetivo concreto, p.ej. un paso del programa especial). La reserva se descuenta POR
+    RECURSO: ahorrar deuterio para un motor no debe bloquear el metal/cristal sobrante,
+    que sigue disponible para minas u otras construcciones.
+    """
+    if buf is None:
+        buf = 1 - cfg.keep_resources_buffer
+    m = planet.resources.metal * buf
+    c = planet.resources.crystal * buf
+    d = planet.resources.deut * buf
+    reserve = getattr(planet, "savings_reserve", None)
+    if reserve is not None:
+        m = max(0.0, m - max(0.0, getattr(reserve, "metal", 0.0)))
+        c = max(0.0, c - max(0.0, getattr(reserve, "crystal", 0.0)))
+        d = max(0.0, d - max(0.0, getattr(reserve, "deut", 0.0)))
+    return Resources(m, c, d)
+
+
+def surplus_after_reserve(avail: Resources, cost) -> Resources:
+    """Excedente por recurso tras apartar lo que ``cost`` (el objetivo de ahorro) necesita."""
+    return Resources(max(0.0, avail.metal - cost.metal),
+                     max(0.0, avail.crystal - cost.crystal),
+                     max(0.0, avail.deut - cost.deut))
+
+
 def _effective_storage_min_cap(cfg: Config, research_levels: Optional[dict]) -> int:
     """Objetivo de capacidad mínima de almacén EFECTIVO para este momento.
 
@@ -263,10 +292,7 @@ def metal_dump_research(planet: Planet, cfg: Config,
     if cost.metal > storage_cost.metal:
         return None                    # el blindaje ya es más caro: mejor el almacén
 
-    buf = 1 - cfg.keep_resources_buffer
-    avail = Resources(planet.resources.metal * buf,
-                      planet.resources.crystal * buf,
-                      planet.resources.deut * buf)
+    avail = spendable_resources(planet, cfg)
     if not avail.can_afford(cost):
         return None
     return "armor_tech", cost
@@ -474,10 +500,7 @@ def affordable_resources_build(
     if not choice:
         return None
     name, cost = choice
-    buf = 1 - cfg.keep_resources_buffer
-    avail = Resources(planet.resources.metal * buf,
-                      planet.resources.crystal * buf,
-                      planet.resources.deut * buf)
+    avail = spendable_resources(planet, cfg)
 
     if avail.can_afford(cost):
         return name, cost
@@ -485,8 +508,8 @@ def affordable_resources_build(
     t = time_to_accumulate(cost, planet, cfg, plasma)
     max_wait = getattr(cfg, "max_saving_hours_economy", 4.0)
 
-    if t <= max_wait:
-        return None
+    # Al ahorrar, el fallback solo puede gastar el EXCEDENTE que el objetivo no necesita.
+    fallback_avail = surplus_after_reserve(avail, cost) if t <= max_wait else avail
 
     # Fallback
     from .prereqs import resolve_prerequisites
@@ -498,7 +521,7 @@ def affordable_resources_build(
         if not res or res[0] != "building" or res[1] != mine:
             continue
         c = gd.building_cost(mine, planet.lvl(mine) + 1)
-        if avail.can_afford(c):
+        if fallback_avail.can_afford(c):
             pb, _ = _mine_payback(planet, mine, cfg, plasma)
             affordable_mines.append((mine, pb, c))
 
@@ -529,19 +552,10 @@ def affordable_facilities_build(
     if not choice:
         return None
     name, cost = choice
-    buf = 1 - cfg.keep_resources_buffer
-    avail = Resources(planet.resources.metal * buf,
-                      planet.resources.crystal * buf,
-                      planet.resources.deut * buf)
+    avail = spendable_resources(planet, cfg)
 
     if avail.can_afford(cost):
         return name, cost
-
-    t = time_to_accumulate(cost, planet, cfg, plasma)
-    max_wait = getattr(cfg, "max_saving_hours_economy", 4.0)
-
-    if t <= max_wait:
-        return None
 
     return None
 
@@ -566,10 +580,7 @@ def affordable_build(
     if not choice:
         return None
     name, cost = choice
-    buf = 1 - cfg.keep_resources_buffer
-    avail = Resources(planet.resources.metal * buf,
-                      planet.resources.crystal * buf,
-                      planet.resources.deut * buf)
+    avail = spendable_resources(planet, cfg)
 
     if avail.can_afford(cost):
         return name, cost
@@ -578,11 +589,12 @@ def affordable_build(
     t = time_to_accumulate(cost, planet, cfg, plasma)
     max_wait = getattr(cfg, "max_saving_hours_economy", 4.0)
 
-    if t <= max_wait:
-        # Decidir ahorrar para la opción más óptima
-        return None
+    # Mientras se ahorra (t <= max_wait) solo se aparta lo que el objetivo NECESITA de
+    # cada recurso: el excedente de los demás puede pagar una mina alternativa YA (que
+    # falte deuterio para el objetivo no bloquea minas que solo cuestan metal/cristal).
+    # Si el objetivo tardará demasiado, se libera todo para no parar el planeta.
+    fallback_avail = surplus_after_reserve(avail, cost) if t <= max_wait else avail
 
-    # Si tardará demasiado, intentar buscar una mina alternativa asequible YA
     from .prereqs import resolve_prerequisites
     affordable_mines = []
     for mine in ("metal_mine", "crystal_mine", "deut_synth"):
@@ -592,7 +604,7 @@ def affordable_build(
         if not res or res[0] != "building" or res[1] != mine:
             continue
         c = gd.building_cost(mine, planet.lvl(mine) + 1)
-        if avail.can_afford(c):
+        if fallback_avail.can_afford(c):
             pb, _ = _mine_payback(planet, mine, cfg, plasma)
             affordable_mines.append((mine, pb, c))
 
@@ -735,10 +747,8 @@ def affordable_defense(
         return None
     name, count, _ = choice
     # De noche, no dejamos buffer de seguridad para gastar lo máximo posible
-    buf = 1.0 if is_night_mode else (1 - cfg.keep_resources_buffer)
-    avail = Resources(planet.resources.metal * buf,
-                      planet.resources.crystal * buf,
-                      planet.resources.deut * buf)
+    # (la reserva de ahorro del planeta sí se respeta siempre).
+    avail = spendable_resources(planet, cfg, buf=1.0 if is_night_mode else None)
     for n in range(count, 0, -1):
         cost = gd.defense_cost(name, n)
         if avail.can_afford(cost):

@@ -1823,10 +1823,16 @@ class Brain(StatsMixin):
                 # Economía / defensa / formas de vida / instalaciones por planeta.
                 # Los planetas con un programa especial activo (inicio de servidor /
                 # planeta nuevo) siguen su orden fijo en lugar de la economía normal.
+                # Si el programa está AHORRANDO deja fijada su reserva (savings_reserve):
+                # en ese caso la economía normal SIGUE, pero solo puede gastar el
+                # excedente por recurso que el objetivo del programa no necesita (que
+                # falte deuterio para un motor no bloquea minas de metal/cristal).
                 for p in planets:
+                    p.savings_reserve = None
                     prog = self._special_program_for(p, planets)
                     if prog is not None and not self._special_program_step(p, prog):
-                        continue
+                        if getattr(p, "savings_reserve", None) is None:
+                            continue
                     self._economy_step(p)
                     self._defense_step(p)
                     self._lifeforms_step(p)
@@ -1939,7 +1945,12 @@ class Brain(StatsMixin):
 
     def _special_program_step(self, planet, order) -> bool:
         """Ejecuta (si puede) el siguiente paso del programa fijo. True = programa
-        completado (el planeta vuelve a la economía normal este mismo ciclo)."""
+        completado (el planeta vuelve a la economía normal este mismo ciclo).
+
+        Cuando el paso pendiente NO se puede pagar (o hay que esperar), en vez de
+        bloquear el planeta entero se deja anotado su coste en planet.savings_reserve:
+        la economía normal de este ciclo sigue funcionando con el EXCEDENTE por recurso
+        (ahorrar deuterio para un motor no congela el metal/cristal que sobra)."""
         step = startorder.next_step(planet, self.research_levels, order)
         if step is None:
             self.log.debug("%s: programa especial completado; economía normal.", planet.coords)
@@ -1947,23 +1958,29 @@ class Brain(StatsMixin):
         kind, name, target = step
 
         if kind == "research":
-            rc = self.state_cache.get("research", {}) or {}
-            if (rc.get("finish_epoch") or 0) > time.time():
-                return False  # investigación en curso: esperar
             nxt = self.research_levels.get(name, 0) + 1
             cost = gd.research_cost(name, nxt)
+            rc = self.state_cache.get("research", {}) or {}
+            if (rc.get("finish_epoch") or 0) > time.time():
+                # Investigación en curso: esperar, pero reservando ya lo que pedirá el
+                # paso pendiente para que el resto solo gaste el excedente.
+                planet.savings_reserve = Resources(cost.metal, cost.crystal, cost.deut)
+                return False
             # Si el coste no cabe en el almacén, la producción se topa y NUNCA se acumula
             # (deadlock: p.ej. impulse_drive 3 pide 16000 cristal y el tope base es 10000).
             # Desviar a construir el almacén necesario, igual que la rama de edificio.
             blocker = startorder.storage_blocker(cost, planet)
             if blocker:
-                if self._active_queue_entry(planet) or planet.building_in_progress:
-                    return False
                 bnxt = planet.lvl(blocker) + 1
                 bcost = gd.building_cost(blocker, bnxt)
+                if self._active_queue_entry(planet) or planet.building_in_progress:
+                    planet.savings_reserve = Resources(bcost.metal, bcost.crystal, bcost.deut)
+                    return False
                 if not planet.resources.can_afford(bcost):
-                    self.log.info("%s: programa especial ahorrando para %s %d (necesario para investigar %s %d).",
+                    self.log.info("%s: programa especial ahorrando para %s %d (necesario para investigar %s %d); "
+                                  "el excedente sigue disponible para otras construcciones.",
                                   planet.coords, blocker, bnxt, name, nxt)
+                    planet.savings_reserve = Resources(bcost.metal, bcost.crystal, bcost.deut)
                     return False
                 if self._guard():
                     ok = self.client.build(planet, "supplies", blocker)
@@ -1973,7 +1990,10 @@ class Brain(StatsMixin):
                 return False
             # Sin buffer: el programa gasta todo lo disponible ("sin parar").
             if not planet.resources.can_afford(cost):
-                self.log.info("%s: programa especial ahorrando para %s %d.", planet.coords, name, nxt)
+                self.log.info("%s: programa especial ahorrando para %s %d; el excedente de los demás "
+                              "recursos sigue disponible para otras construcciones.",
+                              planet.coords, name, nxt)
+                planet.savings_reserve = Resources(cost.metal, cost.crystal, cost.deut)
                 return False
             if self._guard():
                 ok = self.client.research(name, planet=planet)
@@ -1992,16 +2012,21 @@ class Brain(StatsMixin):
             return False
 
         # Edificio
-        if self._active_queue_entry(planet) or planet.building_in_progress:
-            return False
         nxt = planet.lvl(name) + 1
         cost = gd.building_cost(name, nxt)
         blocker = startorder.storage_blocker(cost, planet)
         if blocker:
             name, nxt = blocker, planet.lvl(blocker) + 1
             cost = gd.building_cost(name, nxt)
+        if self._active_queue_entry(planet) or planet.building_in_progress:
+            # Slot ocupado: reservar lo del paso pendiente para que defensa/flota no lo gasten.
+            planet.savings_reserve = Resources(cost.metal, cost.crystal, cost.deut)
+            return False
         if not planet.resources.can_afford(cost):
-            self.log.info("%s: programa especial ahorrando para %s %d.", planet.coords, name, nxt)
+            self.log.info("%s: programa especial ahorrando para %s %d; el excedente de los demás "
+                          "recursos sigue disponible para otras construcciones.",
+                          planet.coords, name, nxt)
+            planet.savings_reserve = Resources(cost.metal, cost.crystal, cost.deut)
             return False
         comp = "facilities" if name in ("robotics_factory", "nanite_factory",
                                         "shipyard", "research_lab") else "supplies"
@@ -2069,9 +2094,7 @@ class Brain(StatsMixin):
         if planet.lvl("research_lab") < max(labs or [0]):
             return False
 
-        buf = 1 - self.cfg.keep_resources_buffer
-        avail = Resources(planet.resources.metal * buf, planet.resources.crystal * buf,
-                          planet.resources.deut * buf)
+        avail = economy.spendable_resources(planet, self.cfg)
         try:
             unlock = (research_mod.next_unlock_research(self.research_levels)
                       if getattr(self.cfg, "research_unlock_all", True) else None)
@@ -2149,9 +2172,7 @@ class Brain(StatsMixin):
             self.log.debug("%s: ocupado; el laboratorio para investigación esperará.", planet.coords)
             return
         cost = gd.building_cost("research_lab", cur + 1)
-        buf = 1 - self.cfg.keep_resources_buffer
-        avail = Resources(planet.resources.metal * buf, planet.resources.crystal * buf,
-                          planet.resources.deut * buf)
+        avail = economy.spendable_resources(planet, self.cfg)
         if avail.can_afford(cost):
             if self._guard():
                 self.log.info("Investigación '%s' bloqueada: subiendo laboratorio a nivel %d en %s.",
@@ -2233,9 +2254,7 @@ class Brain(StatsMixin):
             self._raise_research_lab(best, lab_req, tech)
             return
         cost = gd.research_cost(tech, lvl)
-        buf = 1 - self.cfg.keep_resources_buffer
-        avail = Resources(best.resources.metal * buf, best.resources.crystal * buf,
-                          best.resources.deut * buf)
+        avail = economy.spendable_resources(best, self.cfg)
         if avail.can_afford(cost):
             self._start_research(best, tech, cost)
             return
@@ -2313,10 +2332,12 @@ class Brain(StatsMixin):
                     # Comprobar recursos disponibles y ajustar el lote
                     unit = gd.SHIPS.get(ship_name)
                     if unit:
-                        buf = 1 - getattr(self.cfg, "keep_resources_buffer", 0.0)
-                        avail_m = max(0.0, home.resources.metal * buf - res_m)
-                        avail_c = max(0.0, home.resources.crystal * buf - res_c)
-                        avail_d = max(0.0, home.resources.deut * buf - res_d)
+                        # Respeta el buffer, la reserva de ahorro del planeta y lo que
+                        # economía está ahorrando para su próxima construcción.
+                        spend = economy.spendable_resources(home, self.cfg)
+                        avail_m = max(0.0, spend.metal - res_m)
+                        avail_c = max(0.0, spend.crystal - res_c)
+                        avail_d = max(0.0, spend.deut - res_d)
                         max_m = int(avail_m // unit.cost.metal) if unit.cost.metal > 0 else batch
                         max_c = int(avail_c // unit.cost.crystal) if unit.cost.crystal > 0 else batch
                         max_d = int(avail_d // unit.cost.deut) if unit.cost.deut > 0 else batch
@@ -3644,10 +3665,7 @@ class Brain(StatsMixin):
                 eco = sum(p.lvl("metal_mine") + p.lvl("crystal_mine") for p in (lp or [planet]))
                 target_nanite = max(target_nanite, min(5, 1 + eco // 120))
 
-        buf = 1 - self.cfg.keep_resources_buffer
-        avail = Resources(planet.resources.metal * buf,
-                          planet.resources.crystal * buf,
-                          planet.resources.deut * buf)
+        avail = economy.spendable_resources(planet, self.cfg)
         from .prereqs import resolve_prerequisites
         # Evaluar TODAS las instalaciones por debajo de objetivo; construir la PRIMERA (por
         # prioridad) que sea asequible AHORA. Si ninguna lo es, ahorrar para la de mayor

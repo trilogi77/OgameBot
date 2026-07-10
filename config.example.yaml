@@ -229,6 +229,7 @@ enable_planet_rename: true
 # --- Seguridad / humanización ---
 enable_fleetsave: true
 enable_attack_escape: true
+enable_attack_check: true          # false = saltarse la fase de comprobar ataques (early game: sin flota ni enemigos acelera el ciclo)
 attack_check_interval_min_s: 300   # comprobar ataques cada [min,max] s (aleatorio)
 attack_check_interval_max_s: 780   # 5-13 min: evita un patrón fijo de sondeo
 enable_spy_watch: true             # avisar por Telegram si te sondean (misión 6 entrante)

@@ -246,6 +246,10 @@ class Config:
     monitor_only: bool = False
     enable_fleetsave: bool = True
     enable_attack_escape: bool = True       # Huir de ataques enemigos de forma automática
+    # Fase de comprobación de ataques hostiles (prioritaria, periódica y nocturna).
+    # Desactivar en el early game (sin flota ni enemigos) acelera cada ciclo: se
+    # ahorra la lectura de movimientos/eventbox. ¡Reactivar en cuanto haya algo que perder!
+    enable_attack_check: bool = True
     # Intervalo entre comprobaciones de ataque: aleatorio en [min,max] segundos para
     # no dar un patrón fijo de sondeo que delate el bot (5-13 min por defecto).
     attack_check_interval_min_s: int = 300

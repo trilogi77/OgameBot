@@ -386,6 +386,7 @@ journalctl -u ogbot -f
 | `fleetsave_warn_phalanx` | `true` | Aviso Telegram si el fleetsave es phalanxeable. |
 | `fleetsave_only_if_hostile` | `false` | Solo hacer fleetsave si hubo hostilidad reciente (12 h). |
 | `enable_attack_escape` | `true` | Evasión automática de ataques entrantes. |
+| `enable_attack_check` | `true` | Fase de comprobación de ataques. `false` = saltarla (early game, acelera el ciclo). |
 | `attack_check_interval_min_s` / `max_s` | `300` / `780` | Comprobar ataques cada 5–13 min (aleatorio). |
 | `enable_spy_watch` | `true` | Aviso si te espían (movimiento entrante misión 6). |
 | `spy_watch_messages` | `true` | También vía mensajes de contraespionaje. |

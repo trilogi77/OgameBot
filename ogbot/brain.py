@@ -1097,7 +1097,8 @@ class Brain(StatsMixin):
                     self.log.debug("Error procesando comandos de la GUI: %s", e)
 
                 # Comprobación de ataque prioritaria e incondicional (antes de evaluar franja horaria)
-                if getattr(self.cfg, "enable_attack_escape", True):
+                if getattr(self.cfg, "enable_attack_check", True) and \
+                        getattr(self.cfg, "enable_attack_escape", True):
                     try:
                         self.log.info("Comprobación prioritaria de ataques hostiles...")
                         self._check_and_escape_attacks()
@@ -1243,6 +1244,7 @@ class Brain(StatsMixin):
                     # si nos echó). Cierra el mayor hueco del bot: hoy de noche pasan HORAS sin
                     # detección de ataques salvo que night_sweep esté activo (off por defecto).
                     night_watch = (getattr(self.cfg, "enable_night_attack_watch", True)
+                                   and getattr(self.cfg, "enable_attack_check", True)
                                    and getattr(self.cfg, "enable_attack_escape", True))
                     next_watch = time.time() + random.uniform(25, 45) * 60
                     while self.running and not utils.within_active_hours(self.cfg.active_hours):
@@ -4476,6 +4478,9 @@ class Brain(StatsMixin):
 
     def _check_and_escape_attacks(self):
         if not getattr(self.cfg, "enable_attack_escape", True):
+            return
+        # Fase desactivable por config (early game): ahorra la lectura de movimientos.
+        if not getattr(self.cfg, "enable_attack_check", True):
             return
         mvs = self.client.read_movements()
         # Refrescar la pestaña "Vuelos" aprovechando esta lectura (corre más a menudo que el

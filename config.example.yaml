@@ -24,7 +24,13 @@ loot_percent: 0.50           # % de recursos saqueables
 trade_ratio: [2.5, 1.5, 1.0] # metal:cristal:deuterio
 
 # --- Economía ---
-target_mine_ratio_payback_hours: 24   # sube mina si se amortiza en <= X horas (óptimo para desbloquear antes; súbelo tras el desbloqueo para crecer más)
+target_mine_ratio_payback_hours: 24   # sube mina si se amortiza en <= X horas (óptimo de arranque)
+# Umbral ADAPTATIVO: crece con el nivel medio de minas del planeta
+# (umbral = base * (1 + nivel_medio/20), con tope max_mine_payback_hours).
+# Sin esto, al pasar de las 24 h (~nivel 19-20) las minas dejaban de subir PARA SIEMPRE y
+# el bot solo engordaba almacenes. Pon false para el comportamiento fijo de antes.
+adaptive_mine_payback: true
+max_mine_payback_hours: 168           # tope duro (1 semana)
 keep_resources_buffer: 0.10
 enable_fusion_reactor: true
 fusion_reactor_solar_offset: 25        # Diferencia de niveles mínima que debe haber entre la planta solar y la de fusión (solar - fusión >= offset) antes de subir la de fusión
@@ -83,6 +89,10 @@ research_priority:
 # --- Farmeo ---
 enable_farming: true
 only_inactive_targets: true          # MÁS SEGURO: solo inactivos
+# OGame OCULTA la flota/defensa del informe si mandas pocas sondas. Antes eso llegaba como
+# "sin flota ni defensa" y el bot atacaba a ciegas. Ahora, si el informe viene oculto, el bot
+# sube las sondas de ese objetivo (+2 por intento, hasta este tope) y lo re-espía.
+espionage_max_probes: 12
 avoid_strong_players: true
 max_attack_targets_per_cycle: 8
 min_loot_value: 50000

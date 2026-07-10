@@ -25,19 +25,54 @@ def _eq(res: gd.Cost, ratio) -> float:
     return res.total_value(ratio)
 
 
+def _eff(planet: Planet, res: str) -> float:
+    """Factor producción_real / producción_por_fórmula del planeta para ese recurso.
+
+    Lo calcula el brain a partir de la producción REAL cacheada (page=resourcesettings) y lo
+    cuelga del planeta como `production_efficiency`. Captura oficiales, clase, formas de vida
+    y boosters, que las fórmulas base ignoran (error típico del 20-40%). Sin dato (o absurdo)
+    cae a 1.0, es decir, el comportamiento anterior."""
+    e = getattr(planet, "production_efficiency", None) or {}
+    try:
+        v = float(e.get(res, 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+    return v if 0.1 <= v <= 5.0 else 1.0
+
+
 def _deut_net_production(deut_lvl: int, planet: Planet, cfg: Config, plasma: int) -> float:
     """Deuterio/h neto: producción del sintetizador menos el consumo del reactor de fusión."""
-    prod = gd.deut_production(deut_lvl, planet.max_temp, plasma, cfg.universe_speed)
+    prod = gd.deut_production(deut_lvl, planet.max_temp, plasma, cfg.universe_speed,
+                              efficiency=_eff(planet, "deut"))
     return prod - gd.fusion_deut_consumption(planet.lvl("fusion_reactor"), cfg.universe_speed)
 
 
 def production_eq_per_hour(planet: Planet, cfg: Config, plasma: int) -> float:
     """Producción actual del planeta en metal-equivalente/hora."""
-    m = gd.metal_production(planet.lvl("metal_mine"), plasma, cfg.universe_speed)
-    c = gd.crystal_production(planet.lvl("crystal_mine"), plasma, cfg.universe_speed)
+    m = gd.metal_production(planet.lvl("metal_mine"), plasma, cfg.universe_speed,
+                            efficiency=_eff(planet, "metal"))
+    c = gd.crystal_production(planet.lvl("crystal_mine"), plasma, cfg.universe_speed,
+                              efficiency=_eff(planet, "crystal"))
     d = _deut_net_production(planet.lvl("deut_synth"), planet, cfg, plasma)
     r = cfg.trade_ratio
     return m + c * (r[0] / r[1]) + d * (r[0] / r[2])
+
+
+def effective_payback_threshold(planet: Planet, cfg: Config) -> float:
+    """Umbral de amortización EFECTIVO, en horas.
+
+    El valor fijo (24 h) está tuneado para el arranque: en cuanto TODAS las minas lo superan
+    (~nivel 19-20) `next_build` devolvía None para siempre, las minas dejaban de subir y el
+    bot solo engordaba almacenes. Aquí el umbral crece con el nivel medio de minas (que una
+    mina cara tarde más en amortizar es lo normal al crecer), con un tope duro.
+    Con `adaptive_mine_payback: false` se respeta el valor fijo de siempre.
+    """
+    base = float(getattr(cfg, "target_mine_ratio_payback_hours", 24.0))
+    if not getattr(cfg, "adaptive_mine_payback", True):
+        return base
+    avg = (planet.lvl("metal_mine") + planet.lvl("crystal_mine") + planet.lvl("deut_synth")) / 3.0
+    cap = float(getattr(cfg, "max_mine_payback_hours", 168.0) or 168.0)
+    return min(cap, base * (1.0 + avg / 20.0))
 
 
 def _mine_payback(planet: Planet, mine: str, cfg: Config, plasma: int) -> Tuple[float, gd.Cost]:
@@ -45,12 +80,14 @@ def _mine_payback(planet: Planet, mine: str, cfg: Config, plasma: int) -> Tuple[
     cost = gd.building_cost(mine, lvl + 1)
     r = cfg.trade_ratio
     if mine == "metal_mine":
-        cur = gd.metal_production(lvl, plasma, cfg.universe_speed)
-        nxt = gd.metal_production(lvl + 1, plasma, cfg.universe_speed)
+        eff = _eff(planet, "metal")
+        cur = gd.metal_production(lvl, plasma, cfg.universe_speed, efficiency=eff)
+        nxt = gd.metal_production(lvl + 1, plasma, cfg.universe_speed, efficiency=eff)
         extra = nxt - cur
     elif mine == "crystal_mine":
-        cur = gd.crystal_production(lvl, plasma, cfg.universe_speed)
-        nxt = gd.crystal_production(lvl + 1, plasma, cfg.universe_speed)
+        eff = _eff(planet, "crystal")
+        cur = gd.crystal_production(lvl, plasma, cfg.universe_speed, efficiency=eff)
+        nxt = gd.crystal_production(lvl + 1, plasma, cfg.universe_speed, efficiency=eff)
         extra = (nxt - cur) * (r[0] / r[1])
     else:  # deut_synth
         cur = _deut_net_production(lvl, planet, cfg, plasma)
@@ -282,7 +319,7 @@ def next_build(
         if pb < best_pb:
             best_mine, best_pb, best_cost = actual_name, pb, cost
 
-    if best_mine and best_pb <= cfg.target_mine_ratio_payback_hours:
+    if best_mine and best_pb <= effective_payback_threshold(planet, cfg):
         return best_mine, best_cost
 
 def next_resources_build(
@@ -335,7 +372,7 @@ def next_resources_build(
         if pb < best_pb:
             best_mine, best_pb, best_cost = actual_name, pb, cost
 
-    if best_mine and best_pb <= cfg.target_mine_ratio_payback_hours:
+    if best_mine and best_pb <= effective_payback_threshold(planet, cfg):
         return best_mine, best_cost
 
     return None

@@ -47,6 +47,13 @@ def estimate_loot(resources: Resources, capacity: int, loot_percent: float) -> R
 
 def evaluate(report: EspionageReport, origin: Coords, fleet: Dict[str, int],
              my_tech: combat.Tech, cfg: Config, return_reason: bool = False):
+    # FAIL-CLOSED: si el informe no muestra flota/defensa (faltaron sondas), NO atacamos.
+    # Antes esos informes daban fleet={}/defense={} -> is_undefended=True -> se atacaba a
+    # ciegas. El brain sube las sondas de ese objetivo y lo re-espía.
+    if not report.has_full_visibility:
+        reason = "Sin visibilidad de flota/defensa (faltan sondas); re-espiar"
+        return (None, reason) if return_reason else None
+
     dist = gd.distance(origin.tuple(), report.coords.tuple())
     cap = cargo_capacity(fleet)
     loot = estimate_loot(report.resources, cap, cfg.loot_percent)

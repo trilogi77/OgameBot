@@ -421,6 +421,8 @@ class Brain(StatsMixin):
         self.inflight_dests: Dict[str, set] = {}  # destino "g:s:p" -> misiones propias en vuelo
         self.attack_history: Dict[str, float] = {}
         self.missile_opened: List[str] = []   # granjas ya "abiertas" con misiles (no repetir)
+        # Sondas aprendidas por objetivo: OGame oculta flota/defensa si faltan sondas.
+        self.spy_probes: Dict[str, int] = {}
         self.telegram_notified_attacks: Dict[str, float] = {}
         self._spy_seen: Dict[str, float] = {}   # cooldown de avisos de espionaje por origen->destino
         self.renamed_planets: set = set()       # ids de planetas ya renombrados (una vez)
@@ -467,6 +469,7 @@ class Brain(StatsMixin):
                 if data is not None:
                     self.attack_history = data.get("attack_history", {})
                     self.missile_opened = list(data.get("missile_opened", []) or [])
+                    self.spy_probes = {k: int(v) for k, v in (data.get("spy_probes", {}) or {}).items()}
                     self.telegram_notified_attacks = data.get("telegram_notified_attacks", {})
                     self._spy_seen = data.get("spy_seen", {})
                     self.last_economy_run_time = data.get("last_economy_run_time", 0.0)
@@ -533,6 +536,8 @@ class Brain(StatsMixin):
                                    if float(v or 0.0) > now - 90 * 86400},
                 # Granjas abiertas con misiles: no volver a gastar IPMs en ellas.
                 "missile_opened": list(self.missile_opened),
+                # Sondas necesarias por objetivo (aprendido); acotado para no crecer sin fin.
+                "spy_probes": dict(list(self.spy_probes.items())[-500:]),
                 "telegram_notified_attacks": self.telegram_notified_attacks,
                 "spy_seen": self._spy_seen,
                 "renamed_planets": sorted(self.renamed_planets),
@@ -849,9 +854,13 @@ class Brain(StatsMixin):
         loc.buildings.update(entry.get("buildings", {}))
         loc.defenses.update(entry.get("defenses", {}))
         loc.lifeform_available = entry.get("lifeform_available", loc.lifeform_available)
-        # ponytail: en ciclos ligeros no leemos la cola de formas de vida; se evalúan
-        # en los ciclos de resync. Marcar ocupada evita encolar dos veces.
-        loc.lifeform_in_progress = True
+        # Formas de vida (C2): antes se marcaba OCUPADA a ciegas en los ciclos ligeros, así
+        # que solo se evaluaban en el resync (cada 6 h) y los edificios LF —el mayor
+        # multiplicador de producción del juego— apenas avanzaban. No hace falta: el propio
+        # client.build_lifeform navega a lfbuildings y comprueba la cola real
+        # (_is_lf_queue_active) antes de tocar nada, así que no puede encolar dos veces.
+        # ponytail: cuesta una navegación por planeta y ronda de economía cuando hay LF.
+        loc.lifeform_in_progress = False
         self.client.read_planet_light(loc)
 
         finished = entry.get("build_finish_epoch", 0.0)
@@ -2012,6 +2021,9 @@ class Brain(StatsMixin):
             self.log.debug("%s: construcción en progreso, saltando economía.", planet.coords)
             return
         plasma = self.research_levels.get("plasma_tech", 0)
+        # Calibrar el payback con la producción REAL antes de decidir (no navega si la
+        # lectura cacheada sigue vigente: 1 h y misma firma de niveles).
+        self._attach_efficiency(planet, plasma)
         choice = economy.affordable_build(planet, self.cfg, plasma=plasma,
                                           research_levels=self.research_levels)
         if choice:
@@ -2619,10 +2631,17 @@ class Brain(StatsMixin):
             return
 
         probes = max(1, self.research_levels.get("espionage_tech", 4))
+        max_probes = int(getattr(self.cfg, "espionage_max_probes", 12) or 12)
+
+        def probes_for(coords) -> int:
+            """Sondas para ESTE objetivo: la base, o las que aprendimos que hacen falta
+            para que OGame revele flota/defensa (informes con hiddenships/hiddendef=1)."""
+            k = f"{coords.galaxy}:{coords.system}:{coords.position}"
+            return min(max_probes, max(probes, int(self.spy_probes.get(k, 0))))
 
         # Helper para encontrar el origen más cercano con sondas de espionaje
-        def get_best_spy_origin(target_coords: Coords) -> Optional[Planet]:
-            eligible = [p for p in eligible_locations if p.ships.get("espionage_probe", 0) >= probes]
+        def get_best_spy_origin(target_coords: Coords, need: int) -> Optional[Planet]:
+            eligible = [p for p in eligible_locations if p.ships.get("espionage_probe", 0) >= need]
             if not eligible:
                 return None
             return min(eligible, key=lambda p: gd.distance(p.coords.tuple(), target_coords.tuple()))
@@ -2634,17 +2653,18 @@ class Brain(StatsMixin):
                 self.log.info("Farmeo: deteniendo envío de sondas por falta de slots libres.")
                 break
             coords = tgt.parse_coords(cand["coords"])
-            origin_planet = get_best_spy_origin(coords)
+            n_probes = probes_for(coords)
+            origin_planet = get_best_spy_origin(coords, n_probes)
             if not origin_planet:
-                self.log.info("Farmeo: no hay ninguna ubicación con al menos %d sondas disponibles.", probes)
+                self.log.info("Farmeo: no hay ninguna ubicación con al menos %d sondas disponibles.", n_probes)
                 break
             if not self._guard():
                 break
             ok = self.client.send_fleet(
-                origin_planet.coords, coords, {"espionage_probe": probes}, mission="espionage"
+                origin_planet.coords, coords, {"espionage_probe": n_probes}, mission="espionage"
             )
             if ok:
-                self._deduct_ships(origin_planet, {"espionage_probe": probes})
+                self._deduct_ships(origin_planet, {"espionage_probe": n_probes})
                 self.active_slots += 1
                 spied.append(coords)
                 self.log.debug("Sondas enviadas desde %s -> %s", origin_planet.coords, coords)
@@ -2690,6 +2710,25 @@ class Brain(StatsMixin):
                 self.log.debug("Sin informe para %s.", coords)
                 self.record_session_action("espionage", f"{coords}", "Sin informe: no se pudo leer el reporte de espionaje")
                 continue
+
+            # FAIL-CLOSED: OGame oculta flota/defensa cuando faltaron sondas
+            # (data-raw-hiddenships/hiddendef=1). Antes eso llegaba como fleet={}/defense={}
+            # y el objetivo parecía INDEFENSO: se atacaba a ciegas. Ahora subimos las sondas
+            # de ese objetivo y lo re-espiamos en la siguiente ronda.
+            if not report.has_full_visibility:
+                cur = probes_for(coords)
+                nxt = min(max_probes, cur + 2)
+                if nxt > cur:
+                    self.spy_probes[key] = nxt
+                    self.log.info("Farmeo: %s sin visibilidad de flota/defensa; subo a %d sondas "
+                                  "y lo re-espío.", coords, nxt)
+                else:
+                    self.log.info("Farmeo: %s sigue oculto con %d sondas (tope); lo salto.", coords, cur)
+                self.record_session_action(
+                    "espionage", f"{coords}", "Descartado: informe sin visibilidad (faltan sondas)")
+                continue
+            # Informe completo: olvidamos la escalada aprendida para este objetivo.
+            self.spy_probes.pop(key, None)
 
             # Actividad reciente en un "inactivo" = trampa probable o recursos a punto
             # de moverse: no arriesgar la flota.
@@ -3627,9 +3666,13 @@ class Brain(StatsMixin):
         # Firma de los niveles que determinan la producción del planeta.
         sig = [planet.lvl("metal_mine"), planet.lvl("crystal_mine"), planet.lvl("deut_synth"),
                planet.lvl("solar_plant"), planet.lvl("fusion_reactor")]
-        prod = (entry or {}).get("hourly_production") if entry else None
-        ts = (entry or {}).get("hourly_production_at", 0.0) if entry else 0.0
-        cached_sig = (entry or {}).get("hourly_production_levels") if entry else None
+        if entry is None:
+            # Sin entrada en caché NUNCA se releía la producción real (quedaba en fórmula
+            # para siempre). Crear la entrada permite la primera lectura.
+            entry = self.state_cache["planets"].setdefault(key, {})
+        prod = entry.get("hourly_production")
+        ts = entry.get("hourly_production_at", 0.0)
+        cached_sig = entry.get("hourly_production_levels")
         stale = (not prod) or (time.time() - ts > 3600) or (cached_sig != sig)
         if stale and entry is not None:
             fresh = self.client.read_hourly_production(planet)
@@ -3646,6 +3689,36 @@ class Brain(StatsMixin):
             "crystal": gd.crystal_production(planet.lvl("crystal_mine"), plasma, self.cfg.universe_speed),
             "deut": gd.deut_production(planet.lvl("deut_synth"), planet.max_temp, plasma, self.cfg.universe_speed),
         }
+
+    def _attach_efficiency(self, planet, plasma: int):
+        """Cuelga `planet.production_efficiency` = producción_real / producción_por_fórmula.
+
+        economy lo usa en el payback de minas y en las ETAs de ahorro, así que las decisiones
+        económicas pasan a reflejar oficiales, clase, formas de vida y boosters (que las
+        fórmulas base ignoran: 20-40% de error típico).
+
+        ponytail: solo metal y cristal. El deuterio de la página de recursos viene NETO del
+        consumo de fusión, y la fórmula es BRUTA: compararlos daría un factor falso. Se deja
+        a 1.0 (comportamiento anterior) hasta poder leer el bruto.
+        """
+        try:
+            real = self._hourly_production(planet, plasma) or {}
+            f_m = gd.metal_production(planet.lvl("metal_mine"), plasma, self.cfg.universe_speed)
+            f_c = gd.crystal_production(planet.lvl("crystal_mine"), plasma, self.cfg.universe_speed)
+
+            def ratio(r, f):
+                if not f or f <= 0 or not r or float(r) <= 0:
+                    return 1.0
+                v = float(r) / float(f)
+                return v if 0.1 <= v <= 5.0 else 1.0
+
+            planet.production_efficiency = {
+                "metal": ratio(real.get("metal"), f_m),
+                "crystal": ratio(real.get("crystal"), f_c),
+                "deut": 1.0,
+            }
+        except Exception as e:
+            self.log.debug("Sin eficiencia de producción para %s: %s", planet.coords, e)
 
     def _eta_to_afford(self, planet, cost) -> float:
         """Horas estimadas hasta poder pagar 'cost' con la producción del planeta."""

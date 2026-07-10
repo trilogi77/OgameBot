@@ -35,6 +35,18 @@
                 // participan en el combate de flotas, pero cada interceptor se come un
                 // IPM nuestro: sin este dato el ataque con misiles malgasta munición.
                 missiles: {},
+                // VISIBILIDAD del informe. OGame NO expone data-raw-fleet/defense en muchos
+                // servidores: marca 'data-raw-hiddenships/hiddendef' = 1 cuando faltaron
+                // sondas. Sin esto, fleet/defense salían {} y el bot daba el objetivo por
+                // INDEFENSO y atacaba a ciegas. fleet_value/defense_value traen el valor
+                // ('-' si oculto) aunque no haya desglose.
+                fleet_visible: true,
+                defense_visible: true,
+                fleet_value: null,
+                defense_value: null,
+                counterespionage: 0,
+                military_score: 0,
+                loot_percent: null,
                 player_name: el.getAttribute('data-raw-playername') || '',
                 is_inactive: rawStatusStr.includes('inactive'),
                 // Actividad del informe (minutos): 15 = '*' (<15 min), 15-59 = minutos.
@@ -44,7 +56,29 @@
                     return isNaN(a) ? null : a;
                 })()
             };
-            
+
+            // '-' = dato oculto (faltaron sondas). Devuelve null en ese caso.
+            const numOrNull = (v) => {
+                if (v === null || v === undefined) return null;
+                const s = String(v).trim();
+                if (s === '' || s === '-') return null;
+                const n = parseInt(s.replace(/[^0-9-]/g, ''));
+                return isNaN(n) ? null : n;
+            };
+            const hiddenShips = el.getAttribute('data-raw-hiddenships');
+            const hiddenDef   = el.getAttribute('data-raw-hiddendef');
+            // Si el servidor no expone los flags 'hidden*', caemos a comprobar si el
+            // atributo con el desglose existe (algunos servidores sí lo traen).
+            r.fleet_visible   = hiddenShips !== null ? hiddenShips !== '1'
+                                                     : el.hasAttribute('data-raw-fleet');
+            r.defense_visible = hiddenDef !== null ? hiddenDef !== '1'
+                                                   : el.hasAttribute('data-raw-defense');
+            r.fleet_value      = numOrNull(el.getAttribute('data-raw-fleetvalue'));
+            r.defense_value    = numOrNull(el.getAttribute('data-raw-defensevalue'));
+            r.counterespionage = numOrNull(el.getAttribute('data-raw-counterespionagechance')) || 0;
+            r.military_score   = numOrNull(el.getAttribute('data-raw-highscoremilitary')) || 0;
+            r.loot_percent     = numOrNull(el.getAttribute('data-raw-loot'));   // 75 => 75%
+
             const SHIP_MAP = {
                 202:'small_cargo', 203:'large_cargo', 204:'light_fighter',
                 205:'heavy_fighter', 206:'cruiser', 207:'battleship',

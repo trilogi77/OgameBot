@@ -51,6 +51,7 @@ def test_expected_debris_propagated():
         defense={},
         research={"weapons_tech": 0, "shielding_tech": 0, "armor_tech": 0},
         is_undefended=False,               # defendido -> corre el simulador
+        has_full_visibility=True,          # informe completo (S2: sin visibilidad no se ataca)
     )
     cfg = types.SimpleNamespace(
         loot_percent=0.5, fleet_speed=1.0, trade_ratio=(2.5, 1.5, 1.0),

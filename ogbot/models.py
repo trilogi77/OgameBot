@@ -101,9 +101,27 @@ class EspionageReport:
     # `defense` porque NO combaten (no deben marcar el planeta como "defendido"), pero cada
     # interceptor enemigo destruye un IPM nuestro al lanzarlo.
     missiles: Dict[str, int] = field(default_factory=dict)
+    # Visibilidad del informe: con pocas sondas OGame OCULTA flota/defensa
+    # (data-raw-hiddenships/hiddendef=1) y no expone el desglose. Sin estos flags el bot
+    # veía fleet={}/defense={} y daba el objetivo por indefenso -> atacaba a ciegas.
+    fleet_visible: bool = True
+    defense_visible: bool = True
+    fleet_value: Optional[int] = None      # valor de la flota ('-' oculto -> None)
+    defense_value: Optional[int] = None    # valor de la defensa ('-' oculto -> None)
+    military_score: int = 0                # puntos militares del dueño (data-raw-highscoremilitary)
+    loot_percent: Optional[float] = None   # % saqueable real del servidor (data-raw-loot)
+
+    @property
+    def has_full_visibility(self) -> bool:
+        return bool(self.fleet_visible and self.defense_visible)
 
     @property
     def is_undefended(self) -> bool:
+        """FAIL-CLOSED: sin visibilidad NO se puede afirmar que esté indefenso."""
+        if not self.has_full_visibility:
+            return False
+        if (self.fleet_value or 0) > 0 or (self.defense_value or 0) > 0:
+            return False
         return sum(self.fleet.values()) == 0 and sum(self.defense.values()) == 0
 
 

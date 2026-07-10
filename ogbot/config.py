@@ -40,7 +40,13 @@ class Config:
     # --- Estrategia económica ---
     enable_economy: bool = True
     enable_build_queue: bool = True   # cola de construcción manual por planeta (tipo Comandante)
-    target_mine_ratio_payback_hours: float = 24.0  # umbral payback para subir mina (óptimo de arranque)
+    target_mine_ratio_payback_hours: float = 24.0
+    # Umbral de amortización ADAPTATIVO: crece con el nivel medio de minas del planeta
+    # (umbral = base * (1 + nivel_medio/20), con tope max_mine_payback_hours). Sin esto,
+    # al superar las 24 h (~nivel 19-20) las minas dejaban de subir PARA SIEMPRE y el bot
+    # solo engordaba almacenes. Pon false para el comportamiento fijo de antes.
+    adaptive_mine_payback: bool = True
+    max_mine_payback_hours: float = 168.0    # tope duro (1 semana)  # umbral payback para subir mina (óptimo de arranque)
     keep_resources_buffer: float = 0.10            # % de recursos a no gastar
     enable_fusion_reactor: bool = True
     fusion_reactor_solar_offset: int = 25            # Niveles que debe tener la planta solar por encima del reactor de fusión
@@ -114,6 +120,9 @@ class Config:
     # atacar inactivos con sondas (raid con sondas) en lugar de cargueros.
     farm_with_probes: bool = False
     espionage_probe_cargo: int = 0   # bodega real por sonda en este servidor (0 = usar gamedata)
+    # OGame OCULTA flota/defensa del informe si mandas pocas sondas. El bot sube las sondas
+    # de ese objetivo (+2 por intento) hasta ver el desglose, sin pasar de este tope.
+    espionage_max_probes: int = 12
     # Reciclar los escombros de los ataques con combate: los escombros simulados cuentan
     # como beneficio, y tras enviar la flota se lanza 1 sonda suicida (muere contra la
     # defensa y crea el campo de escombros) para poder despachar los recicladores

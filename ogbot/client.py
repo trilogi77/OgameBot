@@ -1249,10 +1249,42 @@ class GameClient:
         if self._is_error_page():
             self.log.warning("OGame reportó error al construir %s en %s.", what, planet.coords)
             return False
+        # VERIFICACIÓN POSITIVA (A4). Antes bastaba con "no hay página de error", así que un
+        # clic fallido (o en el botón equivocado) se daba por bueno y envenenaba el nivel y
+        # la ETA en la caché durante horas. Ahora exigimos una señal real de que empezó:
+        # la cola de construcción está activa, o el botón de mejora ya no está disponible.
+        if not self._verify_started(lambda: self._is_build_queue_active(), tech_id):
+            self.log.warning("Construcción de %s en %s: sin confirmación de que empezara; "
+                             "no toco la caché.", what, planet.coords)
+            return False
         self.log.info("Construcción iniciada: %s lv%d en %s",
                       what, planet.lvl(what) + 1, planet.coords)
         planet.building_in_progress = True
         return True
+
+    def _verify_started(self, positive_check, tech_id: int, attempts: int = 3) -> bool:
+        """Confirma que una orden (edificio/investigación) realmente arrancó.
+
+        Doble señal, porque un solo selector es frágil:
+          1) `positive_check()` (p.ej. la cola de construcción pasó a activa), o
+          2) el botón de mejora de ese tech_id ya NO está disponible (al estar en curso
+             OGame lo quita/deshabilita).
+        Fail-closed: si ninguna señal aparece, devolvemos False y el llamante NO cachea nada.
+        """
+        for i in range(attempts):
+            try:
+                if positive_check():
+                    return True
+            except Exception:
+                pass
+            try:
+                if self._find_upgrade_locator(tech_id) is None:
+                    return True
+            except Exception:
+                pass
+            if i < attempts - 1:
+                time.sleep(1.5)
+        return False
 
     def research(self, tech: str, planet: "Planet | None" = None) -> bool:
         if self._act(f"Investigar {tech}" + (f" desde {planet.coords}" if planet else "")):
@@ -1263,12 +1295,30 @@ class GameClient:
             return False
         self._goto("research", planet)
         self._wait_tech()
-        if self._click_upgrade(tech_id):
-            self.log.info("Investigación iniciada: %s", tech)
-            return True
-        else:
+        if not self._click_upgrade(tech_id):
             self.log.warning("No pude investigar %s: botón no encontrado.", tech)
             return False
+        if self._is_error_page():
+            self.log.warning("OGame reportó error al investigar %s.", tech)
+            return False
+        # VERIFICACIÓN POSITIVA (A4): antes bastaba con "el clic hizo algo", y un falso
+        # positivo bumpeaba research_levels + finish_epoch durante horas (colonización y
+        # flota emitían órdenes que el servidor rechazaba). Señales: aparece un contador de
+        # investigación, o el botón de esa tecnología ya no está disponible.
+        def _research_running() -> bool:
+            try:
+                return bool(self.page.evaluate(
+                    "() => !!document.querySelector("
+                    "'li[class*=\"construction\"], li.underConstruction, .build-duration, "
+                    "span[id*=countdown], #researchCountdown')"))
+            except Exception:
+                return False
+
+        if not self._verify_started(_research_running, tech_id):
+            self.log.warning("Investigación %s: sin confirmación de que empezara; no cacheo.", tech)
+            return False
+        self.log.info("Investigación iniciada: %s", tech)
+        return True
 
     def _build_units_ui(self, tech_id: int, amount: int) -> bool:
         """
@@ -1494,6 +1544,13 @@ class GameClient:
                     fleet={k: int(v) for k, v in raw.get("fleet", {}).items()},
                     defense={k: int(v) for k, v in raw.get("defense", {}).items()},
                     missiles={k: int(v) for k, v in (raw.get("missiles") or {}).items()},
+                    fleet_visible=bool(raw.get("fleet_visible", True)),
+                    defense_visible=bool(raw.get("defense_visible", True)),
+                    fleet_value=raw.get("fleet_value"),
+                    defense_value=raw.get("defense_value"),
+                    military_score=int(raw.get("military_score") or 0),
+                    loot_percent=raw.get("loot_percent"),
+                    counterespionage_risk=float(raw.get("counterespionage") or 0.0),
                     timestamp=time.time(),
                     activity_mins=raw.get("activity"),
                 )
@@ -2214,6 +2271,26 @@ class GameClient:
             self.page.wait_for_selector("#fleetdispatchcomponent", timeout=5000)
         except Exception:
             pass
+        # Fuente PRIMARIA: window.fleetDispatcher, el objeto que el propio cliente de OGame
+        # usa para pintar la pantalla. Es estable frente a rediseños y no depende del idioma,
+        # al contrario que el respaldo de abajo (regex sobre "Flotas/Fleets", solo ES/EN).
+        try:
+            fd = self.page.evaluate("""() => {
+                const fd = window.fleetDispatcher;
+                if (!fd) return null;
+                const num = v => (typeof v === 'number' && !isNaN(v)) ? v : null;
+                return {expe_used: num(fd.expeditionCount), expe_total: num(fd.maxExpeditionCount),
+                        fleet_used: num(fd.usedSlots), fleet_total: num(fd.maxSlots)};
+            }""")
+        except Exception:
+            fd = None
+        if fd:
+            out = {k: int(v) for k, v in fd.items() if v is not None}
+            if out.get("fleet_total") and out.get("expe_total") is not None:
+                self.log.info("Fleet slots (fleetDispatcher): Flotas %s/%s, Expediciones %s/%s",
+                              out.get("fleet_used"), out.get("fleet_total"),
+                              out.get("expe_used"), out.get("expe_total"))
+                return out
         try:
             data = self.page.evaluate("""() => {
                 const r = {};
@@ -2239,6 +2316,12 @@ class GameClient:
                 return (r.fleet_used !== undefined || r.expe_used !== undefined) ? r : null;
             }""")
             if data:
+                # Completar con fleetDispatcher lo que el DOM no dio (p.ej. expediciones en
+                # idiomas distintos de ES/EN, que el regex de arriba no reconoce).
+                if fd:
+                    for k, v in fd.items():
+                        if v is not None and data.get(k) is None:
+                            data[k] = int(v)
                 self.log.info("Fleet slots del juego: Flotas %d/%d, Expediciones %d/%d",
                               data.get("fleet_used", 0), data.get("fleet_total", 0),
                               data.get("expe_used", 0), data.get("expe_total", 0))

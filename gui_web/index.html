@@ -974,6 +974,14 @@
                             <span class="toggle-text"><strong>Reactor de fusión</strong><span>Construirlo como apoyo de energía.</span></span>
                             <span class="switch-container"><input type="checkbox" id="enable_fusion_reactor"><span class="slider"></span></span>
                         </label>
+                        <label class="toggle-row">
+                            <span class="toggle-text"><strong>Metal sobrante → Blindaje</strong><span>Antes de subir el almacén de metal, invierte el excedente en Blindaje (cuesta metal puro y sigue la misma curva de precio): convierte metal muerto en casco permanente. Se autolimita y nunca retrasa plasma/astrofísica.</span></span>
+                            <span class="switch-container"><input type="checkbox" id="enable_metal_dump_research"><span class="slider"></span></span>
+                        </label>
+                        <div class="form-group">
+                            <label for="metal_dump_max_armor_tech">Nivel máx. de Blindaje por esta vía</label>
+                            <input type="number" id="metal_dump_max_armor_tech" min="0" step="1" placeholder="20">
+                        </div>
                         <div class="form-group">
                             <label for="fusion_reactor_solar_offset">Planta solar por encima del reactor (niveles)</label>
                             <input type="number" id="fusion_reactor_solar_offset" min="0" placeholder="25">

@@ -31,6 +31,15 @@ target_mine_ratio_payback_hours: 24   # sube mina si se amortiza en <= X horas (
 # el bot solo engordaba almacenes. Pon false para el comportamiento fijo de antes.
 adaptive_mine_payback: true
 max_mine_payback_hours: 168           # tope duro (1 semana)
+# Excedente de metal -> Blindaje, en vez de un almacén de metal cada vez más caro.
+# Blindaje cuesta metal PURO (1000 x2 por nivel), exactamente la misma curva que el almacén:
+# mientras sea más barato que el almacén que evitas, convierte metal muerto en casco
+# permanente para toda tu flota. Se autolimita (cuando el blindaje alcanza al almacén, gana
+# el almacén). Solo actúa con el árbol de investigación ya desbloqueado y si el slot iba a
+# quedarse ocioso, así que nunca retrasa plasma/astrofísica.
+enable_metal_dump_research: true
+metal_dump_max_armor_tech: 20         # tope de nivel de blindaje por esta vía
+metal_dump_max_research_hours: 2      # solo blindajes cortos: nunca acapara el slot
 keep_resources_buffer: 0.10
 enable_fusion_reactor: true
 fusion_reactor_solar_offset: 25        # Diferencia de niveles mínima que debe haber entre la planta solar y la de fusión (solar - fusión >= offset) antes de subir la de fusión

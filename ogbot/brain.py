@@ -2026,6 +2026,11 @@ class Brain(StatsMixin):
         self._attach_efficiency(planet, plasma)
         choice = economy.affordable_build(planet, self.cfg, plasma=plasma,
                                           research_levels=self.research_levels)
+        # Excedente de metal: antes de comprar un almacén de metal cada vez más caro (que solo
+        # da capacidad), invertirlo en Blindaje, que cuesta metal PURO y sigue la misma curva
+        # de precio. Si arranca la investigación, este ciclo no construimos el almacén.
+        if choice and choice[0] == "metal_storage" and self._try_metal_dump(planet):
+            return
         if choice:
             name, cost = choice
             comp = "facilities" if name in ("robotics_factory", "nanite_factory",
@@ -2037,6 +2042,66 @@ class Brain(StatsMixin):
                     self._mark_build_started(planet, name, cost)
         else:
             self.log.info("%s: nada rentable que construir ahora.", planet.coords)
+
+    def _try_metal_dump(self, planet) -> bool:
+        """Convierte el excedente de metal en Blindaje en vez de en almacén de metal.
+
+        Guardas (todas deben cumplirse), para que nunca perjudique al desarrollo:
+          - Investigamos desde el planeta con el MEJOR laboratorio: hacerlo desde una colonia
+            con lab bajo bloquearía el slot durante horas.
+          - El slot de investigación iba a quedarse OCIOSO de todas formas: durante el
+            desbloqueo, solo si el siguiente hito no se puede pagar aún (típicamente falta
+            cristal/deuterio mientras el metal desborda); ya desbloqueado, solo si
+            next_research devuelve None (está ahorrando). Así nunca le quita el turno a
+            hyperspace/plasma/astro.
+          - La investigación es CORTA (metal_dump_max_research_hours): no acaparamos el slot.
+          - economy.metal_dump_research decide el coste y se autolimita (solo mientras el
+            blindaje no salga más caro que el almacén que evitamos).
+        Devuelve True solo si la investigación arrancó de verdad (client.research verifica).
+        """
+        if not getattr(self.cfg, "enable_metal_dump_research", True):
+            return False
+        if not getattr(self.cfg, "enable_research", True):
+            return False
+        labs = [p.lvl("research_lab") for p in (self.last_planets or [planet])]
+        if planet.lvl("research_lab") < max(labs or [0]):
+            return False
+
+        buf = 1 - self.cfg.keep_resources_buffer
+        avail = Resources(planet.resources.metal * buf, planet.resources.crystal * buf,
+                          planet.resources.deut * buf)
+        try:
+            unlock = (research_mod.next_unlock_research(self.research_levels)
+                      if getattr(self.cfg, "research_unlock_all", True) else None)
+            if unlock is not None:
+                # En desbloqueo: si el hito YA se puede pagar, es suyo el turno.
+                if avail.can_afford(gd.research_cost(unlock[0], unlock[1])):
+                    return False
+            elif research_mod.next_research(self.research_levels, planet, self.cfg) is not None:
+                return False    # había algo mejor que investigar: no le quitamos el turno
+        except Exception as e:
+            self.log.debug("Metal dump: no pude evaluar la próxima investigación: %s", e)
+            return False
+
+        dump = economy.metal_dump_research(planet, self.cfg, self.research_levels)
+        if not dump:
+            return False
+        name, cost = dump
+        # No acaparar el slot: solo investigaciones cortas.
+        try:
+            secs = gd.research_time(cost, planet.lvl("research_lab"), self.cfg.universe_speed)
+            max_h = float(getattr(self.cfg, "metal_dump_max_research_hours", 2.0) or 2.0)
+            if secs > max_h * 3600:
+                self.log.debug("Metal dump: %s tardaría %.1f h (> %.1f h); mejor el almacén.",
+                               name, secs / 3600.0, max_h)
+                return False
+        except Exception:
+            return False
+        if self._start_research(planet, name, cost):
+            self.log.info("%s: metal a punto de desbordar; invierto %s de metal en %s "
+                          "en vez de subir el almacén.", planet.coords, f"{int(cost.metal):,}", name)
+            return True
+        return False
 
     def _defense_step(self, planet):
         if not self._get_planet_setting(planet, "enable_defense", True):

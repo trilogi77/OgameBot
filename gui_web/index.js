@@ -592,6 +592,8 @@ function mapConfigToUI(cfg) {
     setVal("storage_min_capacity_target", cfg.storage_min_capacity_target !== undefined ? cfg.storage_min_capacity_target : 1000000);
     setVal("max_saving_hours_economy", cfg.max_saving_hours_economy !== undefined ? cfg.max_saving_hours_economy : 4);
     setCheck("enable_fusion_reactor", cfg.enable_fusion_reactor !== false);
+    setCheck("enable_metal_dump_research", cfg.enable_metal_dump_research !== false);  // default ON
+    setVal("metal_dump_max_armor_tech", cfg.metal_dump_max_armor_tech !== undefined ? cfg.metal_dump_max_armor_tech : 20);
     setVal("fusion_reactor_solar_offset", cfg.fusion_reactor_solar_offset !== undefined ? cfg.fusion_reactor_solar_offset : 25);
     setVal("target_robotics_factory", cfg.target_robotics_factory || "");
     setVal("target_shipyard", cfg.target_shipyard || "");
@@ -815,6 +817,8 @@ function collectUIIntoConfig() {
     globalConfig.storage_min_capacity_target = parseI(getVal("storage_min_capacity_target"), 1000000);
     globalConfig.max_saving_hours_economy = parseF(getVal("max_saving_hours_economy"), 4);
     globalConfig.enable_fusion_reactor = getCheck("enable_fusion_reactor");
+    globalConfig.enable_metal_dump_research = getCheck("enable_metal_dump_research");
+    globalConfig.metal_dump_max_armor_tech = parseI(getVal("metal_dump_max_armor_tech"), 20);
     globalConfig.fusion_reactor_solar_offset = parseI(getVal("fusion_reactor_solar_offset"), 25);
     globalConfig.target_robotics_factory = parseI(getVal("target_robotics_factory"), 0);
     globalConfig.target_shipyard = parseI(getVal("target_shipyard"), 0);

@@ -229,6 +229,49 @@ def _next_storage_build(planet: Planet, cfg: Config, get_resolved_building,
     return None
 
 
+def metal_dump_research(planet: Planet, cfg: Config,
+                        research_levels: Optional[Dict[str, int]] = None):
+    """Blindaje como sumidero del EXCEDENTE de metal, en vez de un almacén cada vez más caro.
+
+    Blindaje cuesta 1000 de metal PURO y dobla por nivel: exactamente la misma curva que el
+    almacén de metal. Así que cuando el metal va a desbordar, subir blindaje convierte metal
+    muerto en casco permanente para toda la flota, mientras que el almacén solo compra sitio
+    donde guardarlo.
+
+    Se AUTOLIMITA: solo se propone mientras el blindaje no salga más caro que el almacén que
+    evitamos (es decir, mientras nivel_blindaje < nivel_almacén). Cuando lo alcanza, gana el
+    almacén y el metal vuelve a acumularse.
+
+    Devuelve ("armor_tech", coste) o None. El llamante decide (necesita saber que el slot de
+    investigación está libre y que no hay algo mejor que investigar).
+    """
+    if not getattr(cfg, "enable_metal_dump_research", True):
+        return None
+    if planet.lvl("research_lab") < gd.RESEARCH_LAB_REQ.get("armor_tech", 2):
+        return None
+
+    lvl = int((research_levels or {}).get("armor_tech", 0))
+    cap = int(getattr(cfg, "metal_dump_max_armor_tech", 20) or 20)
+    user_cap = (getattr(cfg, "research_caps", None) or {}).get("armor_tech")
+    if user_cap:                       # respetar el tope que el usuario haya puesto
+        cap = min(cap, int(user_cap))
+    if lvl >= cap:
+        return None
+
+    cost = gd.research_cost("armor_tech", lvl + 1)
+    storage_cost = gd.building_cost("metal_storage", planet.lvl("metal_storage") + 1)
+    if cost.metal > storage_cost.metal:
+        return None                    # el blindaje ya es más caro: mejor el almacén
+
+    buf = 1 - cfg.keep_resources_buffer
+    avail = Resources(planet.resources.metal * buf,
+                      planet.resources.crystal * buf,
+                      planet.resources.deut * buf)
+    if not avail.can_afford(cost):
+        return None
+    return "armor_tech", cost
+
+
 def get_mine_target_level(mine: str, cfg: Config) -> int:
     target = cfg.max_mine_level
     if mine == "metal_mine":

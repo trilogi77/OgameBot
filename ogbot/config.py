@@ -46,7 +46,14 @@ class Config:
     # al superar las 24 h (~nivel 19-20) las minas dejaban de subir PARA SIEMPRE y el bot
     # solo engordaba almacenes. Pon false para el comportamiento fijo de antes.
     adaptive_mine_payback: bool = True
-    max_mine_payback_hours: float = 168.0    # tope duro (1 semana)  # umbral payback para subir mina (óptimo de arranque)
+    max_mine_payback_hours: float = 168.0    # tope duro (1 semana)
+    # Excedente de metal -> Blindaje en vez de almacén de metal. Blindaje cuesta metal PURO
+    # y sigue la MISMA curva de precio que el almacén, así que mientras sea más barato
+    # convierte metal muerto en casco permanente. Solo actúa con el árbol ya desbloqueado y
+    # si el slot de investigación iba a quedarse ocioso (nunca le quita el turno a plasma).
+    enable_metal_dump_research: bool = True
+    metal_dump_max_armor_tech: int = 20
+    metal_dump_max_research_hours: float = 2.0   # no acaparar el slot con blindajes largos  # umbral payback para subir mina (óptimo de arranque)
     keep_resources_buffer: float = 0.10            # % de recursos a no gastar
     enable_fusion_reactor: bool = True
     fusion_reactor_solar_offset: int = 25            # Niveles que debe tener la planta solar por encima del reactor de fusión

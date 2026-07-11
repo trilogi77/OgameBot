@@ -174,7 +174,8 @@ def time_to_accumulate(cost: gd.Cost, planet: Planet, cfg: Config, plasma: int) 
     return max(t_m, t_c, t_d)
 
 
-def spendable_resources(planet: Planet, cfg: Config, buf: Optional[float] = None) -> Resources:
+def spendable_resources(planet: Planet, cfg: Config, buf: Optional[float] = None,
+                        research_levels: Optional[dict] = None) -> Resources:
     """Recursos que este planeta puede GASTAR ahora mismo.
 
     Aplica el buffer configurado y descuenta la reserva de ahorro del planeta
@@ -182,6 +183,13 @@ def spendable_resources(planet: Planet, cfg: Config, buf: Optional[float] = None
     objetivo concreto, p.ej. un paso del programa especial). La reserva se descuenta POR
     RECURSO: ahorrar deuterio para un motor no debe bloquear el metal/cristal sobrante,
     que sigue disponible para minas u otras construcciones.
+
+    Además, la reserva de cada recurso se reduce por lo que ese recurso va a PRODUCIR
+    mientras se espera al recurso que de verdad falta (mismo tiempo que ve
+    ``time_to_accumulate``): si al cuello de botella (p.ej. deuterio) le quedan 2.3h,
+    el metal/cristal reservado que la producción de esas 2.3h vaya a reponer de sobra
+    no hace falta tenerlo ya guardado, y se libera para subir minas u otra cosa ahora
+    en vez de esperar sin motivo.
     """
     if buf is None:
         buf = 1 - cfg.keep_resources_buffer
@@ -190,9 +198,21 @@ def spendable_resources(planet: Planet, cfg: Config, buf: Optional[float] = None
     d = planet.resources.deut * buf
     reserve = getattr(planet, "savings_reserve", None)
     if reserve is not None:
-        m = max(0.0, m - max(0.0, getattr(reserve, "metal", 0.0)))
-        c = max(0.0, c - max(0.0, getattr(reserve, "crystal", 0.0)))
-        d = max(0.0, d - max(0.0, getattr(reserve, "deut", 0.0)))
+        res_m = max(0.0, getattr(reserve, "metal", 0.0))
+        res_c = max(0.0, getattr(reserve, "crystal", 0.0))
+        res_d = max(0.0, getattr(reserve, "deut", 0.0))
+        plasma = (research_levels or {}).get("plasma_tech", 0)
+        wait_h = time_to_accumulate(reserve, planet, cfg, plasma)
+        if wait_h > 0:
+            prod_m = gd.metal_production(planet.lvl("metal_mine"), plasma, cfg.universe_speed)
+            prod_c = gd.crystal_production(planet.lvl("crystal_mine"), plasma, cfg.universe_speed)
+            prod_d = max(0.0, _deut_net_production(planet.lvl("deut_synth"), planet, cfg, plasma))
+            res_m = max(0.0, res_m - prod_m * wait_h)
+            res_c = max(0.0, res_c - prod_c * wait_h)
+            res_d = max(0.0, res_d - prod_d * wait_h)
+        m = max(0.0, m - res_m)
+        c = max(0.0, c - res_c)
+        d = max(0.0, d - res_d)
     return Resources(m, c, d)
 
 
@@ -500,7 +520,7 @@ def affordable_resources_build(
     if not choice:
         return None
     name, cost = choice
-    avail = spendable_resources(planet, cfg)
+    avail = spendable_resources(planet, cfg, research_levels=research_levels)
 
     if avail.can_afford(cost):
         return name, cost
@@ -552,7 +572,7 @@ def affordable_facilities_build(
     if not choice:
         return None
     name, cost = choice
-    avail = spendable_resources(planet, cfg)
+    avail = spendable_resources(planet, cfg, research_levels=research_levels)
 
     if avail.can_afford(cost):
         return name, cost
@@ -580,7 +600,7 @@ def affordable_build(
     if not choice:
         return None
     name, cost = choice
-    avail = spendable_resources(planet, cfg)
+    avail = spendable_resources(planet, cfg, research_levels=research_levels)
 
     if avail.can_afford(cost):
         return name, cost
@@ -748,7 +768,8 @@ def affordable_defense(
     name, count, _ = choice
     # De noche, no dejamos buffer de seguridad para gastar lo máximo posible
     # (la reserva de ahorro del planeta sí se respeta siempre).
-    avail = spendable_resources(planet, cfg, buf=1.0 if is_night_mode else None)
+    avail = spendable_resources(planet, cfg, buf=1.0 if is_night_mode else None,
+                                research_levels=research_levels)
     for n in range(count, 0, -1):
         cost = gd.defense_cost(name, n)
         if avail.can_afford(cost):

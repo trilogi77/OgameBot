@@ -102,9 +102,12 @@ r = p.savings_reserve
 assert r is not None, "al ahorrar debe quedar fijada la reserva"
 want = gd.research_cost("impulse_drive", 3)
 assert (r.metal, r.crystal, r.deut) == (want.metal, want.crystal, want.deut)
-# Con la reserva puesta, el planeta sigue teniendo excedente gastable de metal/cristal
+# Con la reserva puesta, el planeta sigue teniendo excedente gastable de metal/cristal.
+# Además, sin minas de deuterio (deut_synth 0) el cuello de botella tardaría ~24000h en
+# llenarse a este ritmo: la producción de metal/cristal en ese tiempo sobra de sobra
+# para cubrir toda la reserva, así que se libera entera (no hace falta guardarla ya).
 s = economy.spendable_resources(p, cfg)
-assert s.metal == 50000 - want.metal and s.crystal == 30000 - want.crystal and s.deut == 0.0
+assert s.metal == 50000 and s.crystal == 30000 and s.deut == 0.0
 
 # ---- 5: programa especial ahorrando para un EDIFICIO -> también reserva ----
 cfg = cfg_base()

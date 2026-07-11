@@ -2106,7 +2106,7 @@ class Brain(StatsMixin):
         if planet.lvl("research_lab") < max(labs or [0]):
             return False
 
-        avail = economy.spendable_resources(planet, self.cfg)
+        avail = economy.spendable_resources(planet, self.cfg, research_levels=self.research_levels)
         try:
             unlock = (research_mod.next_unlock_research(self.research_levels)
                       if getattr(self.cfg, "research_unlock_all", True) else None)
@@ -2167,28 +2167,35 @@ class Brain(StatsMixin):
         if self._guard():
             self.client.build_lifeform(planet)
 
-    def _raise_research_lab(self, planet, needed_lvl: int, blocked_tech: str):
-        """Sube el laboratorio de 'planet' un nivel hacia needed_lvl para DESBLOQUEAR la
-        investigación 'blocked_tech'. Sin esto la investigación se quedaba en punto muerto:
-        elegía una tecnología que pide más laboratorio y nadie lo construía. Respeta
-        cola/recursos igual que las instalaciones."""
+    def _raise_research_lab(self, planet, needed_lvl: int, blocked_tech: str, advance: bool = False):
+        """Sube el laboratorio de 'planet' un nivel hacia needed_lvl. Si advance=False, es
+        para DESBLOQUEAR 'blocked_tech' (que lo pide ya). Si advance=True, es solo
+        adelantar el laboratorio hacia una necesidad futura del plan mientras 'blocked_tech'
+        (que no necesita más lab) espera recursos; no está realmente "bloqueada" por el lab.
+        Respeta cola/recursos igual que las instalaciones."""
         cur = planet.lvl("research_lab")
         if cur >= needed_lvl:
             return
         if not self._get_planet_setting(planet, "enable_facilities", True):
-            self.log.info("Investigación '%s' necesita laboratorio %d en %s, pero las "
-                          "instalaciones están desactivadas ahí; no puedo subirlo.",
-                          blocked_tech, needed_lvl, planet.coords)
+            if not advance:
+                self.log.info("Investigación '%s' necesita laboratorio %d en %s, pero las "
+                              "instalaciones están desactivadas ahí; no puedo subirlo.",
+                              blocked_tech, needed_lvl, planet.coords)
             return
         if planet.building_in_progress or self._active_queue_entry(planet):
             self.log.debug("%s: ocupado; el laboratorio para investigación esperará.", planet.coords)
             return
         cost = gd.building_cost("research_lab", cur + 1)
-        avail = economy.spendable_resources(planet, self.cfg)
+        avail = economy.spendable_resources(planet, self.cfg, research_levels=self.research_levels)
         if avail.can_afford(cost):
             if self._guard():
-                self.log.info("Investigación '%s' bloqueada: subiendo laboratorio a nivel %d en %s.",
-                              blocked_tech, cur + 1, planet.coords)
+                if advance:
+                    self.log.info("Adelantando laboratorio a nivel %d en %s (necesidad futura del "
+                                  "plan; '%s' no lo requiere).",
+                                  cur + 1, planet.coords, blocked_tech)
+                else:
+                    self.log.info("Investigación '%s' bloqueada: subiendo laboratorio a nivel %d en %s.",
+                                  blocked_tech, cur + 1, planet.coords)
                 if self.client.build(planet, "facilities", "research_lab"):
                     self.record_session_action("buildings", "research_lab", cur + 1, str(planet.coords))
                     self._mark_build_started(planet, "research_lab", cost)
@@ -2196,8 +2203,13 @@ class Brain(StatsMixin):
         else:
             plasma = self.research_levels.get("plasma_tech", 0)
             t = economy.time_to_accumulate(cost, planet, self.cfg, plasma)
-            self.log.info("Investigación '%s' bloqueada por laboratorio %d en %s: ahorrando (~%.1fh).",
-                          blocked_tech, needed_lvl, planet.coords, t)
+            if advance:
+                self.log.info("%s: ahorrando (~%.1fh) para adelantar laboratorio a nivel %d "
+                              "(necesidad futura del plan; '%s' no lo requiere).",
+                              planet.coords, t, needed_lvl, blocked_tech)
+            else:
+                self.log.info("Investigación '%s' bloqueada por laboratorio %d en %s: ahorrando (~%.1fh).",
+                              blocked_tech, needed_lvl, planet.coords, t)
 
     def _start_research(self, planet, name: str, cost):
         """Lanza una investigación en 'planet' y actualiza la caché/ETA. Devuelve True si
@@ -2266,7 +2278,7 @@ class Brain(StatsMixin):
             self._raise_research_lab(best, lab_req, tech)
             return
         cost = gd.research_cost(tech, lvl)
-        avail = economy.spendable_resources(best, self.cfg)
+        avail = economy.spendable_resources(best, self.cfg, research_levels=self.research_levels)
         if avail.can_afford(cost):
             self._start_research(best, tech, cost)
             return
@@ -2274,7 +2286,7 @@ class Brain(StatsMixin):
         # máximo que el plan todavía necesitará (sin pasarse). Si ya está, ahorrar.
         need_lab = research_mod.max_lab_needed(self.research_levels)
         if best.lvl("research_lab") < need_lab:
-            self._raise_research_lab(best, need_lab, tech)
+            self._raise_research_lab(best, need_lab, tech, advance=True)
         else:
             self.log.info("Plan de investigación %s nivel %d en %s: ahorrando recursos.",
                           tech, lvl, best.coords)
@@ -2346,7 +2358,7 @@ class Brain(StatsMixin):
                     if unit:
                         # Respeta el buffer, la reserva de ahorro del planeta y lo que
                         # economía está ahorrando para su próxima construcción.
-                        spend = economy.spendable_resources(home, self.cfg)
+                        spend = economy.spendable_resources(home, self.cfg, research_levels=self.research_levels)
                         avail_m = max(0.0, spend.metal - res_m)
                         avail_c = max(0.0, spend.crystal - res_c)
                         avail_d = max(0.0, spend.deut - res_d)
@@ -3677,7 +3689,7 @@ class Brain(StatsMixin):
                 eco = sum(p.lvl("metal_mine") + p.lvl("crystal_mine") for p in (lp or [planet]))
                 target_nanite = max(target_nanite, min(5, 1 + eco // 120))
 
-        avail = economy.spendable_resources(planet, self.cfg)
+        avail = economy.spendable_resources(planet, self.cfg, research_levels=self.research_levels)
         from .prereqs import resolve_prerequisites
         # Evaluar TODAS las instalaciones por debajo de objetivo; construir la PRIMERA (por
         # prioridad) que sea asequible AHORA. Si ninguna lo es, ahorrar para la de mayor

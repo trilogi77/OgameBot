@@ -1993,7 +1993,8 @@ let messagesCache = [];
 let lastMessagesSig = "";   // evita repintar (y resetear el scroll) si no hay mensajes nuevos
 const MESSAGE_CAT_COLORS = {
     "Combate": "#ef4444", "Expedición": "#a78bfa",
-    "Reciclaje": "#fbbf24", "Espionaje": "#38bdf8"
+    "Reciclaje": "#fbbf24", "Espionaje": "#38bdf8",
+    "Uniones/transporte": "#34d399", "Universo": "#60a5fa", "OGame": "#f472b6"
 };
 
 function loadMessages() {

@@ -2099,6 +2099,178 @@ class GameClient:
         self.log.info("Flota enviada: %s -> %s (%s)", origin, destination, mission)
         return True
 
+    def unread_messages_count(self) -> Optional[int]:
+        """Total de mensajes SIN LEER según el sobre de la barra (div.messagesIndicator),
+        leído de la página actual sin navegar. Devuelve None si el indicador no está o no
+        es numérico: el llamador debe entonces leer mensajes como siempre (fail-open)."""
+        try:
+            val = self.page.evaluate("""() => {
+                const el = document.querySelector('.messagesIndicator');
+                if (!el) return null;
+                const m = (el.textContent || '').match(/\\d+/);
+                return m ? parseInt(m[0], 10) : null;
+            }""")
+            return int(val) if val is not None else None
+        except Exception as e:
+            self.log.debug("No se pudo leer el sobre de mensajes: %s", e)
+            return None
+
+    def _on_messages_page(self) -> bool:
+        try:
+            return "component=messages" in (self.page.url or "")
+        except Exception:
+            return False
+
+    def _goto_messages(self, tab_id: Optional[int] = None) -> bool:
+        """Navega a la página de mensajes solo si no estamos ya en ella (ahorra acciones)."""
+        if self._on_messages_page():
+            return True
+        try:
+            suffix = f"&tab={tab_id}" if tab_id is not None else ""
+            self.page.goto(
+                f"{self.cfg.server_url.rstrip('/')}/game/"
+                f"index.php?page=ingame&component=messages{suffix}",
+                wait_until="domcontentloaded", timeout=15000,
+            )
+            self._delay()
+            return True
+        except Exception:
+            return False
+
+    def _activate_message_category(self, category_id: int, timeout_s: float = 4.5) -> bool:
+        """Clic en un GRUPO del centro de mensajes (singleTab: 2=Flotas, 5=Universo,
+        4=OGame...) y espera a que quede activo (clase 'marker')."""
+        try:
+            el = self.page.query_selector(f".singleTab[data-category-id='{category_id}']")
+            if not el:
+                return False
+            el.click()
+        except Exception:
+            return False
+        start = time.time()
+        while time.time() - start < timeout_s:
+            try:
+                ok = self.page.evaluate(f"""() => {{
+                    const t = document.querySelector(".singleTab[data-category-id='{category_id}']");
+                    return t ? t.classList.contains('marker') : false;
+                }}""")
+            except Exception:
+                return False
+            if ok:
+                time.sleep(0.8)   # margen para que cargue la lista del grupo
+                return True
+            time.sleep(0.3)
+        return False
+
+    # Contadores de no-leídos de pestañas del centro de mensajes: cada singleTab
+    # (grupo) e innerTabItem (subpestaña) lleva un span.newMessagesCount (vacío = 0).
+    _MSG_COUNTS_JS = """() => {
+        const num = el => {
+            const b = el.querySelector('.newMessagesCount');
+            const m = b ? (b.textContent || '').match(/\\d+/) : null;
+            return m ? parseInt(m[0], 10) : 0;
+        };
+        const cats = {}; let active = null;
+        document.querySelectorAll('.singleTab[data-category-id]').forEach(el => {
+            const id = parseInt(el.getAttribute('data-category-id'), 10);
+            cats[id] = num(el);
+            if (el.classList.contains('marker')) active = id;
+        });
+        const subs = {}; let activeSub = null;
+        document.querySelectorAll('.innerTabItem[data-subtab-id]').forEach(el => {
+            const id = parseInt(el.getAttribute('data-subtab-id'), 10);
+            subs[id] = num(el);
+            if (el.classList.contains('active')) activeSub = id;
+        });
+        return {cats, active, subs, activeSub};
+    }"""
+
+    def message_tab_active(self, tab_id: int) -> bool:
+        """True si estamos en la página de mensajes con la subpestaña indicada activa.
+        Sirve para validar que una lectura VACÍA fue de verdad de esa pestaña (y no un
+        fallo silencioso de navegación/extracción)."""
+        if not self._on_messages_page():
+            return False
+        try:
+            return bool(self.page.evaluate(f"""() => {{
+                const t = document.querySelector(".innerTabItem[data-subtab-id='{tab_id}']");
+                return !!(t && (t.classList.contains('active') || t.classList.contains('selected')));
+            }}"""))
+        except Exception:
+            return False
+
+    def read_messages_overview(self, expected_unread: Optional[int] = None) -> dict:
+        """Entra (una vez) en la página de mensajes y devuelve los contadores de no leídos:
+            {"categories": {id: n}, "fleet_tabs": {id: n} | None}
+        categories: grupos de arriba (2=Flotas, 1=Comunicación, 3=Economía, 5=Universo,
+        4=OGame, 6=Favoritos). fleet_tabs: subpestañas de Flotas (20=Espionaje, 21=Batalla,
+        22=Expediciones, 23=Uniones/transporte, 24=Otros); None si no se pudieron leer
+        (el llamador debe leer todas: fail-open). Si el grupo Flotas marca 0, se devuelven
+        ceros sin gastar el clic de activarlo.
+
+        expected_unread: total del sobre leído ANTES de navegar. El aterrizaje muestra una
+        subpestaña (Espionaje por defecto) y el juego marca SUS mensajes como leídos antes
+        de que muestreemos los badges: si los grupos suman menos que el sobre, la
+        diferencia se reasigna a la subpestaña activa para que el llamador la lea igual."""
+        out = {"categories": {}, "fleet_tabs": None}
+        if not self._goto_messages():
+            return out
+        try:
+            self.page.wait_for_selector(".singleTab[data-category-id]", timeout=6000)
+        except Exception:
+            pass
+        try:
+            st = self.page.evaluate(self._MSG_COUNTS_JS) or {}
+        except Exception as e:
+            self.log.debug("No se pudieron leer los contadores de mensajes: %s", e)
+            return out
+        cats = {int(k): int(v) for k, v in (st.get("cats") or {}).items()}
+        subs = {int(k): int(v) for k, v in (st.get("subs") or {}).items()}
+        out["categories"] = cats
+        if not cats:
+            return out
+        if expected_unread is not None:
+            deficit = int(expected_unread) - sum(cats.values())
+            if deficit > 0:
+                asub, acat = st.get("activeSub"), st.get("active")
+                if asub is None:
+                    return out   # no sabemos qué consumió el aterrizaje: fail-open
+                subs[int(asub)] = subs.get(int(asub), 0) + deficit
+                if acat is not None:
+                    cats[int(acat)] = cats.get(int(acat), 0) + deficit
+        if cats.get(2, 0) <= 0:
+            # Nada nuevo en Flotas: sus subpestañas están a 0 sin necesidad de abrir el grupo.
+            out["fleet_tabs"] = {t: 0 for t in (20, 21, 22, 23, 24)}
+            return out
+        if st.get("active") != 2:
+            if not self._activate_message_category(2):
+                return out   # fleet_tabs=None -> el llamador lee todas
+            try:
+                st = self.page.evaluate(self._MSG_COUNTS_JS) or {}
+                subs = {int(k): int(v) for k, v in (st.get("subs") or {}).items()}
+            except Exception:
+                return out
+        fleet = {t: n for t, n in subs.items() if 20 <= t <= 24}
+        out["fleet_tabs"] = fleet if fleet else None
+        return out
+
+    def read_message_category(self, category_id: int) -> List[dict]:
+        """Lee los mensajes de un GRUPO del centro de mensajes (5=Universo, 4=OGame).
+        Mismo formato que read_message_reports. Abrir el grupo marca sus mensajes
+        como leídos en el juego."""
+        if not self._goto_messages():
+            return []
+        if not self._activate_message_category(category_id):
+            self.log.debug("No se pudo activar el grupo de mensajes %d.", category_id)
+            return []
+        try:
+            self.page.wait_for_selector(
+                ".msg, li.msg, .message_element, tr.message", timeout=4000)
+        except Exception:
+            pass
+        time.sleep(1)
+        return self._extract_message_rows(f"grupo {category_id}")
+
     def read_message_reports(self, tab_id: int) -> List[dict]:
         """
         Navega a la pestaña indicada de mensajes y devuelve, por cada mensaje:
@@ -2108,14 +2280,16 @@ class GameClient:
         como respaldo.
         tab_id: 21 (Combates), 22 (Expediciones), 24 (Otros/Reciclaje).
         """
-        try:
-            self.page.goto(
-                f"{self.cfg.server_url.rstrip('/')}/game/"
-                f"index.php?page=ingame&component=messages&tab={tab_id}",
-                wait_until="domcontentloaded", timeout=15000,
-            )
-            self._delay()
-        except Exception:
+        if self._on_messages_page():
+            # Ya en mensajes (la fase agrupa varias lecturas): no recargar la página.
+            # Si está activo otro grupo (p.ej. Universo), la subpestaña 20-24 no existe
+            # en el DOM: volver primero al grupo Flotas.
+            try:
+                if not self.page.query_selector(f"[data-subtab-id='{tab_id}']"):
+                    self._activate_message_category(2)
+            except Exception:
+                pass
+        elif not self._goto_messages(tab_id):
             return []
 
         # Comprobar si la pestaña ya está activa en el DOM
@@ -2160,6 +2334,11 @@ class GameClient:
             pass
         time.sleep(1)
 
+        return self._extract_message_rows(f"tab {tab_id}")
+
+    def _extract_message_rows(self, ctx: str) -> List[dict]:
+        """Extrae los mensajes visibles de la lista actual: {id, text, raw} por fila,
+        con todos los data-raw-* del nodo y descendientes. `ctx` solo para el log."""
         js = """() => {
             const results = [];
             document.querySelectorAll('.msg, li.msg, .message_element, tr.message').forEach(el => {
@@ -2185,7 +2364,7 @@ class GameClient:
         try:
             return self.page.evaluate(js) or []
         except Exception as e:
-            self.log.debug("Error leyendo mensajes tab=%d: %s", tab_id, e)
+            self.log.debug("Error leyendo mensajes (%s): %s", ctx, e)
             return []
 
     def read_message_full(self, raw_id: str) -> str:

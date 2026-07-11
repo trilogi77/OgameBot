@@ -197,6 +197,52 @@ class StatsMixin:
         import re
         from .brain import EXPEDITION_SHIP_NAMES, parse_found_ships  # tardío: evita ciclo brain<->stats
 
+        # --- Ahorro de acciones (y comportamiento más humano) ---
+        # El sobre de la barra ya dice cuántos mensajes hay sin leer: si marca 0 y el
+        # libro mayor de espionaje ya está sembrado, no hay nada nuevo que parsear y NI
+        # SIQUIERA entramos en la página de mensajes. Con el indicador ausente (None) se
+        # lee todo como siempre (fail-open). Los tests usan clientes falsos sin estos
+        # métodos: getattr los detecta y también cae al comportamiento clásico.
+        spy_watch = getattr(self.cfg, "enable_spy_watch", True) and \
+            getattr(self.cfg, "spy_watch_messages", True)
+        spy_seed_pending = spy_watch and not os.path.exists(self.SPY_LEDGER_FILE)
+        # Avisos ya detectados pero PENDIENTES de reenviar por Telegram (notified=0): el
+        # reintento prometido vive en _process_spy_messages, así que debe correr aunque no
+        # haya nada sin leer (el mensaje quedó leído en el juego la primera vez). Solo
+        # cuenta con Telegram configurado: sin token no hay reenvío posible y bloquearía
+        # el ahorro de acciones para siempre.
+        spy_retry_pending = False
+        if spy_watch and not spy_seed_pending and \
+                getattr(self.cfg, "telegram_token", "") and getattr(self.cfg, "telegram_chat_id", ""):
+            try:
+                import csv
+                with open(self.SPY_LEDGER_FILE, "r", encoding="utf-8", newline="") as f:
+                    spy_retry_pending = any((r.get("notified") or "").strip() != "1"
+                                            for r in csv.DictReader(f))
+            except Exception:
+                pass
+        unread = None
+        probe = getattr(self.client, "unread_messages_count", None)
+        if callable(probe):
+            unread = probe()
+        if unread == 0 and not spy_seed_pending and not spy_retry_pending:
+            self.log.info("Mensajes: sobre a 0 (nada sin leer); fase de lectura omitida.")
+            return
+
+        # Contadores por pestaña: solo se abren las pestañas que marcan mensajes nuevos.
+        # fleet_counts=None significa "no se pudo saber" -> se leen todas (fail-open).
+        # Se pasa el valor del sobre (leído ANTES de navegar) para que el overview detecte
+        # los mensajes que el propio aterrizaje marca como leídos (subpestaña visible).
+        cat_counts, fleet_counts = {}, None
+        overview = getattr(self.client, "read_messages_overview", None)
+        if unread is not None and callable(overview):
+            try:
+                counts = overview(unread) or {}
+                cat_counts = counts.get("categories") or {}
+                fleet_counts = counts.get("fleet_tabs")
+            except Exception as e:
+                self.log.debug("Sin contadores de mensajes (%s); se leerán todas las pestañas.", e)
+
         stats_file = "ogbot_stats.json"
         stats = {
             "total_farming": {"metal": 0, "crystal": 0, "deut": 0},
@@ -226,7 +272,8 @@ class StatsMixin:
                 msg_log = []
         log_index = {e.get("key"): e for e in msg_log}
         log_changed = [False]
-        cat_names = {21: "Combate", 22: "Expedición", 24: "Reciclaje", 20: "Espionaje"}
+        cat_names = {21: "Combate", 22: "Expedición", 24: "Reciclaje", 20: "Espionaje",
+                     23: "Uniones/transporte", 5: "Universo", 4: "OGame"}
         ship_es = {k: v[0] for k, v in EXPEDITION_SHIP_NAMES}
 
         def record_msg(tab_id, m):
@@ -342,6 +389,8 @@ class StatsMixin:
             return 0
 
         for tab_id, key in tabs.items():
+            if fleet_counts is not None and not fleet_counts.get(tab_id, 0):
+                continue   # la subpestaña no marca mensajes nuevos: nos ahorramos el clic
             msgs = self.client.read_message_reports(tab_id)
             for m in msgs:
                 msg_id = f"{tab_id}-{m['id']}"
@@ -440,11 +489,40 @@ class StatsMixin:
                 stats["parsed_messages"].append(msg_id)
                 changed = True
 
+        # Uniones/transporte (subpestaña 23): el bot no saca estadísticas de ahí, pero si
+        # marca mensajes nuevos los abrimos (los deja leídos y el sobre puede volver a 0)
+        # y los registramos para el visor de la GUI. Solo con contadores fiables.
+        if fleet_counts is not None and fleet_counts.get(23, 0):
+            try:
+                for m in self.client.read_message_reports(23):
+                    record_msg(23, m)
+            except Exception as e:
+                self.log.debug("No se pudieron leer los mensajes de Uniones/transporte: %s", e)
+
         # Avisos de "te han espiado" (tab 20). Su dedup/notificación vive en un libro mayor
         # CSV persistente (spy_notifications.csv), no en parsed_messages, para garantizar UNA
         # notificación por mensaje nuevo y reintentar si Telegram falla. Ver _process_spy_messages.
-        if getattr(self.cfg, "enable_spy_watch", True) and getattr(self.cfg, "spy_watch_messages", True):
-            self._process_spy_messages(record_msg)
+        if spy_watch:
+            if fleet_counts is None or fleet_counts.get(20, 0) or spy_seed_pending or spy_retry_pending:
+                self._process_spy_messages(record_msg)
+            else:
+                self.log.debug("Espionaje: la subpestaña 20 no marca mensajes nuevos; omitida.")
+
+        # Grupos Universo (5) y OGame (4): noticias del servidor/juego. Solo se abren si su
+        # contador marca mensajes nuevos (abrirlos los deja leídos); se registran para la GUI.
+        reader = getattr(self.client, "read_message_category", None)
+        if callable(reader):
+            for cid in (5, 4):
+                if not cat_counts.get(cid, 0):
+                    continue
+                try:
+                    n = 0
+                    for m in reader(cid):
+                        record_msg(cid, m)
+                        n += 1
+                    self.log.info("Mensajes de %s leídos: %d.", cat_names.get(cid, cid), n)
+                except Exception as e:
+                    self.log.debug("No se pudieron leer los mensajes del grupo %s: %s", cid, e)
 
         if changed:
             try:
@@ -536,6 +614,12 @@ class StatsMixin:
         except Exception as e:
             self.log.debug("Error leyendo avisos de espionaje (tab 20): %s", e)
             return
+        # ¿Es fiable una lectura VACÍA? read_message_reports devuelve [] también en fallos
+        # silenciosos (goto fallido, evaluate roto). Solo damos el vacío por bueno si de
+        # verdad estamos mirando la subpestaña 20; si no, una primera siembra "vacía" por
+        # error daría el backlog por procesado y el siguiente ciclo notificaría avisos viejos.
+        verify = getattr(self.client, "message_tab_active", None)
+        read_verified = bool(msgs) or (callable(verify) and verify(20))
 
         # Coords propias (planeta + luna comparten g:s:p) para distinguir "me han espiado"
         # de mis propios informes. El OGame nuevo no usa frase: el aviso es una fila compacta
@@ -670,7 +754,25 @@ class StatsMixin:
                 self.log.warning("Fallo al notificar espionaje %s; se reintentará el próximo ciclo.", msg_id)
             changed = True
 
-        if changed:
+        # Filas pendientes (notified=0) cuyo mensaje ya no está en la pestaña: imposibles de
+        # reenviar (el cuerpo se perdió; también si cayó a otra página de la lista, donde su
+        # valor ya es nulo). Se cierran para que no bloqueen eternamente el ahorro de acciones
+        # (spy_retry_pending). Solo con lectura verificada: un [] por fallo no borra nada.
+        if tg_ok and read_verified:
+            visible = {f"20-{m['id']}" for m in msgs}
+            for mid, row in ledger.items():
+                if (row.get("notified") or "").strip() != "1" and mid not in visible:
+                    row["notified"] = "1"
+                    row["notified_at"] = now_str
+                    changed = True
+                    self.log.info("Aviso de espionaje %s ya no existe en la pestaña; se descarta el reenvío.", mid)
+
+        # La primera siembra se persiste AUNQUE no hubiera avisos (CSV solo con cabecera):
+        # sin esto, una cuenta sin espionajes nunca "terminaba" de sembrar y la fase de
+        # mensajes no podía saltarse aunque el sobre marcara 0 sin leer. Pero solo si la
+        # lectura vacía está verificada (read_verified): sembrar en falso convierte el
+        # backlog en "mensajes nuevos" y suelta un alud de notificaciones viejas.
+        if changed or (not ledger_existed and read_verified):
             # ponytail: reescribe el CSV entero; trivial para la decena de avisos de espionaje,
             # pasar a append solo si algún día crece de verdad.
             try:

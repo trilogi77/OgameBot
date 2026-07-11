@@ -126,4 +126,26 @@ assert fs._special_program_step(p, [("research", "impulse_drive", 3)]) is False
 assert fs.client.researched == ["impulse_drive"]
 assert p.savings_reserve is None
 
+# ---- 7: ahorrando deuterio para una investigación, instalaciones NO construye la
+# fábrica de robots (cuesta deuterio y el reservado no se toca) ----
+cfg = cfg_base()
+fs = fake_brain(cfg)
+fs.research_levels = {"impulse_drive": 2}
+fs._get_planet_setting = lambda p, k, dflt=None: {"target_robotics_factory": 5}.get(k, dflt)
+fs._facilities_step = MethodType(B._facilities_step, fs)
+p = P("1:1:7", {"metal_storage": 2, "crystal_storage": 2, "deut_tank": 1,
+                "research_lab": 3, "deut_synth": 10}, m=50000, c=30000, d=2000)
+# impulse_drive 3 cuesta 8000/16000/2400: falta deuterio -> el programa reserva
+assert fs._special_program_step(p, [("research", "impulse_drive", 3)]) is False
+assert p.savings_reserve is not None and p.savings_reserve.deut == 2400
+fs._facilities_step(p)
+assert all(n != "robotics_factory" for _, n in fs.client.built), \
+    f"robots no debe gastar el deuterio reservado: {fs.client.built}"
+
+# Validez del test: SIN reserva y con los mismos recursos, robots SÍ se construye.
+p2 = P("1:1:8", {"deut_synth": 10}, m=50000, c=30000, d=2000)
+fs.client.built.clear()
+fs._facilities_step(p2)
+assert ("facilities", "robotics_factory") in fs.client.built, fs.client.built
+
 print("OK")

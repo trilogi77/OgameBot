@@ -3196,6 +3196,36 @@ function initLiveTab() {
     bindSpecialKey("btnLiveKeyTab", "Tab");
     bindSpecialKey("btnLiveKeyEscape", "Escape");
 
+    // 3b. Botones de scroll (rueda del ratón sobre la página del bot)
+    const bindScrollBtn = (btnId, dy) => {
+        const btn = document.getElementById(btnId);
+        if (btn && overlay) {
+            btn.addEventListener("click", () => {
+                overlay.style.display = "flex";
+                liveImageLoading = true;
+                fetch(api("/api/live/scroll"), {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ dy })
+                })
+                .then(res => res.json())
+                .then(data => {
+                    overlay.style.display = "none";
+                    liveImageLoading = false;
+                    if (data.error) showToast("Error de scroll: " + data.error, "danger");
+                    else refreshLiveScreenshot();
+                })
+                .catch(err => {
+                    overlay.style.display = "none";
+                    liveImageLoading = false;
+                    showToast("Error de conexión: " + err, "danger");
+                });
+            });
+        }
+    };
+    bindScrollBtn("btnLiveScrollUp", -400);
+    bindScrollBtn("btnLiveScrollDown", 400);
+
     // 4. Refresco Manual
     if (btnRefresh) {
         btnRefresh.addEventListener("click", () => {

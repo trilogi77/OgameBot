@@ -271,6 +271,8 @@ def live_worker():
                                 page.mouse.down()
                                 page.mouse.move(task["x2"], task["y2"], steps=20)
                                 page.mouse.up()
+                            elif action == "scroll":
+                                page.mouse.wheel(0, int(task.get("dy", 0)))
                             latest_screenshot = page.screenshot(type="jpeg", quality=60)
                             if "resp_queue" in task:
                                 task["resp_queue"].put({"success": True})
@@ -390,6 +392,8 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
             self.handle_live_press(account)
         elif path == "/api/live/drag":
             self.handle_live_drag(account)
+        elif path == "/api/live/scroll":
+            self.handle_live_scroll(account)
         else:
             self.send_error(404, "Endpoint not found")
 
@@ -1129,6 +1133,10 @@ class GUIRequestHandler(BaseHTTPRequestHandler):
         self._live_action(account, {"action": "drag",
                                     "x": int(params.get("x", 0)), "y": int(params.get("y", 0)),
                                     "x2": int(params.get("x2", 0)), "y2": int(params.get("y2", 0))})
+
+    def handle_live_scroll(self, account):
+        params = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+        self._live_action(account, {"action": "scroll", "dy": int(params.get("dy", 0))})
 
     def send_json(self, status, data):
         self.send_response(status)

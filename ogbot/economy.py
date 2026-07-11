@@ -196,24 +196,35 @@ def spendable_resources(planet: Planet, cfg: Config, buf: Optional[float] = None
     m = planet.resources.metal * buf
     c = planet.resources.crystal * buf
     d = planet.resources.deut * buf
-    reserve = getattr(planet, "savings_reserve", None)
-    if reserve is not None:
-        res_m = max(0.0, getattr(reserve, "metal", 0.0))
-        res_c = max(0.0, getattr(reserve, "crystal", 0.0))
-        res_d = max(0.0, getattr(reserve, "deut", 0.0))
-        plasma = (research_levels or {}).get("plasma_tech", 0)
-        wait_h = time_to_accumulate(reserve, planet, cfg, plasma)
-        if wait_h > 0:
-            prod_m = gd.metal_production(planet.lvl("metal_mine"), plasma, cfg.universe_speed)
-            prod_c = gd.crystal_production(planet.lvl("crystal_mine"), plasma, cfg.universe_speed)
-            prod_d = max(0.0, _deut_net_production(planet.lvl("deut_synth"), planet, cfg, plasma))
-            res_m = max(0.0, res_m - prod_m * wait_h)
-            res_c = max(0.0, res_c - prod_c * wait_h)
-            res_d = max(0.0, res_d - prod_d * wait_h)
-        m = max(0.0, m - res_m)
-        c = max(0.0, c - res_c)
-        d = max(0.0, d - res_d)
+    block = current_savings_block(planet, cfg, research_levels)
+    if block is not None:
+        m = max(0.0, m - block.metal)
+        c = max(0.0, c - block.crystal)
+        d = max(0.0, d - block.deut)
     return Resources(m, c, d)
+
+
+def current_savings_block(planet: Planet, cfg: Config,
+                          research_levels: Optional[dict] = None) -> Optional[Resources]:
+    """Cuánto de cada recurso está reteniendo AHORA MISMO ``planet.savings_reserve``
+    (la reserva descontada por lo que ya va a producir mientras se espera al recurso
+    cuello de botella; ver ``spendable_resources``). None si el planeta no está ahorrando."""
+    reserve = getattr(planet, "savings_reserve", None)
+    if reserve is None:
+        return None
+    res_m = max(0.0, getattr(reserve, "metal", 0.0))
+    res_c = max(0.0, getattr(reserve, "crystal", 0.0))
+    res_d = max(0.0, getattr(reserve, "deut", 0.0))
+    plasma = (research_levels or {}).get("plasma_tech", 0)
+    wait_h = time_to_accumulate(reserve, planet, cfg, plasma)
+    if wait_h > 0:
+        prod_m = gd.metal_production(planet.lvl("metal_mine"), plasma, cfg.universe_speed)
+        prod_c = gd.crystal_production(planet.lvl("crystal_mine"), plasma, cfg.universe_speed)
+        prod_d = max(0.0, _deut_net_production(planet.lvl("deut_synth"), planet, cfg, plasma))
+        res_m = max(0.0, res_m - prod_m * wait_h)
+        res_c = max(0.0, res_c - prod_c * wait_h)
+        res_d = max(0.0, res_d - prod_d * wait_h)
+    return Resources(res_m, res_c, res_d)
 
 
 def surplus_after_reserve(avail: Resources, cost) -> Resources:

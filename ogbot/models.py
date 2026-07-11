@@ -80,6 +80,8 @@ class Planet:
     # del programa especial). Los demás subsistemas solo gastan el excedente por encima
     # de esta reserva, POR RECURSO (ver economy.spendable_resources).
     savings_reserve: Optional[Resources] = None
+    # Descripción legible de para qué se está ahorrando (solo informativo, para la UI).
+    savings_reason: Optional[str] = None
 
     def lvl(self, b: str) -> int:
         val = self.buildings.get(b, 0)

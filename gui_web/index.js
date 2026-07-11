@@ -3838,11 +3838,45 @@ function renderAutoPlan(plan) {
         }
         list.appendChild(c);
     };
+    const fmtRes = res => {
+        const parts = [];
+        if (res.metal > 1) parts.push(`${Math.round(res.metal).toLocaleString()} metal`);
+        if (res.crystal > 1) parts.push(`${Math.round(res.crystal).toLocaleString()} cristal`);
+        if (res.deut > 1) parts.push(`${Math.round(res.deut).toLocaleString()} deuterio`);
+        return parts.length ? parts.join(", ") : "nada";
+    };
+    const savingReasonText = reason => {
+        if (!reason) return "objetivo pendiente";
+        if (reason.kind === "research") {
+            const name = (TECH_NAMES[reason.name] || reason.name).replace(/\s*\(.*\)$/, "");
+            return `investigar ${name} al ${reason.level}`;
+        }
+        if (reason.kind === "building") {
+            const name = BUILDING_TRANSLATIONS[reason.name] || reason.name;
+            const base = `subir ${name} al ${reason.level}`;
+            if (reason.for_tech) {
+                const forName = (TECH_NAMES[reason.for_tech] || reason.for_tech).replace(/\s*\(.*\)$/, "");
+                return `${base} (para investigar ${forName} al ${reason.for_level})`;
+            }
+            return base;
+        }
+        return "objetivo pendiente";
+    };
     planets.forEach(p => {
         const steps = (p.steps || []).map(s =>
             `Subir ${BUILDING_TRANSLATIONS[s.action] || s.action} al ${s.level}`);
         card(`${p.name || "Planeta"} [${p.coords}]`, steps,
              "Nada rentable que construir con la lógica actual (objetivos alcanzados o amortización alta).");
+        if (p.saving) {
+            const list = document.getElementById("autoPlanList");
+            const c = document.createElement("div");
+            c.className = "card cfg-card";
+            c.innerHTML = `<div class="cfg-head"><span>Ahorrando en ${p.name || "Planeta"} [${p.coords}]</span></div>
+                <div class="text-muted sm">Para: ${savingReasonText(p.saving.reason)}</div>
+                <div class="text-muted sm">Necesita: ${fmtRes(p.saving.need)}</div>
+                <div class="text-muted sm">Bloqueando ahora: ${fmtRes(p.saving.blocking)}</div>`;
+            list.appendChild(c);
+        }
     });
     const rSteps = research.map(r => {
         const name = (TECH_NAMES[r.tech] || r.tech).replace(/\s*\(.*\)$/, "");

@@ -987,9 +987,17 @@ class Brain(StatsMixin):
                     # + cola); si tocáramos buildings, el balance nunca mejoraría y el
                     # plan repetiría "planta solar" hasta agotar los pasos.
                     sim.building_queue.append(name)
-                plan["planets"].append({
-                    "coords": f"{p.coords.galaxy}:{p.coords.system}:{p.coords.position}",
-                    "name": p.name, "steps": steps})
+                entry = {"coords": f"{p.coords.galaxy}:{p.coords.system}:{p.coords.position}",
+                         "name": p.name, "steps": steps}
+                if getattr(p, "savings_reserve", None) is not None:
+                    reserve = p.savings_reserve
+                    block = economy.current_savings_block(p, self.cfg, self.research_levels) or reserve
+                    entry["saving"] = {
+                        "reason": p.savings_reason,
+                        "need": {"metal": reserve.metal, "crystal": reserve.crystal, "deut": reserve.deut},
+                        "blocking": {"metal": block.metal, "crystal": block.crystal, "deut": block.deut},
+                    }
+                plan["planets"].append(entry)
             # Investigación: siguientes técnicas desde el mejor laboratorio
             if planets:
                 best = max(planets, key=lambda x: x.lvl("research_lab"))
@@ -1833,6 +1841,7 @@ class Brain(StatsMixin):
                 # falte deuterio para un motor no bloquea minas de metal/cristal).
                 for p in planets:
                     p.savings_reserve = None
+                    p.savings_reason = None
                     prog = self._special_program_for(p, planets)
                     if prog is not None and not self._special_program_step(p, prog):
                         if getattr(p, "savings_reserve", None) is None:
@@ -1977,6 +1986,7 @@ class Brain(StatsMixin):
                 # Investigación en curso: esperar, pero reservando ya lo que pedirá el
                 # paso pendiente para que el resto solo gaste el excedente.
                 planet.savings_reserve = Resources(cost.metal, cost.crystal, cost.deut)
+                planet.savings_reason = {"kind": "research", "name": name, "level": nxt}
                 return False
             # Si el coste no cabe en el almacén, la producción se topa y NUNCA se acumula
             # (deadlock: p.ej. impulse_drive 3 pide 16000 cristal y el tope base es 10000).
@@ -1987,12 +1997,16 @@ class Brain(StatsMixin):
                 bcost = gd.building_cost(blocker, bnxt)
                 if self._active_queue_entry(planet) or planet.building_in_progress:
                     planet.savings_reserve = Resources(bcost.metal, bcost.crystal, bcost.deut)
+                    planet.savings_reason = {"kind": "building", "name": blocker, "level": bnxt,
+                                              "for_tech": name, "for_level": nxt}
                     return False
                 if not planet.resources.can_afford(bcost):
                     self.log.info("%s: programa especial ahorrando para %s %d (necesario para investigar %s %d); "
                                   "el excedente sigue disponible para otras construcciones.",
                                   planet.coords, blocker, bnxt, name, nxt)
                     planet.savings_reserve = Resources(bcost.metal, bcost.crystal, bcost.deut)
+                    planet.savings_reason = {"kind": "building", "name": blocker, "level": bnxt,
+                                              "for_tech": name, "for_level": nxt}
                     return False
                 if self._guard():
                     ok = self.client.build(planet, "supplies", blocker)
@@ -2006,6 +2020,7 @@ class Brain(StatsMixin):
                               "recursos sigue disponible para otras construcciones.",
                               planet.coords, name, nxt)
                 planet.savings_reserve = Resources(cost.metal, cost.crystal, cost.deut)
+                planet.savings_reason = {"kind": "research", "name": name, "level": nxt}
                 return False
             if self._guard():
                 ok = self.client.research(name, planet=planet)
@@ -2033,12 +2048,14 @@ class Brain(StatsMixin):
         if self._active_queue_entry(planet) or planet.building_in_progress:
             # Slot ocupado: reservar lo del paso pendiente para que defensa/flota no lo gasten.
             planet.savings_reserve = Resources(cost.metal, cost.crystal, cost.deut)
+            planet.savings_reason = {"kind": "building", "name": name, "level": nxt}
             return False
         if not planet.resources.can_afford(cost):
             self.log.info("%s: programa especial ahorrando para %s %d; el excedente de los demás "
                           "recursos sigue disponible para otras construcciones.",
                           planet.coords, name, nxt)
             planet.savings_reserve = Resources(cost.metal, cost.crystal, cost.deut)
+            planet.savings_reason = {"kind": "building", "name": name, "level": nxt}
             return False
         comp = "facilities" if name in ("robotics_factory", "nanite_factory",
                                         "shipyard", "research_lab") else "supplies"
@@ -2289,6 +2306,7 @@ class Brain(StatsMixin):
         self.log.info("Plan de investigación %s nivel %d en %s: ahorrando recursos.",
                       tech, lvl, best.coords)
         best.savings_reserve = Resources(cost.metal, cost.crystal, cost.deut)
+        best.savings_reason = {"kind": "research", "name": tech, "level": lvl}
 
     def _fleet_step(self, planets, ships_in_motion=None):
         """Fabrica cargueros/naves según los objetivos definidos en la configuración."""

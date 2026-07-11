@@ -2318,15 +2318,31 @@ class GameClient:
 
             # Esperar hasta que el primer mensaje cambie o la lista se vacíe (máximo 4.5 segundos)
             start_time = time.time()
+            switched = False
             while time.time() - start_time < 4.5:
                 first_id_now = self.page.evaluate("""() => {
                     const first = document.querySelector('.msg, li.msg, .message_element, tr.message');
                     return first ? (first.getAttribute('data-msg-id') || first.id || '') : '';
                 }""")
                 if first_id_now != first_id_before:
+                    switched = True
                     break
                 time.sleep(0.3)
-        
+
+            if not switched:
+                # El clic no cambió la lista visible: si extraemos ahora, leeríamos los
+                # mensajes de la pestaña ANTERIOR (p.ej. una expedición contada como
+                # reciclaje al fallar el clic hacia "Otros"). Mejor no leer nada esta
+                # vuelta que contaminar la categoría equivocada.
+                still_active = self.page.evaluate(f"""() => {{
+                    const tab = document.querySelector("li[data-tab='{tab_id}'], [data-subtab-id='{tab_id}'], .tabLabel[data-tab='{tab_id}']");
+                    return tab ? (tab.classList.contains('active') || tab.classList.contains('selected')) : false;
+                }}""")
+                if not still_active:
+                    self.log.debug("read_message_reports: el clic a la pestaña %d no surtió efecto; "
+                                   "se omite esta ronda para no leer la pestaña anterior.", tab_id)
+                    return []
+
         try:
             self.page.wait_for_selector(
                 ".msg, li.msg, .message_element, tr.message", timeout=4000)

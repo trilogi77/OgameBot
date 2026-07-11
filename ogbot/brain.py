@@ -1840,7 +1840,15 @@ class Brain(StatsMixin):
                     self._economy_step(p)
                     self._defense_step(p)
                     self._lifeforms_step(p)
-                    self._facilities_step(p)
+                    # _facilities_step persigue SUS PROPIOS objetivos de robótica/astillero/
+                    # laboratorio/nanites (target_robotics_factory, empire_auto...), ajenos al
+                    # orden fijo. Si el programa especial sigue activo, dejarlo competir por el
+                    # mismo cupo de cola y los mismos recursos crea dos "ahorros" simultáneos
+                    # que se pisan (p.ej. ahorra para una investigación del programa Y ahorra
+                    # para subir robótica a la vez) y el plan de minas no avanza. Se cede el
+                    # turno a las instalaciones solo cuando el programa especial ha terminado.
+                    if prog is None:
+                        self._facilities_step(p)
                 # Inicio de servidor: la investigación la marca el propio programa. Se
                 # detecta solo: activo mientras el planeta principal siga ese orden.
                 server_start_active = bool(planets) and \

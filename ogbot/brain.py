@@ -2270,8 +2270,8 @@ class Brain(StatsMixin):
         """Ejecuta el siguiente paso del plan de desbloqueo (RESEARCH_UNLOCK_ORDER):
         - si el laboratorio no llega al requisito de esa tecnología, lo sube (a necesidad);
         - si hay recursos, investiga ese nivel;
-        - si faltan recursos, aprovecha para subir el laboratorio hacia lo que el plan aún
-          necesitará (hasta 7), y si no, ahorra."""
+        - si faltan recursos, ahorra para ESE paso (reserva su coste) en vez de desviar el
+          gasto a adelantar el laboratorio hacia hitos futuros del plan."""
         tech, lvl = step
         lab_req = gd.RESEARCH_LAB_REQ.get(tech, 0)
         if best.lvl("research_lab") < lab_req:
@@ -2282,14 +2282,13 @@ class Brain(StatsMixin):
         if avail.can_afford(cost):
             self._start_research(best, tech, cost)
             return
-        # Faltan recursos: usar el tiempo muerto para adelantar el laboratorio hacia el
-        # máximo que el plan todavía necesitará (sin pasarse). Si ya está, ahorrar.
-        need_lab = research_mod.max_lab_needed(self.research_levels)
-        if best.lvl("research_lab") < need_lab:
-            self._raise_research_lab(best, need_lab, tech, advance=True)
-        else:
-            self.log.info("Plan de investigación %s nivel %d en %s: ahorrando recursos.",
-                          tech, lvl, best.coords)
+        # Faltan recursos: reservar el coste de ESTE paso (el excedente por recurso sigue
+        # disponible para construcciones/colonizador) en vez de adelantar el laboratorio
+        # hacia el máximo del plan completo (eso dejaba tecnologías baratas como combustión
+        # a medias mientras el lab subía hacia el hito caro del final).
+        self.log.info("Plan de investigación %s nivel %d en %s: ahorrando recursos.",
+                      tech, lvl, best.coords)
+        best.savings_reserve = Resources(cost.metal, cost.crystal, cost.deut)
 
     def _fleet_step(self, planets, ships_in_motion=None):
         """Fabrica cargueros/naves según los objetivos definidos en la configuración."""

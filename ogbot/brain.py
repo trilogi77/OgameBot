@@ -1492,6 +1492,10 @@ class Brain(StatsMixin):
         try:
             path = getattr(self.cfg, "_path", "config.yaml")
             new_cfg = Config.load(path)
+            # El server_url detectado en vivo tras el login no se persiste en disco:
+            # no dejar que el reload lo vacíe (rompería _goto con URL relativa).
+            if not new_cfg.server_url and self.cfg.server_url:
+                new_cfg.server_url = self.cfg.server_url
             for k, v in new_cfg.__dict__.items():
                 setattr(self.cfg, k, v)
             self._apply_probe_cargo()   # aplicar cambios de bodega de sonda hechos desde la GUI

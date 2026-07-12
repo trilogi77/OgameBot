@@ -59,4 +59,19 @@ assert ok is True
 assert client2.cfg.server_url == "https://s272-es.ogame.gameforge.com/", (
     f"server_url no capturado: {client2.cfg.server_url!r}")
 
+# 3) _reload_config no debe pisar el server_url detectado en vivo con el valor
+#    vacio del disco (era la causa del fallo recurrente cada ciclo).
+from ogbot.brain import Brain
+
+brain = Brain.__new__(Brain)  # sin __init__: solo probamos _reload_config
+brain.cfg = Config()
+brain.cfg._path = "config-que-no-existe.yaml"  # Config.load -> defaults (server_url="")
+brain.cfg.server_url = "https://s272-es.ogame.gameforge.com/"
+brain.log = log
+brain._apply_probe_cargo = lambda: None
+brain._apply_empire_auto = lambda: None
+brain._reload_config()
+assert brain.cfg.server_url == "https://s272-es.ogame.gameforge.com/", (
+    f"reload piso el server_url detectado: {brain.cfg.server_url!r}")
+
 print("OK")

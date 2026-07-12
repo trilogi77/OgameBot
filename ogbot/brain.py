@@ -3316,7 +3316,7 @@ class Brain(StatsMixin):
 
         top1 = max_find = optimal = per_exp_auto = 0
         optimal_nopf = optimal_pf = 0
-        sc_optimal_nopf = sc_optimal_pf = 0  # fallback NPG por ubicación
+        sc_ratio = 0  # NPG por NGC-equivalente (0 = sin completado con NPG)
         spread_cap = None  # None = cada expedición a su óptimo; int = reparto por slot
         if auto:
             top1 = self._expedition_top1_points()
@@ -3339,19 +3339,15 @@ class Brain(StatsMixin):
             if max_cargo > 0:
                 optimal_nopf = min(optimal_nopf, max_cargo)
                 optimal_pf = min(optimal_pf, max_cargo)
-            # Precalcular óptimo de NPG para fallback por ubicación (si cargo_ship es NGC)
+            # Ratio de bodega NGC/NPG para completar con NPG lo que falte de NGC
+            # (el bonus de Hiperespacio multiplica a ambas, así que se cancela)
             if cargo_ship == "large_cargo":
-                sc_optimal_nopf = fleet_mod.optimal_expedition_cargo(base_find, "small_cargo", safety, hyper)
-                sc_pf_find = pf_find if use_pf else base_find
-                sc_optimal_pf = fleet_mod.optimal_expedition_cargo(sc_pf_find, "small_cargo", safety, hyper)
-                if max_cargo > 0:
-                    sc_optimal_nopf = min(sc_optimal_nopf, max_cargo)
-                    sc_optimal_pf = min(sc_optimal_pf, max_cargo)
+                sc_ratio = max(1, gd.effective_cargo("large_cargo") // max(1, gd.effective_cargo("small_cargo")))
             free_slots = max(1, (self._total_expe_slots_effective() or 1) - self.active_expe_slots)
-            # total_avail: NGC de todo el imperio; también contar NPG para el spread si no hay NGC
+            # total_avail en NGC-equivalentes: las NPG cuentan como capacidad de reparto
             total_avail = sum(loc.ships.get(cargo_ship, 0) for loc in enabled_locs)
-            if total_avail == 0 and cargo_ship == "large_cargo":
-                total_avail = sum(loc.ships.get("small_cargo", 0) for loc in enabled_locs)
+            if sc_ratio:
+                total_avail += sum(loc.ships.get("small_cargo", 0) for loc in enabled_locs) // sc_ratio
             # ¿Hay cargueros de sobra para llenar todos los slots al óptimo? Si no, repartir.
             if total_avail >= optimal_nopf * free_slots:
                 spread_cap = None
@@ -3362,7 +3358,7 @@ class Brain(StatsMixin):
             per_exp_auto = optimal if spread_cap is None else spread_cap
             self.log.info(
                 "Auto-expediciones: Top1=%s pts, botín_máx=%s u, óptimo x1=%d / pf=%d %s, "
-                "slots libres=%d, disponibles=%d, reparto=%s",
+                "slots libres=%d, disponibles(NGC-eq)=%d, reparto=%s",
                 top1, max_find, optimal_nopf, optimal_pf, cargo_ship,
                 free_slots, total_avail, "óptimo" if spread_cap is None else per_exp_auto)
 
@@ -3377,7 +3373,7 @@ class Brain(StatsMixin):
                 if auto:
                     ships = self._auto_exp_ships(cargo_ship, optimal_nopf, optimal_pf,
                                                  spread_cap, use_pf, loc.ships, min_cargo,
-                                                 sc_optimal_nopf, sc_optimal_pf)
+                                                 sc_ratio)
                 else:
                     ships = dict(manual_ships)
                     if not all(loc.ships.get(s, 0) >= q for s, q in ships.items()):
@@ -3407,30 +3403,27 @@ class Brain(StatsMixin):
         self._write_expedition_status(top1, max_find, optimal, per_exp_auto, cargo_ship, auto)
 
     def _auto_exp_ships(self, cargo_ship, optimal_nopf, optimal_pf, spread_cap,
-                        use_pf, avail, min_cargo, sc_optimal_nopf=0, sc_optimal_pf=0):
+                        use_pf, avail, min_cargo, sc_ratio=0):
         """
         Dict de naves para una expedición auto, limitado por el hangar. Decide PRIMERO
         si esta expedición lleva pathfinder (solo si lo hay) y dimensiona la carga al
         óptimo correspondiente (x2 con pathfinder, x1 sin él), sin pasar del reparto.
-        Si esta ubicación no tiene el carguero principal (NGC) pero sí NPG, usa NPG
-        como fallback sin afectar el resto de ubicaciones del mismo ciclo.
+        Si faltan NGC para llegar al objetivo, completa la capacidad restante con NPG
+        (sc_ratio NPG por NGC que falte); sin ninguna NGC, va todo en NPG.
         """
         will_pf = use_pf and cargo_ship != "pathfinder" and avail.get("pathfinder", 0) >= 1
         loc_optimal = optimal_pf if will_pf else optimal_nopf
         target = loc_optimal if spread_cap is None else min(loc_optimal, spread_cap)
         n = min(target, avail.get(cargo_ship, 0))
-        # Fallback por ubicación: si no hay NGC aquí pero sí NPG, usarlos
-        effective_ship = cargo_ship
-        if n < min_cargo and cargo_ship == "large_cargo" and sc_optimal_nopf > 0:
-            sc_loc_opt = sc_optimal_pf if will_pf else sc_optimal_nopf
-            sc_target = sc_loc_opt if spread_cap is None else min(sc_loc_opt, spread_cap)
-            sc_n = min(sc_target, avail.get("small_cargo", 0))
-            if sc_n >= min_cargo:
-                effective_ship = "small_cargo"
-                n = sc_n
-        if n < min_cargo:
+        ships = {}
+        if n > 0:
+            ships[cargo_ship] = n
+        if sc_ratio and n < target:
+            sc_n = min((target - n) * sc_ratio, avail.get("small_cargo", 0))
+            if sc_n > 0:
+                ships["small_cargo"] = ships.get("small_cargo", 0) + sc_n
+        if sum(ships.values()) < min_cargo:
             return None
-        ships = {effective_ship: n}
         if will_pf:
             ships["pathfinder"] = 1
         # Destructor(es) opcionales para sobrevivir/ganar combates de expedición (si los hay)

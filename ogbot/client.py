@@ -649,6 +649,13 @@ class GameClient:
                 url = self.page.url
                 if self._is_game_url(url):
                     self.log.info("Login completado (usuario). ¡Dentro del juego!")
+                    if "/game/" in url:
+                        actual_base = url.split("/game/")[0] + "/"
+                        if self.cfg.server_url.rstrip("/") != actual_base.rstrip("/"):
+                            self.log.warning(
+                                "Servidor real detectado en vivo: %s (configurado: %s). Actualizando server_url.",
+                                actual_base, self.cfg.server_url)
+                            self.cfg.server_url = actual_base
                     return True
                 # ¿ya en /accounts con tarjetas de cuenta? -> sesión válida; entrar al universo
                 if "/accounts" in url and self.page.locator(
@@ -753,18 +760,23 @@ class GameClient:
     #  Navegación interna
     # ------------------------------------------------------------------
     def _goto(self, page_key: str, planet: "Planet | None" = None):
-        url = f"{self.cfg.server_url.rstrip('/')}/game/{PAGE[page_key]}"
-        if planet is not None:
-            pid = planet.id.replace("planet-", "")
-            url += f"&cp={pid}"
+        def build_url() -> str:
+            u = f"{self.cfg.server_url.rstrip('/')}/game/{PAGE[page_key]}"
+            if planet is not None:
+                pid = planet.id.replace("planet-", "")
+                u += f"&cp={pid}"
+            return u
+
         for attempt in range(3):
+            url = build_url()
             try:
                 self.page.goto(url, wait_until="domcontentloaded")
                 # Si OGame nos ha sacado al lobby, reloginear automáticamente
                 if not self._is_game_url(self.page.url):
                     self.log.warning("Sesión caducada (URL=%s); reloginando...", self.page.url)
                     if self.login():
-                        self.page.goto(url, wait_until="domcontentloaded")
+                        # login() puede haber actualizado server_url: reconstruir la URL
+                        self.page.goto(build_url(), wait_until="domcontentloaded")
                     else:
                         raise RuntimeError("Re-login fallido tras sesión caducada.")
                 break

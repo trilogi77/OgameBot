@@ -129,8 +129,11 @@ class StatsMixin:
                 "hostile_attacks": {},
                 "espionage": {}
             }
-        elif "espionage" not in stats["session_actions"]:
-            stats["session_actions"]["espionage"] = {}
+        else:
+            if "espionage" not in stats["session_actions"]:
+                stats["session_actions"]["espionage"] = {}
+            if "research" not in stats["session_actions"]:
+                stats["session_actions"]["research"] = []
 
         timestamp_str = time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -141,7 +144,7 @@ class StatsMixin:
         }
 
         if action_type == "research":
-            stats["session_actions"]["research"].append(action_data)
+            stats["session_actions"].setdefault("research", []).append(action_data)
         else:
             if not planet_coords:
                 planet_coords = "Empire"

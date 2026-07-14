@@ -76,12 +76,14 @@ def _brain_stub(rl, planet, started):
     stub = types.SimpleNamespace(
         cfg=cfg, research_levels=rl, last_planets=[planet], log=logging.getLogger("t"),
         _start_research=lambda p, n, c: (started.append((n, c)), True)[1])
+    stub._research_planet = lambda planets: Brain._research_planet(stub, planets)
     return Brain._try_metal_dump, stub
 
 
-def _lab_planet(metal=2_730_000, crystal=5_283, deut=106_781, lab=8, storage=9):
+def _lab_planet(metal=2_730_000, crystal=5_283, deut=106_781, lab=8, storage=9,
+                coords="2:113:10"):
     return types.SimpleNamespace(
-        coords="2:113:10",
+        coords=coords,
         resources=Resources(metal, crystal, deut),
         lvl=lambda n, _l=lab, _s=storage: {"research_lab": _l, "metal_storage": _s}.get(n, 0))
 
@@ -114,11 +116,27 @@ def test_brain_defers_when_unlock_milestone_affordable():
 def test_brain_defers_from_colony_with_worse_lab():
     started = []
     main = _lab_planet(lab=8)
-    colony = _lab_planet(lab=0)
+    colony = _lab_planet(lab=0, coords="2:113:5")
     fn, stub = _brain_stub(dict(_REAL), main, started)
     stub.last_planets = [main, colony]
     assert fn(stub, colony) is False       # nunca investigar desde el lab peor
     assert started == []
+
+
+def test_brain_dump_follows_research_planet_override():
+    # Con research_planet fijado en la colonia, el dump se hace desde ELLA (es el planeta
+    # de investigación) y el principal, aunque tenga mejor lab, se abstiene.
+    from ogbot.models import Coords
+    started = []
+    main = _lab_planet(lab=8, coords=Coords(2, 113, 10))
+    colony = _lab_planet(lab=8, coords=Coords(2, 113, 5))
+    fn, stub = _brain_stub(dict(_REAL), main, started)
+    stub.cfg.research_planet = "2:113:5"
+    stub.last_planets = [main, colony]
+    assert fn(stub, main) is False
+    assert started == []
+    assert fn(stub, colony) is True
+    assert started and started[0][0] == "armor_tech", started
 
 
 if __name__ == "__main__":
@@ -132,4 +150,5 @@ if __name__ == "__main__":
     test_brain_dumps_when_unlock_milestone_unaffordable()
     test_brain_defers_when_unlock_milestone_affordable()
     test_brain_defers_from_colony_with_worse_lab()
+    test_brain_dump_follows_research_planet_override()
     print("OK")

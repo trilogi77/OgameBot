@@ -30,8 +30,8 @@ def make(choice, facilities=True):
                                   enable_facilities=facilities, enable_research=True,
                                   research_unlock_all=False, universe_speed=8),
     )
-    for n in ("_raise_research_lab", "_research_step", "_get_planet_setting",
-              "_start_research", "_follow_research_unlock"):
+    for n in ("_raise_research_lab", "_research_step", "_research_planet",
+              "_get_planet_setting", "_start_research", "_follow_research_unlock"):
         setattr(fs, n, MethodType(getattr(brain.Brain, n), fs))
     fs._guard = lambda: True
     fs._active_queue_entry = lambda p: None

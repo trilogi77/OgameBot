@@ -551,6 +551,7 @@ function mapConfigToUI(cfg) {
     setVal("temp_cruiser", template.cruiser || "");
 
     // Límites de investigación
+    setVal("research_planet", cfg.research_planet || "");
     const caps = cfg.research_caps || {};
     setVal("cap_energy_tech", caps.energy_tech || "");
     setVal("cap_laser_tech", caps.laser_tech || "");
@@ -759,6 +760,8 @@ function collectUIIntoConfig() {
         light_fighter: parseI(getVal("temp_light_fighter"), 0),
         cruiser: parseI(getVal("temp_cruiser"), 0)
     };
+
+    globalConfig.research_planet = (getVal("research_planet") || "").trim();
 
     // Guardar límites de investigación: solo las claves con valor. Un campo vacío
     // NO es 0 ("nunca investigar"); si todos están vacíos no se toca research_caps.

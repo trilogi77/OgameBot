@@ -312,6 +312,7 @@ journalctl -u ogbot -f
 | Clave | Defecto | Qué hace |
 |---|---|---|
 | `enable_research` | `true` | Ronda de investigación. |
+| `research_planet` | `""` | Coordenadas `g:s:p` del planeta desde el que investigar. Vacío = el de mejor laboratorio. |
 | `research_priority` | ver ejemplo | Orden de evaluación de tecnologías. |
 | `research_weights` | ver ejemplo | Peso por tecnología (mayor = antes). |
 | `research_caps` | láser 12, ion 5, energía 8, hiperespacio 15 | Nivel máximo voluntario por tecnología. |

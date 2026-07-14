@@ -79,6 +79,10 @@ class Config:
 
     # --- Investigación ---
     enable_research: bool = True
+    # Planeta desde el que investigar: coordenadas "g:s:p" (p.ej. "2:113:5"). Vacío = el
+    # planeta con el laboratorio de mayor nivel (comportamiento de siempre). Si las
+    # coordenadas no coinciden con ningún planeta de la cuenta se avisa y se usa el mejor lab.
+    research_planet: str = ""
     # Fase de desbloqueo: seguir RESEARCH_UNLOCK_ORDER hasta tener todo el árbol a nivel >=1
     # (sin graviton), subiendo el laboratorio a necesidad. Al completarlo, investigación
     # normal por prioridad/pesos. Se autolimita (al estar todo desbloqueado, no hace nada).

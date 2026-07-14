@@ -998,9 +998,10 @@ class Brain(StatsMixin):
                         "blocking": {"metal": block.metal, "crystal": block.crystal, "deut": block.deut},
                     }
                 plan["planets"].append(entry)
-            # Investigación: siguientes técnicas desde el mejor laboratorio
+            # Investigación: siguientes técnicas desde el planeta de investigación
+            # (research_planet o, por defecto, el de mejor laboratorio)
             if planets:
-                best = max(planets, key=lambda x: x.lvl("research_lab"))
+                best = self._research_planet(planets)
                 levels = dict(self.research_levels)
                 for _ in range(5):
                     ch = research_mod.next_research(levels, best, self.cfg)
@@ -2107,8 +2108,9 @@ class Brain(StatsMixin):
         """Convierte el excedente de metal en Blindaje en vez de en almacén de metal.
 
         Guardas (todas deben cumplirse), para que nunca perjudique al desarrollo:
-          - Investigamos desde el planeta con el MEJOR laboratorio: hacerlo desde una colonia
-            con lab bajo bloquearía el slot durante horas.
+          - Investigamos desde el planeta de investigación (research_planet o, por defecto,
+            el de mejor laboratorio): hacerlo desde una colonia con lab bajo bloquearía el
+            slot durante horas.
           - El slot de investigación iba a quedarse OCIOSO de todas formas: durante el
             desbloqueo, solo si el siguiente hito no se puede pagar aún (típicamente falta
             cristal/deuterio mientras el metal desborda); ya desbloqueado, solo si
@@ -2123,8 +2125,8 @@ class Brain(StatsMixin):
             return False
         if not getattr(self.cfg, "enable_research", True):
             return False
-        labs = [p.lvl("research_lab") for p in (self.last_planets or [planet])]
-        if planet.lvl("research_lab") < max(labs or [0]):
+        rp = self._research_planet(self.last_planets or [planet])
+        if rp is not None and rp.coords != planet.coords:
             return False
 
         avail = economy.spendable_resources(planet, self.cfg, research_levels=self.research_levels)
@@ -2261,12 +2263,30 @@ class Brain(StatsMixin):
                 self.log.debug("No se pudo estimar ETA de investigación: %s", e)
         return ok
 
+    def _research_planet(self, planets):
+        """Planeta desde el que investigar: el fijado en research_planet (coords "g:s:p")
+        si pertenece a la cuenta; si no (o vacío), el de mejor laboratorio. Con coordenadas
+        que no casan (typo, planeta abandonado) se avisa una vez y se usa el mejor lab, para
+        que la investigación nunca se quede parada en silencio."""
+        if not planets:
+            return None
+        sel = (getattr(self.cfg, "research_planet", "") or "").strip()
+        if sel:
+            for p in planets:
+                if f"{p.coords.galaxy}:{p.coords.system}:{p.coords.position}" == sel:
+                    return p
+            if not getattr(self, "_warned_research_planet", False):
+                self._warned_research_planet = True
+                self.log.warning("research_planet=%s no coincide con ningún planeta de la "
+                                 "cuenta; investigo desde el de mejor laboratorio.", sel)
+        return max(planets, key=lambda p: p.lvl("research_lab"))
+
     def _research_step(self, planets: List):
         if not getattr(self.cfg, "enable_research", True):
             self.log.debug("Investigación desactivada globalmente.")
             return
-        # Investigar desde el planeta con el laboratorio de mayor nivel
-        best = max(planets, key=lambda p: p.lvl("research_lab"))
+        # Investigar desde el planeta elegido (research_planet o el de mejor laboratorio)
+        best = self._research_planet(planets)
 
         # Fase de desbloqueo: seguir el orden fijo hasta tener todo el árbol a nivel >=1,
         # subiendo el laboratorio a necesidad (o en los ratos sin recursos). Al completarlo,

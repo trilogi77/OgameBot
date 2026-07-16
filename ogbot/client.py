@@ -835,30 +835,48 @@ class GameClient:
             return None
 
     def _is_build_queue_active(self) -> bool:
+        """Cola activa según la página de componente (supplies/facilities), no el overview."""
         try:
             return bool(self.page.evaluate(_load_js("build_queue_active")))
         except Exception:
             return False
 
-    def _is_build_queue_active_from_overview(self) -> bool:
-        """Comprueba la cola desde la página de overview (más fiable). Debe llamarse en overview."""
+    def read_overview_boxes(self) -> Dict[str, dict]:
+        """Lee de una vez los paneles de la vista general (edificio / forma de vida /
+        investigación / hangar). Debe llamarse estando en overview.
+        Devuelve {clave: {"active", "remaining", "techs"}}; falta la clave si el panel
+        no está en el DOM o si la lectura falla."""
         try:
-            return bool(self.page.evaluate(_load_js("build_queue_overview")))
-        except Exception:
-            return False
+            boxes = self.page.evaluate(_load_js("overview_boxes")) or {}
+        except Exception as e:
+            self.log.debug("No pude leer los paneles del overview: %s", e)
+            return {}
+        return {k: v for k, v in boxes.items() if v}
 
-    def _get_build_queue_remaining_seconds(self) -> int:
-        try:
-            return int(self.page.evaluate(_load_js("build_queue_remaining")) or 0)
-        except Exception:
-            return 0
+    def apply_overview_boxes(self, planet: Planet) -> Dict[str, dict]:
+        """Vuelca los paneles del overview sobre el planeta. Con esto basta para saber si
+        hay algo en curso: no hace falta visitar supplies/facilities/research para mirarlo.
 
-    def _get_build_queue(self) -> List[str]:
-        try:
-            tids = self.page.evaluate(_load_js("build_queue")) or []
-            return [_ID_TO_NAME[str(tid)] for tid in tids if str(tid) in _ID_TO_NAME]
-        except Exception:
-            return []
+        Es fail-open a propósito (si no se puede leer, la cola queda "libre"); la red de
+        seguridad es build_finish_epoch en la caché del cerebro."""
+        boxes = self.read_overview_boxes()
+
+        b = boxes.get("building") or {}
+        planet.building_in_progress = bool(b.get("active"))
+        planet.building_remaining_seconds = int(b.get("remaining") or 0)
+        planet.building_queue = [_ID_TO_NAME[str(t)] for t in (b.get("techs") or [])
+                                 if str(t) in _ID_TO_NAME]
+
+        # Investigación: el panel es global de la cuenta, se ve igual desde cualquier planeta.
+        r = boxes.get("research") or {}
+        planet.research_in_progress = bool(r.get("active"))
+        planet.research_remaining_seconds = int(r.get("remaining") or 0)
+
+        # Forma de vida: solo si el panel está en el DOM; si no, lo resuelve quien navega
+        # a lfbuildings (read_planet_state).
+        if "lifeform" in boxes:
+            planet.lifeform_in_progress = bool(boxes["lifeform"].get("active"))
+        return boxes
 
     def _is_lf_queue_active(self) -> bool:
         try:
@@ -1012,10 +1030,9 @@ class GameClient:
         """Lee recursos, edificios, naves, defensas y cola de construcción."""
         self._goto("overview", planet)
         planet.resources = self.read_resources()
-        # Cola de construcción: lo más fiable es leerla desde overview
-        planet.building_in_progress = self._is_build_queue_active_from_overview()
-        planet.building_remaining_seconds = self._get_build_queue_remaining_seconds() if planet.building_in_progress else 0
-        planet.building_queue = self._get_build_queue() if planet.building_in_progress else []
+        # Colas (edificio / investigación / forma de vida): todas salen de los paneles
+        # de esta misma página, sin navegar a ningún componente.
+        self.apply_overview_boxes(planet)
 
         # Para lunas, saltar "supplies", solo leer "facilities"
         components = ["facilities"]
@@ -1068,9 +1085,7 @@ class GameClient:
         """
         self._goto("overview", planet)
         planet.resources = self.read_resources()
-        planet.building_in_progress = self._is_build_queue_active_from_overview()
-        planet.building_remaining_seconds = self._get_build_queue_remaining_seconds() if planet.building_in_progress else 0
-        planet.building_queue = self._get_build_queue() if planet.building_in_progress else []
+        self.apply_overview_boxes(planet)
 
         ships_data = self._read_tech_page("shipyard", planet)
         planet.ships.update(ships_data)

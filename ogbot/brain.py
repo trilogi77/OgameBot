@@ -2285,6 +2285,13 @@ class Brain(StatsMixin):
         if not getattr(self.cfg, "enable_research", True):
             self.log.debug("Investigación desactivada globalmente.")
             return
+        # El panel de investigación del overview es global de la cuenta: si cualquier planeta
+        # lo vio ocupado, no hay nada que planificar y nos ahorramos ir al laboratorio.
+        busy = next((p for p in planets if getattr(p, "research_in_progress", False)), None)
+        if busy is not None:
+            self.log.debug("Investigación en curso (%ds restantes según %s); no planifico.",
+                           busy.research_remaining_seconds, busy.coords)
+            return
         # Investigar desde el planeta elegido (research_planet o el de mejor laboratorio)
         best = self._research_planet(planets)
 
@@ -3655,28 +3662,29 @@ class Brain(StatsMixin):
 
             for p in planets:
                 try:
-                    # Comprobar cola de suministros/instalaciones
-                    if p.building_in_progress:
-                        self.client._goto("overview", p)
-                        prev = p.building_in_progress
-                        p.building_in_progress = self.client._is_build_queue_active_from_overview()
-                        if prev and not p.building_in_progress:
-                            self.log.info("%s: construcción completada. Actualizando estado.", p.coords)
-                            p.resources = self.client.read_resources()
-                            for comp in ("supplies", "facilities"):
-                                p.buildings.update(self.client._read_tech_page(comp, p))
+                    if not (p.building_in_progress or p.lifeform_in_progress):
+                        continue
+                    # Un solo overview responde por las dos colas (edificio y forma de vida).
+                    prev, prev_lf = p.building_in_progress, p.lifeform_in_progress
+                    self.client._goto("overview", p)
+                    boxes = self.client.apply_overview_boxes(p)
 
-                    # Comprobar cola de Formas de vida
-                    if p.lifeform_in_progress:
+                    if prev and not p.building_in_progress:
+                        self.log.info("%s: construcción completada. Actualizando estado.", p.coords)
+                        p.resources = self.client.read_resources()
+                        for comp in ("supplies", "facilities"):
+                            p.buildings.update(self.client._read_tech_page(comp, p))
+
+                    if prev_lf and "lifeform" not in boxes:
+                        # El overview no trae panel de forma de vida: preguntar a su página.
                         self.client._goto("lfbuildings", p)
                         try:
                             self.client._wait_tech(timeout=4000)
-                            prev_lf = p.lifeform_in_progress
                             p.lifeform_in_progress = self.client._is_lf_queue_active()
-                            if prev_lf and not p.lifeform_in_progress:
-                                self.log.info("%s: Forma de vida completada.", p.coords)
                         except Exception:
                             p.lifeform_in_progress = False
+                    if prev_lf and not p.lifeform_in_progress:
+                        self.log.info("%s: Forma de vida completada.", p.coords)
                 except Exception as e:
                     self.log.debug("Poll error en %s: %s", p.coords, e)
 

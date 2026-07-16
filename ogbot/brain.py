@@ -1863,6 +1863,12 @@ class Brain(StatsMixin):
                     # turno a las instalaciones solo cuando el programa especial ha terminado.
                     if prog is None:
                         self._facilities_step(p)
+                # Instalaciones lunares: van por su cuenta (la luna no tiene minas ni
+                # programa especial; gasta lo que le haya mandado la ronda de alimentación).
+                for p in planets:
+                    moon = getattr(p, "moon", None) if getattr(p, "has_moon", False) else None
+                    if moon:
+                        self._moon_step(moon)
                 # Inicio de servidor: la investigación la marca el propio programa. Se
                 # detecta solo: activo mientras el planeta principal siga ese orden.
                 server_start_active = bool(planets) and \
@@ -3765,6 +3771,68 @@ class Brain(StatsMixin):
                               planet.coords, name, t)
 
     # ------------------------------------------------------------------ #
+    # Instalaciones lunares (base lunar / falange / puerta de salto)
+    # ------------------------------------------------------------------ #
+    def _next_lunar_build(self, moon):
+        """(nombre, nivel, coste) de la próxima instalación lunar pendiente, o None.
+        Los objetivos se leen de la tarjeta del PLANETA: la luna comparte coordenadas con
+        él, así que `_get_planet_setting` devuelve lo mismo para los dos."""
+        from .prereqs import resolve_prerequisites
+        for b in gd.LUNAR_BUILDINGS:
+            target = self._get_planet_setting(moon, f"target_{b}", 0)
+            if moon.lvl(b) >= target:
+                continue
+            res = resolve_prerequisites("building", b, moon.lvl(b) + 1, moon, self.research_levels)
+            # Solo aceptamos un edificio LUNAR: la puerta de salto pide hiperespacio 7 y el
+            # resolver devolvería ("research", ...) o incluso un laboratorio, que en una luna
+            # no se puede construir. Bloqueada -> probamos la siguiente instalación.
+            if res and res[0] == "building" and res[1] in gd.LUNAR_BUILDINGS:
+                return res[1], res[2], gd.building_cost(res[1], res[2])
+            self.log.info("Luna %s: %s espera prerequisitos (%s); paso a la siguiente.",
+                          moon.coords, b, res)
+        return None
+
+    def _moon_step(self, moon):
+        """Sube las instalaciones lunares hasta sus objetivos. Una luna no produce nada:
+        si no le llega para pagarlas, quien la alimenta es la ronda de alimentación
+        (casilla 'Alimentar luna' en la tarjeta de su planeta)."""
+        if not self._get_planet_setting(moon, "enable_moon_buildings", False):
+            return
+        # El flag en vivo hace fail-open; lo respaldamos con el epoch de la caché.
+        if moon.building_in_progress or self._build_finish_pending(moon):
+            self.log.debug("Luna %s: construcción en curso; no encolo nada.", moon.coords)
+            return
+        # Las versiones anteriores descartaban los ids lunares al leer, así que una caché
+        # vieja da nivel 0 en todo. Con eso creeríamos que no hay nada construido y la
+        # puerta de salto son 2M/4M/2M tirados. Un escaneo completo SÍ apunta los niveles
+        # (aunque sean 0), así que la ausencia total de claves lunares = caché obsoleta.
+        entry = self.state_cache["planets"].get(self._loc_key(moon.coords))
+        if entry is not None and not any(b in entry.get("buildings", {})
+                                         for b in gd.LUNAR_BUILDINGS):
+            self._resync_targets.add(self._loc_key(moon.coords))
+            self.log.info("Luna %s: la caché no tiene niveles lunares; la releo entera "
+                          "antes de construir nada.", moon.coords)
+            return
+        choice = self._next_lunar_build(moon)
+        if not choice:
+            return
+        name, lvl, cost = choice
+        avail = economy.spendable_resources(moon, self.cfg, research_levels=self.research_levels)
+        if not avail.can_afford(cost):
+            self.log.info("Luna %s: esperando recursos para %s nivel %d (coste M:%d C:%d D:%d; "
+                          "tiene M:%d C:%d D:%d).", moon.coords, name, lvl,
+                          int(cost.metal), int(cost.crystal), int(cost.deut),
+                          int(moon.resources.metal), int(moon.resources.crystal),
+                          int(moon.resources.deut))
+            return
+        if self._guard():
+            self.log.info("Luna %s: construyendo %s nivel %d.", moon.coords, name, lvl)
+            if self.client.build(moon, "facilities", name):
+                self.record_session_action("buildings", name, lvl, str(moon.coords))
+                self._mark_build_started(moon, name, cost)
+            moon.building_in_progress = True
+
+    # ------------------------------------------------------------------ #
     # Cola de construcción manual por planeta (tipo Comandante)
     # ------------------------------------------------------------------ #
     def _active_queue_entry(self, planet):
@@ -3941,6 +4009,13 @@ class Brain(StatsMixin):
         candidata automática (sin marcarla). Prioridad de fuente: 1) menos transportes
         (si una sola lo cubre todo, se manda junto); 2) la más cercana."""
         destinos = [p for p in planets if self._get_planet_setting(p, "feed_target", False)]
+        # Lunas: destino si su planeta marca 'Alimentar luna'. Una luna no produce nada, así
+        # que sin esto sus instalaciones (base lunar, falange, puerta de salto) no se pagan
+        # jamás solas. El ajuste vive en la tarjeta del planeta porque comparten coords.
+        for p in planets:
+            moon = getattr(p, "moon", None) if getattr(p, "has_moon", False) else None
+            if moon and self._get_planet_setting(p, "feed_moon", False):
+                destinos.append(moon)
         # Fuentes: planetas marcados como 'cede recursos' + SUS LUNAS (comparten coords; la luna
         # también puede ceder su excedente, p.ej. lo reciclado). Así, si una sola ubicación
         # —planeta o luna— cubre todo el déficit, se usa esa (1 transporte) en vez de repartir.
@@ -3967,6 +4042,19 @@ class Brain(StatsMixin):
         # basta con tener destinos: si no hay fuentes marcadas, las lunas pueden cubrirlo.
         if not destinos:
             return
+
+        # Gemelo de cada ubicación: planeta <-> su luna. Comparten coordenadas, así que el
+        # transporte entre ellos es de segundos y no hace falta marcar nada.
+        parent_of_moon = {}
+        for p in planets:
+            moon = getattr(p, "moon", None) if getattr(p, "has_moon", False) else None
+            if moon:
+                parent_of_moon[id(moon)] = p
+
+        def sibling_of(loc):
+            if getattr(loc.coords, "type", "planet") == "moon":
+                return parent_of_moon.get(id(loc))
+            return getattr(loc, "moon", None) if getattr(loc, "has_moon", False) else None
 
         # Destinos que YA tienen un vuelo entrante: no reenviamos hasta que llegue, para no
         # mandar de más. Fail-closed: cuenta un transporte (3) o una misión DESCONOCIDA (la
@@ -4007,11 +4095,12 @@ class Brain(StatsMixin):
             need = self._feed_deficit(dst)
             if not need:
                 continue
-            # Candidatos: la luna propia del destino (sin gasto de vuelo) + las fuentes
-            # marcadas. Se excluye el propio destino (un planeta no se alimenta a sí mismo;
-            # su luna, misma coords, SÍ vale).
-            own_moon = getattr(dst, "moon", None) if getattr(dst, "has_moon", False) else None
-            candidates = ([own_moon] if own_moon else []) + [
+            # Candidatos: el vecino de las mismas coords del destino (la luna de un planeta,
+            # o el planeta de una luna; vuelo cortísimo) + las fuentes marcadas. Se excluye
+            # el propio destino (un planeta no se alimenta a sí mismo; su gemelo, misma
+            # coords, SÍ vale, y por eso va aparte del filtro de coords de abajo).
+            twin = sibling_of(dst)
+            candidates = ([twin] if twin else []) + [
                 s for s in fuentes if s is not dst and s.coords.tuple() != dst.coords.tuple()
             ]
             if not candidates:
@@ -4049,6 +4138,12 @@ class Brain(StatsMixin):
         Devuelve None si el objetivo de instalación está BLOQUEADO por una investigación
         pendiente: no tiene sentido alimentar algo que aún no se puede construir."""
         from .prereqs import resolve_prerequisites
+        # Una luna no tiene minas ni economía: lo próximo que quiere es su instalación
+        # lunar pendiente. Sin esta rama caeríamos en economy.next_build (minas), que en
+        # una luna no existe.
+        if getattr(planet.coords, "type", "planet") == "moon":
+            choice = self._next_lunar_build(planet)
+            return (choice[0], choice[2]) if choice else None
         pending_blocked = False
         for facility in ("robotics_factory", "shipyard", "research_lab", "nanite_factory"):
             target_val = self._get_planet_setting(planet, f"target_{facility}", 0)

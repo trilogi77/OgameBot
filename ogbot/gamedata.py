@@ -49,7 +49,17 @@ BUILDING_COST = {
     "crystal_storage":   (Cost(1000, 500), 2.0),
     "deut_tank":         (Cost(1000, 1000), 2.0),
     "missile_silo":      (Cost(20000, 20000, 1000), 2.0),   # requiere astillero 1
+    # Instalaciones lunares (solo existen en lunas; página "facilities" de la luna)
+    "lunar_base":        (Cost(20000, 40000, 20000), 2.0),
+    "sensor_phalanx":    (Cost(20000, 40000, 20000), 2.0),
+    "jump_gate":         (Cost(2_000_000, 4_000_000, 2_000_000), 2.0),
 }
+
+# Edificios que SOLO existen en lunas. La economía normal (minas/energía/instalaciones)
+# nunca los mira; los persigue _moon_step con sus propios objetivos.
+# ponytail: sin control de campos lunares (cada base lunar da +3); si topas el límite,
+# sube la base lunar, que es justo lo que el juego te obliga a hacer igualmente.
+LUNAR_BUILDINGS = ("lunar_base", "sensor_phalanx", "jump_gate")
 
 RESEARCH_COST = {
     "energy_tech":       (Cost(0, 800, 400), 2.0),
@@ -96,6 +106,8 @@ BUILDING_PREREQS = {
     "research_lab": {},
     "nanite_factory": {"robotics_factory": 10, "computer_tech": 10},
     "missile_silo": {"shipyard": 1},
+    "sensor_phalanx": {"lunar_base": 1},
+    "jump_gate": {"lunar_base": 1, "hyperspace_tech": 7},
 }
 
 RESEARCH_PREREQS = {

@@ -887,6 +887,18 @@ function collectUIIntoConfig() {
         if (_ft) localPlanetsConfig[coords].feed_target = _ft.checked;
         const _fs = card.querySelector(".planet-feed-source");
         if (_fs) localPlanetsConfig[coords].feed_source = _fs.checked;
+        // Luna (solo presentes si el planeta tiene una): planeta y luna comparten coords,
+        // así que estos ajustes viven en la tarjeta del planeta y los lee la luna.
+        const _mb = card.querySelector(".planet-moon-buildings");
+        if (_mb) localPlanetsConfig[coords].enable_moon_buildings = _mb.checked;
+        const _fm = card.querySelector(".planet-feed-moon");
+        if (_fm) localPlanetsConfig[coords].feed_moon = _fm.checked;
+        [["planet-target-lunar-base", "target_lunar_base"],
+         ["planet-target-sensor-phalanx", "target_sensor_phalanx"],
+         ["planet-target-jump-gate", "target_jump_gate"]].forEach(([cls, key]) => {
+            const inp = card.querySelector("." + cls);
+            if (inp) localPlanetsConfig[coords][key] = parseInt(inp.value, 10) || 0;
+        });
 
         // Eliminar ratios de defensa obsoletos
         delete localPlanetsConfig[coords].defense_rockets_per_mine;
@@ -1246,6 +1258,13 @@ function toggleWithOrigin(cls, label, checked, hasMoon, fromCls, fromVal) {
     return `<div class="planet-toggle-group">${lbl}${originSelectHTML(fromCls, fromVal)}</div>`;
 }
 
+// Objetivo de nivel de una instalación lunar. 0 = no construir.
+function moonTargetHTML(cls, label, val) {
+    return `<label class="mono sm dim" style="flex:1;">${label}`
+        + `<input type="number" min="0" class="${cls}" value="${val || 0}" `
+        + `style="width:100%;font-size:11px;"></label>`;
+}
+
 function renderPlanetsList() {
     if (!configLoaded) return;
 
@@ -1272,6 +1291,8 @@ function renderPlanetsList() {
         const isFeedSource = config.feed_source === true;         // cede su excedente
         // Selector de origen por función (solo si la ubicación tiene luna).
         const hasMoon = !!(p.has_moon || (p.moon && p.moon.coords));
+        const isMoonBuildings = config.enable_moon_buildings === true;  // opt-in por luna
+        const isFeedMoon = config.feed_moon === true;             // el planeta paga a su luna
 
         const card = document.createElement("div");
         card.className = "planet-card collapsed";   // config por tarjeta plegada por defecto
@@ -1345,6 +1366,22 @@ function renderPlanetsList() {
                     <input type="checkbox" class="planet-feed-source" ${isFeedSource ? "checked" : ""}>
                     <span>Cede recursos</span>
                 </label>
+                ${!hasMoon ? "" : `
+                <div class="planet-toggle-group" style="grid-column:1/-1;">
+                    <label class="planet-toggle" title="Sube las instalaciones de la luna hasta los objetivos de abajo.">
+                        <input type="checkbox" class="planet-moon-buildings" ${isMoonBuildings ? "checked" : ""}>
+                        <span>🌙 Instalaciones lunares</span>
+                    </label>
+                    <label class="planet-toggle" title="La luna no produce nada: este planeta (y las fuentes marcadas) le mandan lo que le falte para pagar sus instalaciones.">
+                        <input type="checkbox" class="planet-feed-moon" ${isFeedMoon ? "checked" : ""}>
+                        <span>🌙 Alimentar luna</span>
+                    </label>
+                    <div style="display:flex;gap:6px;" title="Nivel objetivo de cada instalación lunar (0 = no construir). La falange pide base lunar 1; la puerta de salto, base lunar 1 + hiperespacio 7.">
+                        ${moonTargetHTML("planet-target-lunar-base", "Base", config.target_lunar_base)}
+                        ${moonTargetHTML("planet-target-sensor-phalanx", "Falange", config.target_sensor_phalanx)}
+                        ${moonTargetHTML("planet-target-jump-gate", "Salto", config.target_jump_gate)}
+                    </div>
+                </div>`}
             </div>
         `;
 

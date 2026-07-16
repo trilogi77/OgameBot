@@ -66,6 +66,8 @@ TECH_IDS: Dict[str, int] = {
     # Facilities
     "robotics_factory": 14, "shipyard": 21,        "research_lab": 31,
     "nanite_factory": 15,
+    # Facilities lunares (misma página "facilities", pero solo salen en una luna)
+    "lunar_base": 41,      "sensor_phalanx": 42,  "jump_gate": 43,
     # Research
     "energy_tech": 113,    "laser_tech": 120,     "ion_tech": 121,
     "hyperspace_tech": 114,"plasma_tech": 122,    "combustion_drive": 115,

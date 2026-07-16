@@ -228,6 +228,16 @@ class Config:
     enable_moon_creation: bool = False
     moon_target_debris: int = 100_000        # escombros objetivo para 20% prob.
     moon_sacrifice_ship: str = "light_fighter"
+    # Instalaciones lunares (base lunar / falange / puerta de salto). Una luna no produce
+    # nada: lo que construya sale de lo que le llegue. Estos ajustes viven en la tarjeta
+    # del PLANETA en "Por Planeta" (luna y planeta comparten coordenadas) y valen de
+    # default global para todas las lunas.
+    enable_moon_buildings: bool = False
+    target_lunar_base: int = 0
+    target_sensor_phalanx: int = 0
+    target_jump_gate: int = 0
+    # El planeta (y las fuentes marcadas) alimentan a su luna para pagar esos objetivos.
+    feed_moon: bool = False
 
     # --- Colonización ---
     enable_colonization: bool = True

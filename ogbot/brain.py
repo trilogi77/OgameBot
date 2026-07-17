@@ -4129,17 +4129,21 @@ class Brain(StatsMixin):
                     candidates,
                     key=lambda s: (-self._feed_sendable(s, need).total(), dist(s)))
             for src in ordered_srcs:
+                if need.total() <= 0:
+                    break   # ya cubierto por transportes anteriores de este ciclo
                 if not self._has_free_slots_for_mission():
                     self.log.info("Alimentación: sin slots de flota libres; sigo el próximo ciclo.")
                     return
                 sent = self._feed_transport(src, dst, need)
                 if sent:
                     self.active_slots += 1   # el transporte ocupa un slot hasta que vuelve
-                    # UN solo transporte por destino y ciclo: el mejor origen (uno que lo cubra
-                    # todo si existe; si no, el que más aporte). Lo que falte se completa en
-                    # ciclos siguientes, que la dedupe 'inbound' serializa -> nunca 2 a la vez.
-                    # ponytail: menos slots simultáneos; más lento, pero el usuario lo prefiere.
-                    break
+                    # Varios transportes por destino y ciclo: si ninguna fuente cubre el total,
+                    # se reparte entre varias hasta llegar. Descontamos lo enviado para que la
+                    # siguiente solo mande lo que falte (nunca de más). Si una sola lo cubría,
+                    # 'need' cae a 0 y el break de arriba corta -> un solo envío igualmente.
+                    need = Resources(max(0.0, need.metal - sent.metal),
+                                     max(0.0, need.crystal - sent.crystal),
+                                     max(0.0, need.deut - sent.deut))
                 # Este origen no pudo enviar (p.ej. < feed_min_send): probar el siguiente.
 
     def _target_next_build(self, planet):

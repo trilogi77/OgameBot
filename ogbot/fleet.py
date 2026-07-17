@@ -22,15 +22,27 @@ def cargos_needed(loot: Resources, ship: str = "large_cargo") -> int:
     return max(1, math.ceil(loot.total() / cap))
 
 
-def pick_cargo_ships(available: Dict[str, int], cargo_needed: float) -> Dict[str, int]:
+# Naves de guerra usables como cargueros de emergencia, por bodega descendente. Sustituto
+# cuando no hay large_cargo/small_cargo suficientes. Se excluyen reciclador, colonizador,
+# pathfinder, sondas y satélites porque el bot los reserva para otras tareas.
+WARSHIP_CARGO_FALLBACK = ["reaper", "destroyer", "battleship", "cruiser",
+                          "battlecruiser", "bomber", "heavy_fighter", "light_fighter"]
+
+
+def pick_cargo_ships(available: Dict[str, int], cargo_needed: float,
+                     allow_warships: bool = True) -> Dict[str, int]:
     """Elige cuántos cargueros (de los disponibles) llevan 'cargo_needed' de capacidad.
 
-    Prioriza grandes y usa pequeños como complemento. Si no hay capacidad suficiente,
-    devuelve todos los cargueros disponibles (envío parcial). {} si no hay cargueros.
+    Prioriza grandes y usa pequeños como complemento. Si no hay cargueros dedicados
+    suficientes y allow_warships, rellena con naves de guerra (bodega descendente) como
+    sustituto. Si aún así no cubre, devuelve lo que haya (envío parcial). {} si nada carga.
     """
     out: Dict[str, int] = {}
     remaining = cargo_needed
-    for ship in ("large_cargo", "small_cargo"):
+    order = ["large_cargo", "small_cargo"]
+    if allow_warships:
+        order += WARSHIP_CARGO_FALLBACK
+    for ship in order:
         have = available.get(ship, 0)
         cap = gd.SHIPS[ship].cargo if ship in gd.SHIPS else 0
         if have <= 0 or cap <= 0:

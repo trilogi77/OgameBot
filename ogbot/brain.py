@@ -4707,6 +4707,11 @@ class Brain(StatsMixin):
         attacked_exact = set()
         seen_attack_keys = set()
         for mv in mvs:
+            # Un sondeo entrante (misión 6) llega marcado como hostil en la lista de
+            # flotas, pero NO es un ataque: lo gestiona _watch_incoming_spy (solo avisa).
+            # Sin este filtro, el is_hostile del sondeo disparaba la evasión/panic-build.
+            if str(mv.get("mission", "")) == "6":
+                continue
             if not ((mv.get("is_hostile") or mv.get("mission") in ("1", "2", "9")) and not mv.get("is_return", False)):
                 continue
             dest_coords = mv.get("destination", "")

@@ -271,10 +271,13 @@ def _next_storage_build(planet: Planet, cfg: Config, get_resolved_building,
     trigger = getattr(cfg, "storage_fill_trigger_percent", 0.90)
     if min_cap_target is None:
         min_cap_target = getattr(cfg, "storage_min_capacity_target", 1_000_000)
-    for res_name, b_name in (("metal", "metal_storage"),
-                             ("crystal", "crystal_storage"),
-                             ("deut", "deut_tank")):
+    for res_name, b_name, cap_attr in (("metal", "metal_storage", "max_metal_storage"),
+                                        ("crystal", "crystal_storage", "max_crystal_storage"),
+                                        ("deut", "deut_tank", "max_deut_tank")):
         lvl = planet.lvl(b_name)
+        max_lvl = int(getattr(cfg, cap_attr, 0) or 0)
+        if max_lvl > 0 and lvl >= max_lvl:
+            continue                       # tope de config alcanzado: no subir más este almacén
         cap = startorder.storage_capacity(lvl)
         current_amount = getattr(planet.resources, res_name)
         # Mientras el almacén no alcance el nivel capaz de guardar el mínimo objetivo,

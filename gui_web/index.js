@@ -592,6 +592,9 @@ function mapConfigToUI(cfg) {
     setVal("keep_resources_buffer", cfg.keep_resources_buffer !== undefined ? cfg.keep_resources_buffer : 0.10);
     setVal("storage_fill_trigger_percent", cfg.storage_fill_trigger_percent !== undefined ? cfg.storage_fill_trigger_percent : 0.90);
     setVal("storage_min_capacity_target", cfg.storage_min_capacity_target !== undefined ? cfg.storage_min_capacity_target : 1000000);
+    setVal("max_metal_storage", cfg.max_metal_storage !== undefined ? cfg.max_metal_storage : 0);
+    setVal("max_crystal_storage", cfg.max_crystal_storage !== undefined ? cfg.max_crystal_storage : 0);
+    setVal("max_deut_tank", cfg.max_deut_tank !== undefined ? cfg.max_deut_tank : 0);
     setVal("max_saving_hours_economy", cfg.max_saving_hours_economy !== undefined ? cfg.max_saving_hours_economy : 4);
     setCheck("enable_fusion_reactor", cfg.enable_fusion_reactor !== false);
     setCheck("enable_metal_dump_research", cfg.enable_metal_dump_research !== false);  // default ON
@@ -820,6 +823,9 @@ function collectUIIntoConfig() {
     globalConfig.keep_resources_buffer = parseF(getVal("keep_resources_buffer"), 0.10);
     globalConfig.storage_fill_trigger_percent = parseF(getVal("storage_fill_trigger_percent"), 0.90);
     globalConfig.storage_min_capacity_target = parseI(getVal("storage_min_capacity_target"), 1000000);
+    globalConfig.max_metal_storage = parseI(getVal("max_metal_storage"), 0);
+    globalConfig.max_crystal_storage = parseI(getVal("max_crystal_storage"), 0);
+    globalConfig.max_deut_tank = parseI(getVal("max_deut_tank"), 0);
     globalConfig.max_saving_hours_economy = parseF(getVal("max_saving_hours_economy"), 4);
     globalConfig.enable_fusion_reactor = getCheck("enable_fusion_reactor");
     globalConfig.enable_metal_dump_research = getCheck("enable_metal_dump_research");

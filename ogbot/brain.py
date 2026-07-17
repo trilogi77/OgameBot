@@ -2002,7 +2002,7 @@ class Brain(StatsMixin):
             # Si el coste no cabe en el almacén, la producción se topa y NUNCA se acumula
             # (deadlock: p.ej. impulse_drive 3 pide 16000 cristal y el tope base es 10000).
             # Desviar a construir el almacén necesario, igual que la rama de edificio.
-            blocker = startorder.storage_blocker(cost, planet)
+            blocker = startorder.storage_blocker(cost, planet, self.cfg)
             if blocker:
                 bnxt = planet.lvl(blocker) + 1
                 bcost = gd.building_cost(blocker, bnxt)
@@ -2052,7 +2052,7 @@ class Brain(StatsMixin):
         # Edificio
         nxt = planet.lvl(name) + 1
         cost = gd.building_cost(name, nxt)
-        blocker = startorder.storage_blocker(cost, planet)
+        blocker = startorder.storage_blocker(cost, planet, self.cfg)
         if blocker:
             name, nxt = blocker, planet.lvl(blocker) + 1
             cost = gd.building_cost(name, nxt)

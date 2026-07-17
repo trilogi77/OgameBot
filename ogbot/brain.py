@@ -3786,15 +3786,18 @@ class Brain(StatsMixin):
         Los objetivos se leen de la tarjeta del PLANETA: la luna comparte coordenadas con
         él, así que `_get_planet_setting` devuelve lo mismo para los dos."""
         from .prereqs import resolve_prerequisites
-        for b in gd.LUNAR_BUILDINGS:
-            target = self._get_planet_setting(moon, f"target_{b}", 0)
+        for b in gd.LUNAR_BUILDABLE:
+            target = self._get_planet_setting(moon, gd.LUNAR_TARGET_KEY[b], 0)
             if moon.lvl(b) >= target:
                 continue
             res = resolve_prerequisites("building", b, moon.lvl(b) + 1, moon, self.research_levels)
-            # Solo aceptamos un edificio LUNAR: la puerta de salto pide hiperespacio 7 y el
-            # resolver devolvería ("research", ...) o incluso un laboratorio, que en una luna
-            # no se puede construir. Bloqueada -> probamos la siguiente instalación.
-            if res and res[0] == "building" and res[1] in gd.LUNAR_BUILDINGS:
+            # Solo aceptamos un edificio construible en la LUNA (base/robótica/astillero/
+            # falange/puerta). La puerta de salto pide hiperespacio 7 y el resolver devolvería
+            # ("research", ...) o un laboratorio, que en una luna no se puede construir.
+            # Bloqueada -> probamos la siguiente instalación. Nota: si el resolver inserta un
+            # prerequisito (p.ej. astillero pide robótica 2, o la puerta pide base lunar 1),
+            # ese edificio también está en LUNAR_BUILDABLE y se construye antes.
+            if res and res[0] == "building" and res[1] in gd.LUNAR_BUILDABLE:
                 return res[1], res[2], gd.building_cost(res[1], res[2])
             self.log.info("Luna %s: %s espera prerequisitos (%s); paso a la siguiente.",
                           moon.coords, b, res)

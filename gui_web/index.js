@@ -894,6 +894,8 @@ function collectUIIntoConfig() {
         const _fm = card.querySelector(".planet-feed-moon");
         if (_fm) localPlanetsConfig[coords].feed_moon = _fm.checked;
         [["planet-target-lunar-base", "target_lunar_base"],
+         ["planet-target-lunar-robotics", "target_lunar_robotics_factory"],
+         ["planet-target-lunar-shipyard", "target_lunar_shipyard"],
          ["planet-target-sensor-phalanx", "target_sensor_phalanx"],
          ["planet-target-jump-gate", "target_jump_gate"]].forEach(([cls, key]) => {
             const inp = card.querySelector("." + cls);
@@ -1376,8 +1378,10 @@ function renderPlanetsList() {
                         <input type="checkbox" class="planet-feed-moon" ${isFeedMoon ? "checked" : ""}>
                         <span>🌙 Alimentar luna</span>
                     </label>
-                    <div style="display:flex;gap:6px;" title="Nivel objetivo de cada instalación lunar (0 = no construir). La falange pide base lunar 1; la puerta de salto, base lunar 1 + hiperespacio 7.">
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;" title="Nivel objetivo de cada edificio lunar (0 = no construir). Se construyen EN ESTE ORDEN: base (da campos y desbloquea falange/puerta), robótica (acelera el resto: la luna no produce, así que sin ella la puerta de salto tarda días), astillero, falange y puerta. La falange pide base lunar 1; el astillero, robótica 2; la puerta, base lunar 1 + hiperespacio 7.">
                         ${moonTargetHTML("planet-target-lunar-base", "Base", config.target_lunar_base)}
+                        ${moonTargetHTML("planet-target-lunar-robotics", "Robótica", config.target_lunar_robotics_factory)}
+                        ${moonTargetHTML("planet-target-lunar-shipyard", "Astillero", config.target_lunar_shipyard)}
                         ${moonTargetHTML("planet-target-sensor-phalanx", "Falange", config.target_sensor_phalanx)}
                         ${moonTargetHTML("planet-target-jump-gate", "Salto", config.target_jump_gate)}
                     </div>

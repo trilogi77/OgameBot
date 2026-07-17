@@ -59,7 +59,26 @@ BUILDING_COST = {
 # nunca los mira; los persigue _moon_step con sus propios objetivos.
 # ponytail: sin control de campos lunares (cada base lunar da +3); si topas el límite,
 # sube la base lunar, que es justo lo que el juego te obliga a hacer igualmente.
+# Se usa para detectar una caché lunar obsoleta (sin ninguna de estas claves = releer).
 LUNAR_BUILDINGS = ("lunar_base", "sensor_phalanx", "jump_gate")
+
+# Edificios CONSTRUIBLES en una luna, en ORDEN de construcción recomendado. Además de las
+# instalaciones lunares puras, una luna admite fábrica de robots y astillero (misma página
+# "facilities"). El orden importa: una luna NO produce nada, así que sin fábrica de robots la
+# puerta de salto (2M/4M/2M) tarda días; la base lunar va primero porque da campos y desbloquea
+# la falange y la puerta, luego la robótica acelera el resto, y las instalaciones caras al final.
+LUNAR_BUILDABLE = ("lunar_base", "robotics_factory", "shipyard", "sensor_phalanx", "jump_gate")
+
+# Clave del ajuste "Por Planeta" (tarjeta compartida planeta/luna) con el nivel objetivo de
+# cada edificio lunar. La robótica y el astillero usan clave PROPIA (target_lunar_*) para NO
+# chocar con el objetivo del mismo edificio en el PLANETA, que comparte coordenadas y ajustes.
+LUNAR_TARGET_KEY = {
+    "lunar_base": "target_lunar_base",
+    "robotics_factory": "target_lunar_robotics_factory",
+    "shipyard": "target_lunar_shipyard",
+    "sensor_phalanx": "target_sensor_phalanx",
+    "jump_gate": "target_jump_gate",
+}
 
 RESEARCH_COST = {
     "energy_tech":       (Cost(0, 800, 400), 2.0),

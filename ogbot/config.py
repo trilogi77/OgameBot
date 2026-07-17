@@ -234,6 +234,10 @@ class Config:
     # default global para todas las lunas.
     enable_moon_buildings: bool = False
     target_lunar_base: int = 0
+    # Fábrica de robots y astillero de la LUNA (clave propia para no chocar con los del
+    # planeta, que comparte coords). La robótica acelera el resto de construcciones lunares.
+    target_lunar_robotics_factory: int = 0
+    target_lunar_shipyard: int = 0
     target_sensor_phalanx: int = 0
     target_jump_gate: int = 0
     # El planeta (y las fuentes marcadas) alimentan a su luna para pagar esos objetivos.

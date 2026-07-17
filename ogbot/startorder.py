@@ -110,11 +110,19 @@ def storage_capacity(level: int) -> int:
     return 5000 * math.floor(2.5 * math.exp(20 * level / 33))
 
 
-def storage_blocker(cost, planet) -> Optional[str]:
+def storage_blocker(cost, planet, cfg=None) -> Optional[str]:
     """Almacén a subir ANTES del paso si su coste no cabe en la capacidad actual
-    (si no, el objetivo sería inalcanzable por mucho que se acumule)."""
-    for res, st in (("metal", "metal_storage"), ("crystal", "crystal_storage"),
-                    ("deut", "deut_tank")):
+    (si no, el objetivo sería inalcanzable por mucho que se acumule POR PRODUCCIÓN PROPIA).
+
+    Respeta el tope de config (``max_*``): si el almacén ya está en su nivel máximo no se
+    fuerza su subida aunque el coste no quepa —el jugador alimenta el planeta desde la luna,
+    y por transporte los recursos pueden superar la capacidad."""
+    for res, st, cap_attr in (("metal", "metal_storage", "max_metal_storage"),
+                              ("crystal", "crystal_storage", "max_crystal_storage"),
+                              ("deut", "deut_tank", "max_deut_tank")):
         if getattr(cost, res, 0) > storage_capacity(planet.lvl(st)):
+            max_lvl = int(getattr(cfg, cap_attr, 0) or 0) if cfg is not None else 0
+            if max_lvl > 0 and planet.lvl(st) >= max_lvl:
+                continue               # tope alcanzado: no forzar almacén (se alimenta desde luna)
             return st
     return None

@@ -71,6 +71,12 @@ class Config:
     # capacidad ahí es inversión prematura que ralentiza el arranque. Al completar el
     # desbloqueo se vuelve al objetivo pleno. 0 = usar siempre el objetivo pleno.
     storage_min_capacity_target_startup: int = 250_000
+    # Tope máximo de nivel por almacén (0 = sin límite). Con mucha producción de un recurso
+    # el bot se pasaba el día engordando su almacén; pon aquí el nivel máximo al que quieres
+    # que llegue cada uno y no lo subirá más (el excedente se acumula/pierde o va a blindaje).
+    max_metal_storage: int = 0
+    max_crystal_storage: int = 0
+    max_deut_tank: int = 0
     enable_facilities: bool = True
     target_robotics_factory: int = 0
     target_shipyard: int = 0

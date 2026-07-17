@@ -47,6 +47,9 @@ max_mine_level: 40
 storage_fill_trigger_percent: 0.90     # % de llenado que dispara la subida del almacén
 storage_min_capacity_target: 1000000   # capacidad mínima (por recurso) garantizada con prioridad MÁXIMA: mientras el almacén no pueda guardar esto, subirlo manda sobre minas/energía/lab. 0 = desactivar
 storage_min_capacity_target_startup: 250000  # objetivo reducido durante el desbloqueo del árbol (evita invertir en almacenes de 1M en el arranque; al terminar vuelve al pleno). 0 = usar siempre el pleno
+max_metal_storage: 0    # tope de nivel del almacén de METAL (0 = sin límite). Con mucha producción evita que el bot se pase el día subiéndolo
+max_crystal_storage: 0  # tope de nivel del almacén de CRISTAL (0 = sin límite)
+max_deut_tank: 0        # tope de nivel del contenedor de DEUTERIO (0 = sin límite)
 
 # --- Investigación ---
 # Planeta desde el que investigar: coordenadas "g:s:p" (p.ej. "2:113:5"). Vacío = el

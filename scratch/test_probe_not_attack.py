@@ -42,7 +42,7 @@ def make_brain(mvs):
         log=logging.getLogger("t"), cfg=cfg,
         client=FakeClient(mvs, planets),
         last_planets=planets, escaped_fleets=[],
-        telegram_notified_attacks={}, last_hostile_epoch=0.0,
+        telegram_notified_attacks={}, recent_attacks={}, last_hostile_epoch=0.0,
         _spy_seen={})
     b.record_session_action = lambda *a, **k: None
     b._save_state = lambda: None

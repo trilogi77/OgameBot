@@ -424,6 +424,11 @@ class Brain(StatsMixin):
         # Sondas aprendidas por objetivo: OGame oculta flota/defensa si faltan sondas.
         self.spy_probes: Dict[str, int] = {}
         self.telegram_notified_attacks: Dict[str, float] = {}
+        # Memoria de ataques por "g:s:p:type" -> epoch de llegada. Persiste entre barridos
+        # y reinicios: la decisión de refugio (hermano/remoto) no puede fiarse de un único
+        # barrido, que puede no ver el movimiento hostil (lectura intermitente o dest_type
+        # cambiante). Sin esto se evacuaba la flota a un hermano con ataque pendiente.
+        self.recent_attacks: Dict[str, float] = {}
         self._spy_seen: Dict[str, float] = {}   # cooldown de avisos de espionaje por origen->destino
         self.renamed_planets: set = set()       # ids de planetas ya renombrados (una vez)
         self.used_planet_names: List[str] = []   # nombres ya usados en esta cuenta (sin repetir)
@@ -471,6 +476,7 @@ class Brain(StatsMixin):
                     self.missile_opened = list(data.get("missile_opened", []) or [])
                     self.spy_probes = {k: int(v) for k, v in (data.get("spy_probes", {}) or {}).items()}
                     self.telegram_notified_attacks = data.get("telegram_notified_attacks", {})
+                    self.recent_attacks = {k: float(v) for k, v in (data.get("recent_attacks", {}) or {}).items()}
                     self._spy_seen = data.get("spy_seen", {})
                     self.last_economy_run_time = data.get("last_economy_run_time", 0.0)
                     self.last_farming_run_time = data.get("last_farming_run_time", 0.0)
@@ -521,6 +527,12 @@ class Brain(StatsMixin):
                 k: arr_epoch for k, arr_epoch in self.telegram_notified_attacks.items()
                 if arr_epoch > now - 7200
             }
+            # Memoria de ataques: conservar los pendientes (llegada futura) y hasta 1h tras
+            # el impacto, para cubrir la ventana de peligro entre barridos y reinicios.
+            self.recent_attacks = {
+                k: arr_epoch for k, arr_epoch in self.recent_attacks.items()
+                if arr_epoch > now - 3600
+            }
             spy_cd = max(3600, int(getattr(self.cfg, "spy_watch_cooldown_mins", 30)) * 60)
             self._spy_seen = {k: t for k, t in self._spy_seen.items() if t > now - spy_cd}
 
@@ -539,6 +551,7 @@ class Brain(StatsMixin):
                 # Sondas necesarias por objetivo (aprendido); acotado para no crecer sin fin.
                 "spy_probes": dict(list(self.spy_probes.items())[-500:]),
                 "telegram_notified_attacks": self.telegram_notified_attacks,
+                "recent_attacks": self.recent_attacks,
                 "spy_seen": self._spy_seen,
                 "renamed_planets": sorted(self.renamed_planets),
                 "used_planet_names": self.used_planet_names,
@@ -4747,10 +4760,24 @@ class Brain(StatsMixin):
             dest_type = mv.get("dest_type", "planet")
             # Tipo exacto atacado, según el movimiento (ante la duda, ambos tipos).
             if mv.get("dest_type"):
-                attacked_exact.add(f"{dest_coords}:{mv['dest_type']}")
+                exact_keys = [f"{dest_coords}:{mv['dest_type']}"]
             else:
-                attacked_exact.add(f"{dest_coords}:planet")
-                attacked_exact.add(f"{dest_coords}:moon")
+                exact_keys = [f"{dest_coords}:planet", f"{dest_coords}:moon"]
+            attacked_exact.update(exact_keys)
+            # Persistir la llegada absoluta por coord+tipo: así un ataque visto en un barrido
+            # sigue vetando ese destino como refugio en barridos posteriores, aunque el
+            # movimiento no reaparezca (lectura intermitente). Llegada desconocida -> ventana
+            # corta autorefrescante; se capa a 24h para no vetar un destino indefinidamente.
+            now_mem = time.time()
+            if arr_epoch_mv:
+                arr_epoch = float(arr_epoch_mv)
+            elif arr_sec < 999999:
+                arr_epoch = now_mem + arr_sec
+            else:
+                arr_epoch = now_mem + 1800
+            arr_epoch = min(arr_epoch, now_mem + 86400)
+            for _k in exact_keys:
+                self.recent_attacks[_k] = max(self.recent_attacks.get(_k, 0.0), arr_epoch)
             mission_str = mission_labels.get(str(mv.get("mission", "")), "Ataque")
             self.record_session_action("hostile_attacks", f"{mission_str} desde {origin_coords_str}", arr_sec, dest_coords)
 
@@ -4872,6 +4899,13 @@ class Brain(StatsMixin):
                 del self.telegram_notified_attacks[k]
         self._save_state()
 
+    def _coord_has_pending_attack(self, key: str, now: Optional[float] = None) -> bool:
+        """True si esa coord+tipo ("g:s:p:type") tiene un ataque cuyo impacto aún no ha
+        pasado (con 5 min de gracia). Se apoya en recent_attacks, memoria persistente entre
+        barridos, para no elegir como refugio un destino con ataque pendiente detectado antes."""
+        now = now if now is not None else time.time()
+        return now < self.recent_attacks.get(key, 0.0) + 300
+
     def _escape_attack_loc(self, origin_loc: Planet, all_locations: List[Planet], under_attack: dict,
                            attacked_exact: Optional[set] = None):
         has_any_ships = any(count > 0 for count in origin_loc.ships.values())
@@ -4892,14 +4926,21 @@ class Brain(StatsMixin):
                                 loc.coords.position == origin_loc.coords.position and
                                 loc.coords.type == "planet"), None)
 
+        exact = attacked_exact if attacked_exact is not None else set(under_attack.keys())
+
+        def _ckey(c):
+            return f"{c.galaxy}:{c.system}:{c.position}:{c.type}"
+
         sibling_under_attack = False
         if sibling_loc:
-            sibling_key = f"{sibling_loc.coords.galaxy}:{sibling_loc.coords.system}:{sibling_loc.coords.position}:{sibling_loc.coords.type}"
+            sibling_key = _ckey(sibling_loc.coords)
             # under_attack marca planeta Y luna en las coords atacadas (para evacuar ante la
             # duda), así que el hermano SIEMPRE parecería atacado. Para decidir si el hermano
-            # es refugio válido se usa attacked_exact, construido con el dest_type REAL.
-            exact = attacked_exact if attacked_exact is not None else set(under_attack.keys())
-            if sibling_key in exact:
+            # es refugio válido se usa attacked_exact (dest_type REAL) MÁS recent_attacks: un
+            # ataque al hermano detectado en un barrido anterior (aunque no aparezca en éste)
+            # lo sigue vetando como refugio. Esto evita depositar la flota justo donde entra
+            # el golpe cuando planeta y luna se atacan casi a la vez.
+            if sibling_key in exact or self._coord_has_pending_attack(sibling_key):
                 sibling_under_attack = True
 
         if sibling_loc and not sibling_under_attack:
@@ -4908,12 +4949,18 @@ class Brain(StatsMixin):
             is_sibling_escape = True
             self.log.warning("¡ALERTA DE ATAQUE ENMIGO detectado en %s! El hermano %s NO está bajo ataque. Iniciando evasión al 100%% de velocidad hacia %s.", origin_loc.coords, sibling_loc.coords, dest)
         else:
-            # Fallback a evasión remota al 10%
-            candidates = [loc.coords for loc in all_locations if loc.coords.tuple() != origin_loc.coords.tuple()]
+            # Fallback a evasión remota al 10%. Excluir destinos con su PROPIO ataque
+            # pendiente (exacto o recordado): no saltar de un ataque a otro.
+            all_dests = [loc.coords for loc in all_locations if loc.coords.tuple() != origin_loc.coords.tuple()]
+            safe = [c for c in all_dests
+                    if _ckey(c) not in exact and not self._coord_has_pending_attack(_ckey(c))]
+            candidates = safe or all_dests
             if not candidates:
                 self.log.warning("Evasión de ataque en %s omitida: no hay planetas/lunas de destino alternativos.", origin_loc.coords)
                 return
-            # Seleccionar el más lejano
+            if not safe:
+                self.log.warning("Evasión de ataque en %s: todos los destinos propios tienen ataque pendiente; usando el más lejano igualmente.", origin_loc.coords)
+            # Seleccionar el más lejano de los candidatos válidos
             dest = max(candidates, key=lambda c: gd.distance(origin_loc.coords.tuple(), c.tuple()))
             speed_percent = 0.1
             is_sibling_escape = False

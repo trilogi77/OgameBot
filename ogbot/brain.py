@@ -447,6 +447,7 @@ class Brain(StatsMixin):
         self._farming_returns: List[float] = []
         self.target_stats: Dict[str, dict] = {}  # "g:s:p" -> {raids, loot (valor real), last}
         self.next_build_event = 0.0       # despertar para encolar la siguiente construcción
+        self.next_attack_recheck = 0.0    # despertar puntual para re-evacuar flota propia que aterriza en zona hostil
         self.paused_until = 0.0           # pausa remota (/pausa por Telegram); persistido
         self._tg_offset = 0               # offset de getUpdates de Telegram; persistido
         self._tg_last_poll = 0.0          # throttle del sondeo de comandos Telegram
@@ -1197,6 +1198,20 @@ class Brain(StatsMixin):
                                 except Exception as e:
                                     self.log.debug("Error comprobando ataques en espera: %s", e)
 
+                        # Re-comprobación agendada: una flota propia aterriza en una coord con
+                        # ataque pendiente; despertar justo tras su llegada para evacuarla antes
+                        # del impacto, sin esperar al siguiente sondeo periódico.
+                        if getattr(self.cfg, "enable_attack_escape", True) and \
+                                self.next_attack_recheck and time.time() >= self.next_attack_recheck:
+                            self.next_attack_recheck = 0.0
+                            last_attack_check = time.time()
+                            next_attack_delay = self._attack_check_interval()
+                            try:
+                                self.log.info("Re-comprobación: flota propia aterrizando en zona hostil.")
+                                self._check_and_escape_attacks()
+                            except Exception as e:
+                                self.log.debug("Error en re-comprobación de ataques: %s", e)
+
                         # Atender regresos de flota pedidos desde la GUI casi al instante.
                         try:
                             self._process_recall_requests()
@@ -1283,6 +1298,15 @@ class Brain(StatsMixin):
                                 self._check_and_escape_attacks()
                             except Exception as ae:
                                 self.log.debug("Vigilancia nocturna: error comprobando ataques: %s", ae)
+                        # Despertar puntual si una flota propia aterriza en zona hostil antes del
+                        # impacto (no esperar al micro-despertar de 25-45 min).
+                        if night_watch and self.next_attack_recheck and time.time() >= self.next_attack_recheck:
+                            self.next_attack_recheck = 0.0
+                            self.log.info("Vigilancia nocturna: flota propia aterrizando en zona hostil, re-comprobando...")
+                            try:
+                                self._check_and_escape_attacks()
+                            except Exception as ae:
+                                self.log.debug("Vigilancia nocturna: error en re-comprobación: %s", ae)
                         if night_sweep and (time.time() - last_sweep) >= sweep_interval_s:
                             last_sweep = time.time()
                             self.log.info("Barrido nocturno: despertando para vaciar planetas...")
@@ -4897,6 +4921,14 @@ class Brain(StatsMixin):
             stale_keys = [k for k in self.telegram_notified_attacks if k not in seen_attack_keys]
             for k in stale_keys:
                 del self.telegram_notified_attacks[k]
+
+        # 5. Agendar re-comprobación si una flota PROPIA aterriza en zona hostil antes del
+        # impacto: la evacuamos justo al llegar en vez de esperar al próximo sondeo.
+        self.next_attack_recheck = self._next_own_fleet_recheck(mvs, now)
+        if self.next_attack_recheck:
+            self.log.info("Flota propia aterriza en zona hostil; re-comprobación de ataques agendada en %.0fs.",
+                          self.next_attack_recheck - now)
+
         self._save_state()
 
     def _coord_has_pending_attack(self, key: str, now: Optional[float] = None) -> bool:
@@ -4905,6 +4937,39 @@ class Brain(StatsMixin):
         barridos, para no elegir como refugio un destino con ataque pendiente detectado antes."""
         now = now if now is not None else time.time()
         return now < self.recent_attacks.get(key, 0.0) + 300
+
+    def _next_own_fleet_recheck(self, mvs: list, now: float) -> float:
+        """Epoch del próximo despertar para re-evacuar: si una flota PROPIA aterriza en una
+        coord con ataque pendiente (recent_attacks) ANTES del impacto, devuelve su llegada+20s.
+        0.0 si no hay ninguna. Cierra el hueco del sondeo periódico (5-13 min de día, 25-45 de
+        noche): una vuelta con mala suerte o el propio deploy de evasión que cae poco antes del
+        golpe se evacúa al aterrizar, no en el siguiente sondeo."""
+        impact_by_coord = {}
+        for k, impact in self.recent_attacks.items():
+            if impact <= now:
+                continue
+            coord = k.rsplit(":", 1)[0]   # "g:s:p:type" -> "g:s:p"
+            if coord not in impact_by_coord or impact < impact_by_coord[coord]:
+                impact_by_coord[coord] = impact
+        if not impact_by_coord:
+            return 0.0
+        soonest = 0.0
+        for mv in mvs:
+            if mv.get("is_hostile"):
+                continue
+            impact = impact_by_coord.get(mv.get("destination", ""))
+            if not impact:
+                continue
+            land = mv.get("arrival_epoch") or 0
+            if not land:
+                secs = parse_time_to_seconds(mv.get("arrival_text", ""))
+                land = now + secs if secs is not None else 0
+            if not land or land <= now:
+                continue
+            recheck = land + 20   # margen para que haya aterrizado y el juego lo refleje
+            if recheck < impact and (soonest == 0.0 or recheck < soonest):
+                soonest = recheck
+        return soonest
 
     def _escape_attack_loc(self, origin_loc: Planet, all_locations: List[Planet], under_attack: dict,
                            attacked_exact: Optional[set] = None):

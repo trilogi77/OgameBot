@@ -53,6 +53,7 @@ def make_brain(mvs):
     b._escape_attack_loc = lambda *a, **k: calls.__setitem__("escape", calls["escape"] + 1)
     b._panic_build_resources = lambda *a, **k: calls.__setitem__("panic", calls["panic"] + 1)
     b._watch_incoming_spy = types.MethodType(brain.Brain._watch_incoming_spy, b)
+    b._next_own_fleet_recheck = types.MethodType(brain.Brain._next_own_fleet_recheck, b)
     b._check_and_escape_attacks = types.MethodType(brain.Brain._check_and_escape_attacks, b)
     return b, calls
 

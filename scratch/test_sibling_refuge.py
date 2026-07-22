@@ -59,4 +59,24 @@ assert f._coord_has_pending_attack("a") is True
 assert f._coord_has_pending_attack("b") is False
 assert f._coord_has_pending_attack("missing") is False
 
+# _next_own_fleet_recheck: flota propia que aterriza ANTES del impacto -> agenda llegada+20;
+# aterriza después / a coord sin ataque / no hay ataques -> 0.
+f, _ = stub({})
+f._next_own_fleet_recheck = types.MethodType(Brain._next_own_fleet_recheck, f)
+f.recent_attacks = {"1:16:4:planet": now + 600}          # ataque impacta en 10 min
+mvs = [
+    {"is_hostile": True, "destination": "1:16:4", "arrival_epoch": now + 600},   # el ataque (ignorar)
+    {"is_hostile": False, "destination": "1:16:4", "arrival_epoch": now + 120},  # vuelta propia -> salvable
+    {"is_hostile": False, "destination": "1:99:9", "arrival_epoch": now + 60},   # coord sin ataque
+]
+assert f._next_own_fleet_recheck(mvs, now) == now + 140, f._next_own_fleet_recheck(mvs, now)
+
+# Aterriza DESPUÉS del impacto -> no se puede salvar -> 0.
+f.recent_attacks = {"1:16:4:planet": now + 100}
+assert f._next_own_fleet_recheck([{"is_hostile": False, "destination": "1:16:4", "arrival_epoch": now + 300}], now) == 0.0
+
+# Sin ataques pendientes -> 0.
+f.recent_attacks = {}
+assert f._next_own_fleet_recheck(mvs, now) == 0.0
+
 print("OK")

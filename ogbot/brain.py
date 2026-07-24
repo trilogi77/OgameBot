@@ -109,6 +109,23 @@ def _split_ships_cargo(ships_raw: dict):
     return ships, cargo
 
 
+def _is_probe_name(name: str) -> bool:
+    """True si el nombre (tal como lo pinta OGame, es/en, o ya normalizado) es una sonda."""
+    low = str(name).strip().lower()
+    return "sonda de espionaje" in low or "espionage probe" in low or low == "espionage_probe"
+
+
+def spy_has_attack_fleet(mv) -> bool:
+    """True si un sondeo entrante (misión 6) trae, en su flota VISIBLE, algo más que
+    sondas de espionaje: entonces no es espionaje, es un ataque camuflado y hay que
+    evadir. Composición oculta o solo sondas -> False (se mantiene como espionaje; no
+    evacuamos por las sondas de rutina de los vecinos).
+    ponytail: best-effort — OGame suele ocultar la composición de una flota hostil
+    entrante; cuando la oculta caemos al comportamiento previo (solo aviso)."""
+    ships, _cargo = _split_ships_cargo(mv.get("ships", {}))
+    return any(qty > 0 and not _is_probe_name(name) for name, qty in ships.items())
+
+
 def _route_key(f):
     return (str(f.get("mission_code", "")), f.get("origin", ""),
             f.get("destination", ""), bool(f.get("is_return")))
@@ -4741,8 +4758,10 @@ class Brain(StatsMixin):
             ck = f"{loc.coords.galaxy}:{loc.coords.system}:{loc.coords.position}"
             our_by_coords.setdefault(ck, []).append(loc)
 
-        # Etiquetas reales de misión hostil (9 = destrucción de luna, no espionaje)
-        mission_labels = {"1": "Ataque", "2": "Ataque (ACS)", "9": "Destrucción de luna"}
+        # Etiquetas reales de misión hostil (9 = destrucción de luna, no espionaje).
+        # "6" = sondeo con flota real (ataque camuflado de espionaje).
+        mission_labels = {"1": "Ataque", "2": "Ataque (ACS)", "9": "Destrucción de luna",
+                          "6": "Ataque (flota + sondas)"}
 
         # 1. Encontrar planetas/lunas bajo ataque con su tiempo de llegada mínimo.
         # under_attack (por coords, ambos tipos) decide QUÉ evacuar; attacked_exact
@@ -4752,11 +4771,15 @@ class Brain(StatsMixin):
         seen_attack_keys = set()
         for mv in mvs:
             # Un sondeo entrante (misión 6) llega marcado como hostil en la lista de
-            # flotas, pero NO es un ataque: lo gestiona _watch_incoming_spy (solo avisa).
-            # Sin este filtro, el is_hostile del sondeo disparaba la evasión/panic-build.
-            if str(mv.get("mission", "")) == "6":
+            # flotas. Si su flota VISIBLE son solo sondas, NO es un ataque: lo gestiona
+            # _watch_incoming_spy (solo avisa). Pero si trae naves de guerra, es un ataque
+            # camuflado de espionaje -> se trata como ataque (evasión/panic-build).
+            mission = str(mv.get("mission", ""))
+            spy_with_fleet = mission == "6" and spy_has_attack_fleet(mv)
+            if mission == "6" and not spy_with_fleet:
                 continue
-            if not ((mv.get("is_hostile") or mv.get("mission") in ("1", "2", "9")) and not mv.get("is_return", False)):
+            if not ((mv.get("is_hostile") or spy_with_fleet or mission in ("1", "2", "9"))
+                    and not mv.get("is_return", False)):
                 continue
             dest_coords = mv.get("destination", "")
             targets = our_by_coords.get(dest_coords, [])

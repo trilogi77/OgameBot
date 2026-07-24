@@ -70,6 +70,20 @@ def attack_mv():
             "origin": "1:2:3", "arrival_text": "0h 2m 0s", "arrival_epoch": 0}
 
 
+def spy_probes_only_mv():
+    # Sondeo con composición visible: solo sondas -> sigue siendo espionaje.
+    m = spy_mv()
+    m["ships"] = {"Sonda de espionaje": 6}
+    return m
+
+
+def spy_with_fleet_mv():
+    # Sondeo con sondas + naves de guerra -> ataque camuflado.
+    m = spy_mv()
+    m["ships"] = {"Sonda de espionaje": 3, "Cazador ligero": 80}
+    return m
+
+
 # 1) Solo un SONDEO entrante -> NO evasión, NO panic.
 b, calls = make_brain([spy_mv()])
 b._check_and_escape_attacks()
@@ -82,5 +96,24 @@ b, calls = make_brain([attack_mv()])
 b._check_and_escape_attacks()
 assert calls["escape"] == 1, "un ataque real debe disparar evasión"
 assert calls["panic"] == 1, "un ataque real debe disparar panic-build"
+
+# 3) Sondeo con SOLO sondas visibles -> sigue siendo espionaje: NO evade, NO panic.
+b, calls = make_brain([spy_probes_only_mv()])
+b._check_and_escape_attacks()
+assert calls["escape"] == 0, "un sondeo de solo sondas NO debe evadir"
+assert calls["panic"] == 0, "un sondeo de solo sondas NO debe hacer panic"
+
+# 4) Sondeo con FLOTA de guerra (ataque camuflado de espionaje) -> evade y panic.
+b, calls = make_brain([spy_with_fleet_mv()])
+b._check_and_escape_attacks()
+assert calls["escape"] == 1, "un sondeo con flota real debe evadir"
+assert calls["panic"] == 1, "un sondeo con flota real debe hacer panic"
+
+# 5) Unidad: spy_has_attack_fleet detecta la flota (es/en) e ignora sondas y carga.
+assert brain.spy_has_attack_fleet({"ships": {"Sonda de espionaje": 6}}) is False
+assert brain.spy_has_attack_fleet({"ships": {"Espionage Probe": 6}}) is False
+assert brain.spy_has_attack_fleet({"ships": {}}) is False
+assert brain.spy_has_attack_fleet({"ships": {"Sonda de espionaje": 3, "Cazador ligero": 80}}) is True
+assert brain.spy_has_attack_fleet({"ships": {"Metal": 5000, "Sonda de espionaje": 2}}) is False
 
 print("OK")

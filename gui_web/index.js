@@ -504,6 +504,8 @@ function mapConfigToUI(cfg) {
     setVal("expedition_hyperspace_level", cfg.expedition_hyperspace_level !== undefined ? cfg.expedition_hyperspace_level : 0);
     setVal("expedition_top1_points", cfg.expedition_top1_points !== undefined ? cfg.expedition_top1_points : 0);
     setVal("expedition_find_safety", cfg.expedition_find_safety !== undefined ? cfg.expedition_find_safety : 1.0);
+    setVal("expedition_lf_cargo_bonus", cfg.expedition_lf_cargo_bonus !== undefined ? cfg.expedition_lf_cargo_bonus : 0.0);
+    setVal("expedition_lf_find_bonus", cfg.expedition_lf_find_bonus !== undefined ? cfg.expedition_lf_find_bonus : 0.0);
     setVal("expedition_min_cargo", cfg.expedition_min_cargo !== undefined ? cfg.expedition_min_cargo : 1);
     setVal("expedition_max_cargo", cfg.expedition_max_cargo !== undefined ? cfg.expedition_max_cargo : 0);
     setVal("expedition_hold_hours", cfg.expedition_hold_hours !== undefined ? cfg.expedition_hold_hours : 1.0);
@@ -717,6 +719,8 @@ function collectUIIntoConfig() {
     globalConfig.expedition_hyperspace_level = parseI(getVal("expedition_hyperspace_level"), 0);
     globalConfig.expedition_top1_points = parseI(getVal("expedition_top1_points"), 0);
     globalConfig.expedition_find_safety = parseF(getVal("expedition_find_safety"), 1.0);
+    globalConfig.expedition_lf_cargo_bonus = parseF(getVal("expedition_lf_cargo_bonus"), 0.0);
+    globalConfig.expedition_lf_find_bonus = parseF(getVal("expedition_lf_find_bonus"), 0.0);
     globalConfig.expedition_min_cargo = parseI(getVal("expedition_min_cargo"), 1);
     globalConfig.expedition_max_cargo = parseI(getVal("expedition_max_cargo"), 0);
     globalConfig.expedition_hold_hours = parseF(getVal("expedition_hold_hours"), 1.0);

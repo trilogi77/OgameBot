@@ -2535,11 +2535,14 @@ class Brain(StatsMixin):
             if hyper <= 0:
                 hyper = int(self.research_levels.get("hyperspace_tech", 0)) if self.research_levels else 0
             discoverer = bool(getattr(self.cfg, "expedition_discoverer_class", False))
+            lf_cargo = max(float(getattr(self.cfg, "expedition_lf_cargo_bonus", 0.0) or 0.0), 0.0) / 100.0
+            lf_find = max(float(getattr(self.cfg, "expedition_lf_find_bonus", 0.0) or 0.0), 0.0) / 100.0
             find = gd.expedition_max_find_units(top1, self.cfg.universe_speed, discoverer,
-                                                bool(getattr(self.cfg, "expedition_use_pathfinder", False)))
+                                                bool(getattr(self.cfg, "expedition_use_pathfinder", False)),
+                                                lf_find)
             cargo_ship = getattr(self.cfg, "expedition_cargo_ship", "large_cargo") or "large_cargo"
             per_exp = fleet_mod.optimal_expedition_cargo(
-                find, cargo_ship, float(getattr(self.cfg, "expedition_find_safety", 1.0)), hyper)
+                find, cargo_ship, float(getattr(self.cfg, "expedition_find_safety", 1.0)), hyper, lf_cargo)
             max_cargo = int(getattr(self.cfg, "expedition_max_cargo", 0) or 0)
             if max_cargo > 0:
                 per_exp = min(per_exp, max_cargo)
@@ -3414,11 +3417,13 @@ class Brain(StatsMixin):
             hyper = int(getattr(self.cfg, "expedition_hyperspace_level", 0) or 0)
             if hyper <= 0:
                 hyper = int(self.research_levels.get("hyperspace_tech", 0)) if self.research_levels else 0
-            base_find = gd.expedition_max_find_units(top1, self.cfg.universe_speed, discoverer, False)
-            optimal_nopf = fleet_mod.optimal_expedition_cargo(base_find, cargo_ship, safety, hyper)
+            lf_cargo = max(float(getattr(self.cfg, "expedition_lf_cargo_bonus", 0.0) or 0.0), 0.0) / 100.0
+            lf_find = max(float(getattr(self.cfg, "expedition_lf_find_bonus", 0.0) or 0.0), 0.0) / 100.0
+            base_find = gd.expedition_max_find_units(top1, self.cfg.universe_speed, discoverer, False, lf_find)
+            optimal_nopf = fleet_mod.optimal_expedition_cargo(base_find, cargo_ship, safety, hyper, lf_cargo)
             if use_pf:
-                pf_find = gd.expedition_max_find_units(top1, self.cfg.universe_speed, discoverer, True)
-                optimal_pf = fleet_mod.optimal_expedition_cargo(pf_find, cargo_ship, safety, hyper)
+                pf_find = gd.expedition_max_find_units(top1, self.cfg.universe_speed, discoverer, True, lf_find)
+                optimal_pf = fleet_mod.optimal_expedition_cargo(pf_find, cargo_ship, safety, hyper, lf_cargo)
             else:
                 pf_find = base_find
                 optimal_pf = optimal_nopf

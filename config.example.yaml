@@ -191,6 +191,9 @@ expedition_send_probe: false         # enviar también sonda(s) de espionaje con
 expedition_probe_count: 1            # nº de sondas por expedición
 expedition_discoverer_class: false   # marca true si tienes la clase Descubridor (x1.5 botín)
 expedition_top1_points: 0            # puntos del Top-1 del universo (0 = leerlos de la API)
+# Bonus de formas de vida (%, ACUMULATIVO entre planetas: suma el % de cada planeta).
+expedition_lf_cargo_bonus: 0.0       # Compresor neuromodal: +% Espacio de carga -> envía menos cargueros
+expedition_lf_find_bonus: 0.0        # Sensores mejorados (Kaelesh): +% recursos hallados -> dimensiona más carga
 expedition_find_safety: 1.0          # escala del botín objetivo (1.0 = tope exacto)
 expedition_min_cargo: 1              # mínimo de cargueros por expedición
 expedition_max_cargo: 0              # tope de cargueros por expedición (0 = sin tope)

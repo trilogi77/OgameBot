@@ -194,6 +194,9 @@ class Config:
     expedition_destroyer_count: int = 0          # destructores por expedición (0 = ninguno; defienden contra combates)
     expedition_top1_points: int = 0              # override puntos Top-1 (0 = leer de la API)
     expedition_hyperspace_level: int = 0         # override nivel Hiperespacio para la bodega (0 = leer del juego)
+    # Bonus de formas de vida (%, acumulativo entre planetas: suma el % de cada planeta).
+    expedition_lf_cargo_bonus: float = 0.0       # Compresor neuromodal: +% Espacio de carga (dimensiona menos NGC)
+    expedition_lf_find_bonus: float = 0.0        # Sensores mejorados (Kaelesh): +% recursos hallados (dimensiona más NGC)
     expedition_find_safety: float = 1.0          # escala el botín objetivo (1.0 = tope)
     expedition_min_cargo: int = 1                # mínimo de cargueros por expedición
     expedition_max_cargo: int = 0                # tope de cargueros por expedición (0 = sin tope)

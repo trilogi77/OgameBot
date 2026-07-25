@@ -417,15 +417,19 @@ SHIP_DRIVES = {
 }
 
 
-def effective_cargo(ship: str, hyperspace_level: int = 0) -> int:
+def effective_cargo(ship: str, hyperspace_level: int = 0,
+                    lf_cargo_bonus: float = 0.0) -> int:
     """
     Bodega real de una nave con el bonus de Tecnología de Hiperespacio (+5% por
-    nivel sobre la base). Ej.: NGC base 25.000 con hiperespacio 10 -> 37.500.
-    ponytail: ignora el bonus de clase Recolector (+25% carga) y formas de vida;
-    el factor de seguridad de config cubre el residuo.
+    nivel sobre la base) y el bonus de Espacio de carga de formas de vida
+    (Compresor neuromodal), acumulativo entre planetas: `lf_cargo_bonus` es ese
+    total ya sumado, en fracción (0.06 = +6%). Ej.: NGC base 25.000 con
+    hiperespacio 10 y +6% de formas de vida -> 37.500 * 1.06 = 39.750.
+    ponytail: ignora el bonus de clase Recolector (+25% carga); el factor de
+    seguridad de config cubre el residuo.
     """
     base = SHIPS[ship].cargo if ship in SHIPS else 0
-    return int(base * (1 + 0.05 * max(hyperspace_level, 0)))
+    return int(base * (1 + 0.05 * max(hyperspace_level, 0)) * (1 + max(lf_cargo_bonus, 0.0)))
 
 
 def effective_speed(ship: str, research_levels: dict = None) -> int:
@@ -502,20 +506,24 @@ def expedition_base_metal_cap(top1_points: float) -> int:
 
 
 def expedition_max_find_units(top1_points: float, eco_speed: float = 1.0,
-                              discoverer: bool = False, pathfinder: bool = False) -> int:
+                              discoverer: bool = False, pathfinder: bool = False,
+                              lf_find_bonus: float = 0.0) -> int:
     """
     Máximo de RECURSOS EN BRUTO (unidades) que una sola expedición puede encontrar
     en el mejor hallazgo posible. Sirve para dimensionar la carga (NGC) y no perder
     recursos: el hallazgo real es aleatorio (10%-100% de este tope).
 
-    Factores: velocidad de economía del universo, clase Descubridor (x1.5) e
-    incluir un Pathfinder en la flota (x2). El recurso con tope mayor es el metal,
-    así que dimensionamos la bodega a ese tope.
+    Factores: velocidad de economía del universo, clase Descubridor (x1.5),
+    incluir un Pathfinder en la flota (x2) y el bonus de recursos hallados de las
+    formas de vida (Tecnología de sensores mejorada Kaelesh), acumulativo entre
+    planetas: `lf_find_bonus` es ese total ya sumado, en fracción (0.03 = +3%).
+    El recurso con tope mayor es el metal, así que dimensionamos la bodega a ese
+    tope.
     """
     base = expedition_base_metal_cap(top1_points)
     k_class = 1.5 if discoverer else 1.0
     k_pf = 2.0 if pathfinder else 1.0
-    return int(base * max(eco_speed, 1.0) * k_class * k_pf)
+    return int(base * max(eco_speed, 1.0) * k_class * k_pf * (1 + max(lf_find_bonus, 0.0)))
 
 
 def research_time(cost: "Cost", lab_level: int, universe_speed: float = 1.0,

@@ -37,6 +37,11 @@ from .stats import StatsMixin
 
 import re as _re
 
+# Cada cuánto reintentar arrancar una investigación de forma de vida por planeta. Las
+# investigaciones LF duran horas; sin enfriamiento el bot navegaría a lfresearch en cada
+# poll (cada ~45s) gastando el rate-limit para leer "aún ocupado". Ver _lifeforms_step.
+LF_RESEARCH_COOLDOWN_S = 30 * 60
+
 # Nombres EXACTOS de naves como los muestra OGame (es/en) en las "Naves
 # encontradas" de un informe de expedición. El informe lista "Nombre <n>"
 # (nombre y luego la cifra). \b evita que "cruiser" cace dentro de
@@ -2244,11 +2249,20 @@ class Brain(StatsMixin):
             return
         if not planet.lifeform_available:
             return
-        if planet.lifeform_in_progress:
-            self.log.debug("%s: cola de Formas de vida ocupada.", planet.coords)
-            return
-        if self._guard():
+        # Cola de EDIFICIOS de forma de vida.
+        if not planet.lifeform_in_progress and self._guard():
             self.client.build_lifeform(planet)
+        elif planet.lifeform_in_progress:
+            self.log.debug("%s: cola de edificios de Formas de vida ocupada.", planet.coords)
+        # Cola de INVESTIGACIÓN de forma de vida (independiente de la de edificios: corre
+        # en paralelo). Se sondea con enfriamiento para no gastar el rate-limit navegando
+        # a lfresearch en cada poll mientras una investigación larga sigue en curso.
+        # ponytail: enfriamiento fijo (LF_RESEARCH_COOLDOWN_S); si quieres arrancar la
+        # siguiente al instante, lee el data-remaining de lfresearch y ajusta el epoch.
+        now = time.time()
+        if now >= getattr(planet, "lifeform_research_retry_epoch", 0.0) and self._guard():
+            self.client.build_lifeform_research(planet)
+            planet.lifeform_research_retry_epoch = now + LF_RESEARCH_COOLDOWN_S
 
     def _raise_research_lab(self, planet, needed_lvl: int, blocked_tech: str, advance: bool = False):
         """Sube el laboratorio de 'planet' un nivel hacia needed_lvl. Si advance=False, es
@@ -3758,8 +3772,9 @@ class Brain(StatsMixin):
                 if not p.building_in_progress:
                     self._economy_step(p)
                     self._facilities_step(p)
-                if not p.lifeform_in_progress:
-                    self._lifeforms_step(p)
+                # _lifeforms_step gestiona sus dos colas por dentro (edificios solo si
+                # libre; investigación en su cola aparte), así que se llama siempre.
+                self._lifeforms_step(p)
                 self._defense_step(p)
 
     def _facilities_step(self, planet):

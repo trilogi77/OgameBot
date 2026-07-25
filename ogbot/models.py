@@ -76,6 +76,10 @@ class Planet:
     building_queue: List[str] = field(default_factory=list)
     lifeform_in_progress: bool = False
     lifeform_available: bool = True   # False si el universo/planeta no tiene Formas de vida
+    # La investigación de formas de vida es una cola APARTE de los edificios LF. No la
+    # sondeamos en cada poll (gastaría rate-limit navegando a lfresearch mientras una
+    # investigación larga sigue en curso): solo tras este epoch. Ver Brain._lifeforms_step.
+    lifeform_research_retry_epoch: float = 0.0
     # Investigación: es global de la cuenta, pero se lee del panel del overview de cada
     # planeta (todos muestran el mismo estado).
     research_in_progress: bool = False

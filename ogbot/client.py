@@ -169,6 +169,22 @@ def _load_js(name: str) -> str:
     return js
 
 
+def _choose_lf(cands: list) -> Optional[int]:
+    """Elige QUÉ tecnología de forma de vida subir de una lista de candidatos
+    {tech, level, enabled} (ver js/lf_candidates.js).
+
+    Coge la de MENOR nivel cuyo botón está activo, desempatando por id. Así la rama
+    sube equilibrada en vez de reventar el primer edificio de la lista (el Sector
+    Residencial), que era el bug: al ser siempre el primero y el más barato, se llevaba
+    todo. Con "menor nivel primero", mientras el resto está bloqueado solo el residencial
+    es candidato (lo desbloquea); en cuanto se abren los demás, reparte."""
+    usable = [c for c in cands if c.get("enabled")]
+    if not usable:
+        return None
+    best = min(usable, key=lambda c: (c.get("level", 0), c.get("tech", 0)))
+    return int(best["tech"])
+
+
 class GameClient:
     def __init__(self, cfg: Config, logger):
         self.cfg = cfg
@@ -1476,18 +1492,9 @@ class GameClient:
             self.log.debug("Cola Forma de vida ocupada en %s.", planet.coords)
             planet.lifeform_in_progress = True
             return False
-        # Buscar el primer botón de upgrade activo (no deshabilitado)
-        js = """() => {
-            for (const li of document.querySelectorAll('li[data-technology]')) {
-                const btn = li.querySelector('button.upgrade:not([disabled]):not(.disabled)');
-                if (btn) return li.getAttribute('data-technology');
-            }
-            return null;
-        }"""
-        try:
-            tid = self.page.evaluate(js)
-        except Exception:
-            return False
+        # Elegir el edificio de MENOR nivel disponible (no el primero de la lista, que
+        # era siempre el Sector Residencial): sube la rama equilibrada. Ver _choose_lf.
+        tid = self._lf_pick_lowest()
         if not tid:
             self.log.debug("Sin edificios de Forma de vida disponibles en %s.", planet.coords)
             return False
@@ -1501,6 +1508,51 @@ class GameClient:
                 return False
             self.log.info("Forma de vida: construcción iniciada (tech=%s) en %s", tid, planet.coords)
             planet.lifeform_in_progress = True
+            return True
+        return False
+
+    def _lf_pick_lowest(self) -> Optional[int]:
+        """En la página de formas de vida actual (edificios o investigación), devuelve
+        el tech_id de menor nivel cuyo botón de subir esté activo, o None."""
+        try:
+            cands = self.page.evaluate(_load_js("lf_candidates"))
+        except Exception:
+            return None
+        return _choose_lf(cands or [])
+
+    def build_lifeform_research(self, planet: Planet) -> bool:
+        """Inicia la investigación de forma de vida de MENOR nivel disponible. Es una cola
+        APARTE de los edificios LF (corre en paralelo). Antes el bot no investigaba nada
+        de formas de vida, así que sus bonus (sensores, carga, etc.) nunca subían.
+
+        Se fía del estado del DOM: si ya hay una investigación en curso, OGame deshabilita
+        los botones y _lf_pick_lowest devuelve None -> no encola dos veces."""
+        if self._act(f"Investigación forma de vida en {planet.coords}"):
+            return True
+        if not planet.lifeform_available:
+            return False
+        self._goto("lfresearch", planet)
+        if self._is_error_page():
+            self.log.debug("Investigación de forma de vida no disponible en %s.", planet.coords)
+            return False
+        try:
+            self._wait_tech(timeout=6000)
+        except Exception:
+            self.log.debug("Página de investigación de forma de vida no disponible en %s.", planet.coords)
+            return False
+        tid = self._lf_pick_lowest()
+        if not tid:
+            self.log.debug("Sin investigaciones de forma de vida disponibles en %s (cola ocupada o sin recursos).", planet.coords)
+            return False
+        if self._click_upgrade(int(tid)):
+            try:
+                self.page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                time.sleep(2)
+            if self._is_error_page():
+                self.log.warning("OGame reportó error al investigar forma de vida en %s.", planet.coords)
+                return False
+            self.log.info("Investigación de forma de vida iniciada (tech=%s) en %s", tid, planet.coords)
             return True
         return False
 

@@ -3110,7 +3110,8 @@ class Brain(StatsMixin):
             if not self._guard():
                 break
 
-            ok = self.client.send_fleet(origin.coords, coords, fleet_to_send, mission="attack")
+            ok = self.client.send_fleet(origin.coords, coords, fleet_to_send, mission="attack",
+                                        max_round_trip_s=seconds_left)
             if ok:
                 self._deduct_ships(origin, fleet_to_send)
                 self.active_slots += 1
@@ -3224,8 +3225,12 @@ class Brain(StatsMixin):
             plan = fleet_mod.harvest_plan(origin.coords, coords, job["debris"],
                                           self.research_levels.get("hyperspace_tech", 0))
             plan["ships"] = {"recycler": n}
+            # Los recicladores vuelven cargados: si aterrizan tras el fleetsave nocturno,
+            # ni la flota ni el botín quedan salvados.
+            seconds_left = utils.seconds_until_inactive(self.cfg.active_hours)
             ok = self.client.send_fleet(plan["origin"], plan["destination"],
-                                        plan["ships"], mission="harvest")
+                                        plan["ships"], mission="harvest",
+                                        max_round_trip_s=seconds_left)
             if ok:
                 self._deduct_ships(origin, plan["ships"])
                 self.inflight_dests.setdefault(dest_key, set()).add("harvest")
@@ -3312,7 +3317,8 @@ class Brain(StatsMixin):
             plan["ships"] = {"recycler": n}
 
             ok = self.client.send_fleet(plan["origin"], plan["destination"],
-                                   plan["ships"], mission="harvest")
+                                   plan["ships"], mission="harvest",
+                                   max_round_trip_s=seconds_left)
             if ok:
                 self._deduct_ships(origin_loc, plan["ships"])
                 self.inflight_dests.setdefault(dest_key, set()).add("harvest")
@@ -4322,8 +4328,13 @@ class Brain(StatsMixin):
             return None
 
         if self._guard():
+            # La vuelta (vacía) no puede aterrizar después del fleetsave nocturno: esos
+            # cargueros se quedarían fuera de la salvación. send_fleet cancela el envío
+            # leyendo la duración REAL en la página de flotas.
+            seconds_left = utils.seconds_until_inactive(self.cfg.active_hours)
             ok = self.client.send_fleet(src.coords, dst.coords, ships,
-                                        mission="transport", resources=send)
+                                        mission="transport", resources=send,
+                                        max_round_trip_s=seconds_left)
             if ok:
                 self.log.info("Alimentación: %s -> %s transporta M:%d C:%d D:%d (%s)",
                               src.coords, dst.coords, int(send.metal), int(send.crystal),

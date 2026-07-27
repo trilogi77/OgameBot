@@ -247,10 +247,13 @@ def fleetsave_plan(origin: Coords, all_planets: List[Coords], cfg: Config,
         slowest = gd.effective_speed("small_cargo", research_levels)
 
     if cfg.fleetsave_mission == "deploy":
+        # Con retorno a mitad de la noche la flota se recoge en pleno vuelo, así que
+        # la ida solo tiene que ser LARGA: al 10% dura lo máximo y gasta el mínimo deuterio.
+        speeds = (0.1,) if recall_halfway else (1.0, 0.5, 0.4, 0.3, 0.2, 0.1)
         options = []
         for dest in candidates:
             dist = gd.distance(origin.tuple(), dest.tuple())
-            for sp in (1.0, 0.5, 0.4, 0.3, 0.2, 0.1):
+            for sp in speeds:
                 t = gd.flight_time(dist, slowest, sp, cfg.fleet_speed)
                 options.append({
                     "destination": dest,

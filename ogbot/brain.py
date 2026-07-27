@@ -4388,7 +4388,9 @@ class Brain(StatsMixin):
                                         mission=plan["mission"],
                                         resources=res,
                                         speed_percent=plan.get("speed_percent", 1.0),
-                                        target_duration_s=target_dur)
+                                        # target_duration_s sube la velocidad hasta la máxima que
+                                        # aún cubra la noche; con recall a mitad queremos el 10% fijo.
+                                        target_duration_s=None if recall_halfway else target_dur)
             if ok:
                 self._register_sent_fleetsave(loc.coords, plan["destination"])
         self._save_state()
@@ -4443,7 +4445,8 @@ class Brain(StatsMixin):
             ok = self.client.send_fleet(loc.coords, plan["destination"], {},
                                         mission=plan["mission"], resources=res,
                                         speed_percent=plan.get("speed_percent", 1.0),
-                                        target_duration_s=remaining_h * 3600)
+                                        target_duration_s=(None if getattr(self.cfg, "fleetsave_recall_halfway", False)
+                                                           else remaining_h * 3600))
             if ok:
                 self._register_sent_fleetsave(loc.coords, plan["destination"])
                 swept += 1
